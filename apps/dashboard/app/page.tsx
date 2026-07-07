@@ -20,6 +20,7 @@ import { Logo, LogoMark } from "@/components/logo";
 import { MarketingHeader } from "@/components/landing/marketing-header";
 import { CinematicIntro } from "@/components/landing/cinematic-intro";
 import { Steps } from "@/components/landing/steps";
+import { GetStarted } from "@/components/landing/get-started";
 import { Reveal } from "@/components/landing/reveal";
 import { CascadeFlow } from "@/components/landing/cascade-flow";
 import { XIcon, TelegramIcon, DiscordIcon } from "@/components/social-icons";
@@ -57,6 +58,7 @@ export default function LandingPage() {
       <CinematicIntro />
       <Hero />
       <HowItWorks />
+      <GetStartedSection />
       <CascadePrimitive />
       <Features />
       <X402Flow />
@@ -147,6 +149,26 @@ function HowItWorks() {
         <Steps />
       </Reveal>
     </Section>
+  );
+}
+
+/* ── Get started (interactive, copy-paste per persona) ─────────────────── */
+function GetStartedSection() {
+  return (
+    <section id="start" className="border-y border-border bg-card/30">
+      <div className="mx-auto max-w-6xl px-6 py-24">
+        <Reveal className="mb-10 max-w-2xl">
+          <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary">Get started</p>
+          <h2 className="mt-3 text-balance text-3xl font-semibold tracking-tight sm:text-4xl">Three ways in</h2>
+          <p className="mt-3 text-pretty leading-relaxed text-muted-foreground">
+            Pick your role. Every command is copy-paste ready.
+          </p>
+        </Reveal>
+        <Reveal>
+          <GetStarted />
+        </Reveal>
+      </div>
+    </section>
   );
 }
 
