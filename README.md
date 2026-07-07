@@ -48,6 +48,34 @@ unspent 870. ([open](https://testnet.cspr.live/transaction/9bea3ea79762d0b8a6fe3
 [attribution hop](https://testnet.cspr.live/transaction/eb96a049692b7918a949bb2cd84982980d643e23678f490f8b851b84f0815b68) ·
 [over-budget rejected](https://testnet.cspr.live/transaction/d1df6c898bbc8edc63fca9018dd4352f40afc6cea45a20666c91dbaf28887572))
 
+### The autonomous buyer: an LLM that prices, budgets, and buys tools
+
+The seller side turns MCP tools into paid services. The **buyer** is an
+autonomous agent (`@cascet/agent`) that makes that economy *self-driving*.
+Given a DeFi/RWA goal, **Claude (Opus 4.8)**:
+
+1. **discovers** the paid tools a gateway advertises — with their x402 prices,
+   read straight from `tools/list` (`_meta.cascet.priceUsd`);
+2. **decides** which ones are worth buying for the goal, and calls them;
+3. **pays** each `tools/call` per x402 out of a **fixed on-chain budget** — the
+   paying client aborts a payment before signing if it would breach the cap;
+4. **adapts** when the paywall rejects an over-budget call (the rejection is fed
+   back to Claude, which works with what it already bought);
+5. **synthesizes** a recommendation grounded in the data it actually purchased.
+
+No hardcoded tool list, no fixed call sequence — the model reads prices and
+chooses. This is the LLM-in-the-loop half of CasCet: agentic AI spending real
+money on real DeFi/RWA data, under budget, settled on Casper.
+
+```bash
+ANTHROPIC_API_KEY=… pnpm --filter @cascet/e2e agent        # mock facilitator
+CSPR_CLOUD_TOKEN=… ANTHROPIC_API_KEY=… pnpm --filter @cascet/e2e agent   # real settlement
+```
+
+The wire convention it relies on — per-tool price advertisement, x402
+settlement, and cascade attribution — is written up as a reusable standard
+proposal in [`docs/x402-mcp-spec.md`](docs/x402-mcp-spec.md).
+
 ### Why Casper
 
 This is not a portable pattern dressed in Casper branding — it leans on things Casper does that alternatives don't:
@@ -86,6 +114,7 @@ This is not a portable pattern dressed in Casper branding — it leans on things
 | `packages/core` | Shared types, config schema, receipt + payment-graph model |
 | `packages/gateway` | Seller-side proxy: wraps an MCP server, prices tools, runs the x402 flow |
 | `packages/client` | Buyer-side paying `fetch` (budget guard, cascade parent propagation), stdio bridge |
+| `packages/agent` | Autonomous Claude agent: prices, budgets, and buys paid DeFi/RWA MCP tools |
 | `packages/cli` | `cascet` CLI — `init` / `wrap` / `connect` |
 | `servers/casper-defi-data` | Flagship paid MCP: CSPR market data, RWA prices, DeFi yields (live + labeled fallback) |
 | `servers/portfolio-analyst` | Paid MCP that **buys** from the data server — the cascade in action |
@@ -122,6 +151,13 @@ pnpm --filter @cascet/e2e demo
 ```
 
 You'll see an agent pay `$0.10` for `analyze_portfolio`, which autonomously spends `$0.07` buying four data tools underneath — every downstream payment linked to the root, asserted at the end.
+
+```bash
+# Autonomous Claude agent: it prices the paid tools and decides what to buy.
+ANTHROPIC_API_KEY=… pnpm --filter @cascet/e2e agent
+```
+
+Claude reads the three priced DeFi/RWA tools, buys the ones it judges necessary for the goal, pays x402 per call under a fixed budget, and returns a recommendation citing the data it purchased.
 
 ### With the live dashboard
 
