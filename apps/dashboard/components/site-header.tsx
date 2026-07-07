@@ -2,30 +2,26 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Boxes } from "lucide-react";
+import { Activity } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { ModeToggle } from "@/components/mode-toggle";
+import { Logo } from "@/components/logo";
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { href: "/", label: "Dashboard" },
+  { href: "/dashboard", label: "Dashboard" },
   { href: "/explorer", label: "Explorer" },
+  { href: "/playground", label: "Playground" },
 ];
 
 export function SiteHeader({ connected }: { connected?: boolean }) {
   const pathname = usePathname();
   return (
-    <header className="glass sticky top-0 z-10 border-b">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5">
+    <header className="glass sticky top-0 z-20 border-b">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
         <div className="flex items-center gap-6">
-          <Link href="/" className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <Boxes className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="font-semibold leading-tight">CasCet</div>
-              <div className="text-[11px] leading-tight text-muted-foreground">Paid MCP · Casper Testnet</div>
-            </div>
+          <Link href="/">
+            <Logo subtitle="Paid MCP · Testnet" />
           </Link>
           <nav className="flex items-center gap-1">
             {NAV.map(item => (

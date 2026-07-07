@@ -28,3 +28,6 @@ keys/
 coverage/
 .turbo/
 contracts/target/
+
+# ts build cache
+*.tsbuildinfo

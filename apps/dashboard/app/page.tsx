@@ -1,98 +1,561 @@
-"use client";
-
-import * as React from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import Image from "next/image";
+import Link from "next/link";
+import {
+  ArrowRight,
+  ArrowUpRight,
+  Boxes,
+  Coins,
+  GitBranch,
+  Github,
+  LayoutDashboard,
+  Lock,
+  Network,
+  Plug,
+  Receipt,
+  ShieldCheck,
+  Sparkles,
+  Wallet,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { SiteHeader } from "@/components/site-header";
-import { StatTiles } from "@/components/stat-tiles";
-import { PaymentGraph } from "@/components/payment-graph";
-import { ReceiptsTable } from "@/components/receipts-table";
-import { useLiveState } from "@/lib/use-live-state";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Logo, LogoMark } from "@/components/logo";
+import { MarketingHeader } from "@/components/landing/marketing-header";
+import { Reveal } from "@/components/landing/reveal";
+import { CascadeFlow } from "@/components/landing/cascade-flow";
 
-export default function DashboardPage() {
-  const { state, latestReceiptId, connected } = useLiveState();
+const GH = "https://github.com/mericcintosun/CasCet";
+const CONTRACT = (hash: string) => `https://testnet.cspr.live/contract-package/${hash}`;
 
-  // Highlight the freshest cascade: edges sharing the latest receipt's root.
-  const highlightEdgeIds = React.useMemo(() => {
-    if (!latestReceiptId) return new Set<string>();
-    const latest = state.receipts.find(r => r.id === latestReceiptId);
-    const rootId = latest?.parentId ?? latest?.id;
-    const ids = new Set<string>();
-    for (const r of state.receipts) {
-      if (r.id === rootId || r.parentId === rootId) ids.add(r.id);
-    }
-    return ids;
-  }, [latestReceiptId, state.receipts]);
+const CONTRACTS = [
+  { name: "CascadeController", note: "budget-bounded cascade tree + recursive attribution", hash: "624134336d1f63ce539ebef9c226e6c463f70a8e85b593bbc5d370520d797980" },
+  { name: "ReceiptRegistry", note: "on-chain settled-call receipts with cascade parent links", hash: "bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97" },
+  { name: "PaymentChannel", note: "prepaid channels, off-chain signed vouchers", hash: "53930d3982a5bea717ec919096cef407b71a1ce9022b241c1d94f19ca770ccb0" },
+  { name: "RevenueSplit", note: "on-chain CEP-18 revenue splitter", hash: "fa21efb406a8151d15a393bc366e51192a9ea15fd7fe23faffc54f021b32883c" },
+  { name: "Cep18X402", note: "payment token with transfer_with_authorization", hash: "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3" },
+  { name: "ReceiptRegistry v2", note: "upgradable — live in-place upgrade, state preserved", hash: "764ed7190b69dafbc94a0148a07be85227f268a85424e7186be66cdb711b8222" },
+];
 
+const STATS = [
+  { k: "7", v: "contracts live on testnet" },
+  { k: "x402", v: "real settlement, no mock" },
+  { k: "N-hop", v: "cascading payments" },
+  { k: "1", v: "autonomous LLM buyer" },
+];
+
+export default function LandingPage() {
   return (
-    <div className="min-h-screen">
-      <SiteHeader connected={connected} />
-
-      <main className="mx-auto max-w-6xl space-y-6 px-6 py-8">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Seller dashboard</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Every tool call your MCP servers sell, paid per request over x402 and settled on Casper —
-            including cascades where a paid tool buys from other paid tools.
-          </p>
-        </div>
-
-        <StatTiles state={state} />
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">Cascading payment graph</CardTitle>
-            <CardDescription>
-              Agents (left) pay servers; servers pay downstream servers. The newest chain is highlighted.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <PaymentGraph graph={state.graph} highlightEdgeIds={highlightEdgeIds} />
-          </CardContent>
-        </Card>
-
-        <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Recent payments</CardTitle>
-              <CardDescription>Live receipts, newest first. Settlement links resolve on cspr.live.</CardDescription>
-            </CardHeader>
-            <CardContent className="px-0">
-              <ReceiptsTable receipts={state.receipts} latestReceiptId={latestReceiptId} />
-            </CardContent>
-          </Card>
-
-          <Card className="h-fit">
-            <CardHeader>
-              <CardTitle className="text-base">Servers &amp; pricing</CardTitle>
-              <CardDescription>MCP servers wrapped by CasCet.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {state.servers.length === 0 && (
-                <div className="text-sm text-muted-foreground">No servers connected yet.</div>
-              )}
-              {state.servers.map(server => (
-                <div key={server.name} className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">{server.name}</span>
-                    <Badge variant={server.online ? "success" : "secondary"}>
-                      {server.online ? "online" : "offline"}
-                    </Badge>
-                  </div>
-                  <div className="space-y-1">
-                    {server.tools.map(tool => (
-                      <div key={tool.name} className="flex items-center justify-between text-xs">
-                        <span className="font-mono text-muted-foreground">{tool.name}</span>
-                        <span className="tabular-nums">{tool.priceUsd ?? "free"}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        </div>
-      </main>
+    <div className="relative min-h-screen">
+      <MarketingHeader />
+      <Hero />
+      <Marquee />
+      <HowItWorks />
+      <CascadePrimitive />
+      <Features />
+      <X402Flow />
+      <AgentSection />
+      <Contracts />
+      <Faq />
+      <FinalCta />
+      <Footer />
     </div>
+  );
+}
+
+/* ── Hero ──────────────────────────────────────────────────────────────── */
+function Hero() {
+  return (
+    <section className="grain relative overflow-hidden">
+      <div className="aurora absolute inset-0" />
+      <div className="absolute inset-0">
+        <Image
+          src="/hero.png"
+          alt=""
+          fill
+          priority
+          sizes="100vw"
+          className="object-cover object-right opacity-80 dark:opacity-90"
+        />
+        <div className="absolute inset-0 bg-gradient-to-r from-background via-background/85 to-background/20" />
+        <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-background to-transparent" />
+      </div>
+
+      <div className="relative mx-auto flex min-h-[90vh] max-w-6xl flex-col justify-center px-6 py-24">
+        <div className="max-w-2xl">
+          <Badge variant="outline" className="mb-6 gap-1.5 border-primary/30 bg-primary/5 py-1 pl-1.5 pr-3 text-foreground">
+            <span className="flex h-5 w-5 items-center justify-center rounded text-primary">
+              <LogoMark />
+            </span>
+            <span className="font-mono text-[11px]">Casper Agentic Buildathon 2026</span>
+          </Badge>
+
+          <h1 className="text-balance text-5xl font-semibold leading-[1.02] tracking-tight sm:text-6xl lg:text-7xl">
+            Payments that <span className="text-gradient">cascade</span>.
+          </h1>
+
+          <p className="mt-6 max-w-xl text-pretty text-lg leading-relaxed text-muted-foreground">
+            CasCet is the monetization layer for MCP on Casper — <span className="text-foreground">Stripe for MCP servers</span>.
+            Charge AI agents per tool call over x402, and settle the <span className="text-foreground">multi-hop payment chains</span> no
+            one else does — on-chain, in seconds.
+          </p>
+
+          <div className="mt-8 flex flex-wrap items-center gap-3">
+            <Button asChild size="lg" className="gap-2">
+              <Link href="/dashboard">
+                Launch the live dashboard <ArrowRight className="h-4 w-4" />
+              </Link>
+            </Button>
+            <Button asChild size="lg" variant="outline" className="gap-2">
+              <Link href="#cascade">
+                See the primitive <GitBranch className="h-4 w-4" />
+              </Link>
+            </Button>
+            <Button asChild size="lg" variant="ghost" className="gap-2 text-muted-foreground">
+              <Link href={GH} target="_blank">
+                <Github className="h-4 w-4" /> GitHub
+              </Link>
+            </Button>
+          </div>
+
+          <dl className="mt-14 grid max-w-lg grid-cols-2 gap-x-8 gap-y-5 sm:grid-cols-4">
+            {STATS.map(s => (
+              <div key={s.v}>
+                <dt className="font-mono text-2xl font-semibold text-primary">{s.k}</dt>
+                <dd className="mt-1 text-xs leading-tight text-muted-foreground">{s.v}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ── Trust marquee ─────────────────────────────────────────────────────── */
+function Marquee() {
+  const items = [
+    "x402 · HTTP 402",
+    "Casper 2.0 · Zug finality",
+    "CEP-18 · EIP-3009",
+    "Model Context Protocol",
+    "casper-eip-712",
+    "Odra contracts",
+    "CSPR.cloud facilitator",
+    "cascading receipts",
+  ];
+  const row = [...items, ...items];
+  return (
+    <section className="border-y border-border bg-card/40 py-4">
+      <div className="relative flex overflow-hidden [mask-image:linear-gradient(90deg,transparent,#000_12%,#000_88%,transparent)]">
+        <div className="flex shrink-0 animate-marquee items-center gap-8 pr-8">
+          {row.map((t, i) => (
+            <span key={i} className="flex items-center gap-8 whitespace-nowrap font-mono text-sm text-muted-foreground">
+              {t}
+              <span className="text-primary/50">/</span>
+            </span>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ── How it works ──────────────────────────────────────────────────────── */
+function HowItWorks() {
+  const steps = [
+    { icon: Boxes, t: "Wrap", d: "Put a paywall in front of any MCP server. Price each tool; agents pay per call in CEP-18 over x402. Your tool code is unchanged." },
+    { icon: Plug, t: "Connect", d: "A stdio bridge lets any MCP host — Claude, Cursor — call paid servers, answering 402 challenges automatically under a spending budget." },
+    { icon: GitBranch, t: "Cascade", d: "When a paid tool buys from other paid tools, CasCet links every hop to its parent and enforces budgets and revenue splits on-chain." },
+    { icon: LayoutDashboard, t: "See it", d: "A live dashboard streams revenue, receipts with cspr.live settlement links, and the cascading payment graph in real time." },
+  ];
+  return (
+    <Section id="how" eyebrow="How it works" title="Four moves from free tool to paid, composable service">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {steps.map((s, i) => (
+          <Reveal key={s.t} delay={i * 70}>
+            <div className="card-lift h-full rounded-xl border border-border bg-card p-6">
+              <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
+                <s.icon className="h-5 w-5" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs text-muted-foreground">0{i + 1}</span>
+                <h3 className="text-base font-semibold">{s.t}</h3>
+              </div>
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{s.d}</p>
+            </div>
+          </Reveal>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+/* ── The cascade primitive ─────────────────────────────────────────────── */
+function CascadePrimitive() {
+  return (
+    <section id="cascade" className="relative border-y border-border bg-card/30">
+      <div className="mx-auto grid max-w-6xl items-center gap-12 px-6 py-24 lg:grid-cols-2">
+        <Reveal>
+          <Badge variant="outline" className="mb-5 border-primary/30 font-mono text-[11px] text-primary">
+            the primitive
+          </Badge>
+          <h2 className="text-balance text-3xl font-semibold tracking-tight sm:text-4xl">
+            Budget-bounded cascades with recursive attribution
+          </h2>
+          <p className="mt-5 text-pretty leading-relaxed text-muted-foreground">
+            The headline isn&apos;t &ldquo;agents pay per call&rdquo; — it&apos;s a machine-to-machine primitive that only
+            makes sense once payments compose into trees. The <span className="font-mono text-foreground">CascadeController</span>{" "}
+            contract turns a cascade into a programmable supply chain.
+          </p>
+          <ul className="mt-7 space-y-5">
+            <Feat icon={Wallet} title="On-chain budget tree">
+              An agent opens a cascade with <span className="text-foreground">one deposit that caps the whole call tree</span>.
+              The contract pays each hop out of it and refuses any hop that would exceed the budget — enforcement by construction,
+              not by trusting the gateway.
+            </Feat>
+            <Feat icon={Network} title="Recursive attribution">
+              A configurable share of a child hop&apos;s earnings flows <span className="text-foreground">up</span> to the parent
+              hop&apos;s payee — the composing service earns margin on what it resells. The payment graph <em>is</em> the
+              revenue-sharing graph.
+            </Feat>
+          </ul>
+          <p className="mt-7 rounded-lg border border-border bg-background/60 p-4 font-mono text-xs leading-relaxed text-muted-foreground">
+            <span className="text-success">✓ verified on testnet:</span> open(1000) → root pays analyst 100 → child pays data 30
+            with 20% attribution (data +24, analyst +6 up the tree) → an over-budget hop is{" "}
+            <span className="text-destructive">rejected on-chain</span> (BudgetExceeded) → close refunds the unspent 870.
+          </p>
+          <Button asChild variant="outline" size="sm" className="mt-6 gap-2">
+            <Link href="/playground">
+              Try it in the playground <ArrowRight className="h-4 w-4" />
+            </Link>
+          </Button>
+        </Reveal>
+
+        <Reveal delay={120}>
+          <div className="glow-primary rounded-2xl border border-border bg-background/70 p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <span className="font-mono text-xs text-muted-foreground">cascade.trace</span>
+              <span className="flex items-center gap-1.5 font-mono text-[11px] text-primary">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" /> settling
+              </span>
+            </div>
+            <CascadeFlow />
+          </div>
+        </Reveal>
+      </div>
+    </section>
+  );
+}
+
+/* ── Bento features ────────────────────────────────────────────────────── */
+function Features() {
+  return (
+    <Section eyebrow="Built end-to-end" title="Not a demo — a working machine-money stack">
+      <div className="grid gap-4 md:grid-cols-3">
+        <Bento className="md:col-span-2" icon={ShieldCheck} title="Real x402 settlement, no mock">
+          Agents pay from an on-chain balance of a real <span className="font-mono text-foreground">transfer_with_authorization</span>{" "}
+          CEP-18 token; the hosted CSPR.cloud facilitator verifies and settles it; receipts anchor on-chain. Every hop is a real
+          Casper transaction you can open on cspr.live.
+        </Bento>
+        <Bento icon={Receipt} title="Receipts, on-chain">
+          Every settled call is anchored with its cascade parent id — the whole payment graph reconstructs from chain data alone.
+        </Bento>
+        <Bento icon={Lock} title="Upgradable contracts">
+          The ReceiptRegistry was upgraded v1.1 → v1.2 in-place on Casper — all anchored state survived the upgrade.
+        </Bento>
+        <Bento icon={Coins} title="Revenue splits">
+          Point a server&apos;s payTo at the RevenueSplit contract and earnings split between co-authors on-chain, pull-based.
+        </Bento>
+        <Bento icon={GitBranch} title="Wrap any MCP server">
+          CasCet monetizes the unmodified official <span className="font-mono text-foreground">server-everything</span> — not just
+          first-party tools.
+        </Bento>
+      </div>
+    </Section>
+  );
+}
+
+/* ── x402 flow code block ──────────────────────────────────────────────── */
+function X402Flow() {
+  return (
+    <section className="border-y border-border bg-card/30">
+      <div className="mx-auto grid max-w-6xl items-center gap-12 px-6 py-24 lg:grid-cols-2">
+        <Reveal>
+          <Badge variant="outline" className="mb-5 border-primary/30 font-mono text-[11px] text-primary">
+            show the call, not the dashboard
+          </Badge>
+          <h2 className="text-balance text-3xl font-semibold tracking-tight sm:text-4xl">One tool call, paid over HTTP 402</h2>
+          <p className="mt-5 text-pretty leading-relaxed text-muted-foreground">
+            MCP speaks JSON-RPC over one endpoint, so the gateway maps each priced tool to an x402 route. The agent&apos;s wallet
+            signs a CEP-18 authorization and retries — and the gateway <span className="text-foreground">only charges if the tool
+            succeeds</span>. A failed call is never billed.
+          </p>
+          <div className="mt-6 flex flex-wrap gap-4 font-mono text-xs text-muted-foreground">
+            <span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-warning" /> 402 challenge</span>
+            <span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-primary" /> sign + pay</span>
+            <span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-success" /> settled</span>
+          </div>
+        </Reveal>
+        <Reveal delay={120}>
+          <CodeCard />
+        </Reveal>
+      </div>
+    </section>
+  );
+}
+
+function CodeCard() {
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-[hsl(228_16%_7%)] font-mono text-[13px] leading-relaxed shadow-xl">
+      <div className="flex items-center gap-1.5 border-b border-border/60 px-4 py-3">
+        <span className="h-3 w-3 rounded-full bg-destructive/70" />
+        <span className="h-3 w-3 rounded-full bg-warning/70" />
+        <span className="h-3 w-3 rounded-full bg-success/70" />
+        <span className="ml-2 text-xs text-white/40">agent → paid MCP tool</span>
+      </div>
+      <pre className="overflow-x-auto p-5 text-white/80">
+        <code>
+          <span className="text-white/40"># 1. agent calls a priced tool</span>
+          {"\n"}POST /mcp <span className="text-[#8be9fd]">tools/call</span> get_rwa_price{"\n"}
+          {"\n"}
+          <span className="text-warning">← 402 Payment Required</span>{"\n"}
+          <span className="text-white/40">  price: $0.02 · asset: CEP-18 · network: casper-test</span>
+          {"\n\n"}
+          <span className="text-white/40"># 2. wallet signs transfer_with_authorization, retries</span>
+          {"\n"}POST /mcp <span className="text-[#8be9fd]">PAYMENT-SIGNATURE</span> 0x…{"\n"}
+          {"\n"}
+          <span className="text-[#C6F94E]">→ 200 OK</span>{"  "}
+          <span className="text-white/40">x-cascet-payment-id: 21e0be7a…</span>
+          {"\n"}
+          {"  "}{"{"} &quot;asset&quot;: &quot;gold&quot;, &quot;priceUsd&quot;: <span className="text-[#C6F94E]">4095.83</span> {"}"}
+          {"\n\n"}
+          <span className="text-success">✓ settled on Casper</span> <span className="text-white/40">· receipt anchored on-chain</span>
+        </code>
+      </pre>
+    </div>
+  );
+}
+
+/* ── Autonomous agent ──────────────────────────────────────────────────── */
+function AgentSection() {
+  const steps = ["discovers the paid tools + their x402 prices", "decides which to buy for a DeFi/RWA goal", "pays per call under a fixed on-chain budget", "cites the data it purchased in a recommendation"];
+  return (
+    <Section id="agent" eyebrow="The autonomous buyer" title="An LLM that prices, budgets, and buys tools — on its own">
+      <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
+        <Reveal>
+          <div className="card-lift h-full rounded-2xl border border-border bg-card p-8">
+            <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
+              <Sparkles className="h-5 w-5" />
+            </div>
+            <p className="text-pretty leading-relaxed text-muted-foreground">
+              The seller side turns MCP tools into paid services. The <span className="text-foreground">buyer</span> makes that
+              economy self-driving: given a DeFi/RWA goal, <span className="text-foreground">Claude</span> reads the tools&apos;
+              prices straight from <span className="font-mono text-foreground">tools/list</span> and:
+            </p>
+            <ol className="mt-6 space-y-3">
+              {steps.map((s, i) => (
+                <li key={i} className="flex gap-3 text-sm">
+                  <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-primary/15 font-mono text-[11px] text-primary">
+                    {i + 1}
+                  </span>
+                  <span className="text-muted-foreground">{s}</span>
+                </li>
+              ))}
+            </ol>
+            <p className="mt-6 rounded-lg border border-warning/25 bg-warning/5 p-3 text-xs leading-relaxed text-muted-foreground">
+              <span className="font-medium text-warning">Full disclosure:</span> the shipped demo runs a clearly-labeled offline
+              simulation of the reasoning (no paid API key) — but tool discovery, x402 pricing, payments, budget enforcement and
+              settlement are all real, and one flag swaps in live Claude.
+            </p>
+          </div>
+        </Reveal>
+        <Reveal delay={120}>
+          <div className="h-full overflow-hidden rounded-2xl border border-border bg-[hsl(228_16%_7%)] p-6 font-mono text-[12.5px] leading-relaxed">
+            <div className="mb-4 text-xs text-white/40">$ cascet agent</div>
+            <div className="space-y-2 text-white/80">
+              <p className="text-[#C6F94E]">🧠 buy get_cspr_market_data ($0.01)</p>
+              <p className="pl-4 text-white/50">💸 x402 · ✅ paid</p>
+              <p className="text-[#C6F94E]">🧠 buy get_defi_yields ($0.02)</p>
+              <p className="pl-4 text-white/50">💸 x402 · ✅ paid</p>
+              <p className="text-[#C6F94E]">🧠 buy get_rwa_price gold + treasury</p>
+              <p className="pl-4 text-white/50">💸 x402 ×2 · ✅ paid</p>
+              <p className="mt-3 border-t border-white/10 pt-3 text-white/70">
+                → keep ~55% stCSPR liquid staking (9.9% APY, liquid), rotate ~30% into tokenized treasuries, ~15% gold hedge.
+              </p>
+              <p className="text-success">✓ 4 tools bought under budget · grounded in real data</p>
+            </div>
+          </div>
+        </Reveal>
+      </div>
+    </Section>
+  );
+}
+
+/* ── Contracts ─────────────────────────────────────────────────────────── */
+function Contracts() {
+  return (
+    <Section id="contracts" eyebrow="On-chain layer" title="Seven contracts, live on Casper Testnet">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {CONTRACTS.map((c, i) => (
+          <Reveal key={c.name} delay={(i % 3) * 70}>
+            <Link
+              href={CONTRACT(c.hash)}
+              target="_blank"
+              className="card-lift group flex h-full flex-col rounded-xl border border-border bg-card p-5"
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-sm font-semibold">{c.name}</span>
+                <ArrowUpRight className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-primary" />
+              </div>
+              <p className="mt-2 flex-1 text-xs leading-relaxed text-muted-foreground">{c.note}</p>
+              <span className="mt-3 truncate font-mono text-[10px] text-muted-foreground/60">{c.hash.slice(0, 20)}…</span>
+            </Link>
+          </Reveal>
+        ))}
+      </div>
+      <p className="mt-6 text-center font-mono text-xs text-muted-foreground">
+        real settlement tx ·{" "}
+        <Link
+          href="https://testnet.cspr.live/transaction/9bc90044ac4053be6bd87fa1a09cec80ea24d509decfe747b001fc1bfc561fc2"
+          target="_blank"
+          className="text-primary hover:underline"
+        >
+          9bc90044…fc561fc2
+        </Link>
+      </p>
+    </Section>
+  );
+}
+
+/* ── FAQ ───────────────────────────────────────────────────────────────── */
+function Faq() {
+  const items = [
+    {
+      q: "What exactly is x402?",
+      a: "The HTTP 402 \"Payment Required\" status turned into a real protocol: a server answers a request with a payment challenge, the client signs an on-chain authorization and retries, and the server settles it. CasCet applies it per MCP tool call, in CEP-18 on Casper.",
+    },
+    {
+      q: "Why does \"cascading\" matter?",
+      a: "Real agent tools compose — a portfolio analyzer internally buys a price feed and an RWA feed, each a paid service. CasCet links every hop of that payment chain to its parent and can cap and split the whole tree on-chain. Point-to-point x402 can't express that.",
+    },
+    {
+      q: "Is this actually on-chain, or a mock?",
+      a: "On-chain. Seven Odra contracts are live on Casper Testnet and real x402 settlement is verified end-to-end with the hosted CSPR.cloud facilitator — no mock in the payment path. The bundled mock facilitator exists only for chain-free local dev.",
+    },
+    {
+      q: "What does the autonomous agent do?",
+      a: "Claude reads the paid tools' prices, decides which to buy for a DeFi/RWA goal, pays x402 per call under a fixed budget, and cites the purchased data in a recommendation. The shipped demo labels its reasoning as a simulation (no paid API key) while keeping all payments real.",
+    },
+    {
+      q: "Why Casper?",
+      a: "Zug instant deterministic finality means a multi-hop chain settles in seconds with certainty (probabilistic finality would stall it), native on-chain revenue splits, upgradable contracts, and predictable fees so agents can budget.",
+    },
+  ];
+  return (
+    <Section eyebrow="FAQ" title="Questions, answered">
+      <Reveal>
+        <Accordion type="single" collapsible className="max-w-3xl">
+          {items.map((it, i) => (
+            <AccordionItem key={i} value={`q${i}`}>
+              <AccordionTrigger>{it.q}</AccordionTrigger>
+              <AccordionContent>{it.a}</AccordionContent>
+            </AccordionItem>
+          ))}
+        </Accordion>
+      </Reveal>
+    </Section>
+  );
+}
+
+/* ── Final CTA ─────────────────────────────────────────────────────────── */
+function FinalCta() {
+  return (
+    <section className="relative overflow-hidden border-t border-border">
+      <div className="aurora absolute inset-0 opacity-70" />
+      <div className="relative mx-auto max-w-3xl px-6 py-28 text-center">
+        <Reveal>
+          <div className="mx-auto mb-6 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/15 text-primary ring-1 ring-primary/25">
+            <LogoMark className="h-6 w-6" />
+          </div>
+          <h2 className="text-balance text-4xl font-semibold tracking-tight sm:text-5xl">
+            The trust layer for the <span className="text-gradient">agent economy</span>
+          </h2>
+          <p className="mx-auto mt-5 max-w-xl text-pretty leading-relaxed text-muted-foreground">
+            Machine-to-machine commerce needs payments that compose. CasCet ships that primitive first, on Casper.
+          </p>
+          <div className="mt-9 flex flex-wrap justify-center gap-3">
+            <Button asChild size="lg" className="gap-2">
+              <Link href="/dashboard">
+                Explore the live dashboard <ArrowRight className="h-4 w-4" />
+              </Link>
+            </Button>
+            <Button asChild size="lg" variant="outline" className="gap-2">
+              <Link href={GH} target="_blank">
+                <Github className="h-4 w-4" /> Read the code
+              </Link>
+            </Button>
+          </div>
+        </Reveal>
+      </div>
+    </section>
+  );
+}
+
+/* ── Footer ────────────────────────────────────────────────────────────── */
+function Footer() {
+  return (
+    <footer className="border-t border-border">
+      <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 py-10 sm:flex-row">
+        <Logo subtitle="Payments that cascade" />
+        <div className="flex items-center gap-5 text-sm text-muted-foreground">
+          <Link href="/dashboard" className="hover:text-foreground">Dashboard</Link>
+          <Link href="/playground" className="hover:text-foreground">Playground</Link>
+          <Link href="/explorer" className="hover:text-foreground">Explorer</Link>
+          <Link href={GH} target="_blank" className="hover:text-foreground">GitHub</Link>
+        </div>
+        <p className="font-mono text-xs text-muted-foreground/70">Casper Agentic Buildathon 2026</p>
+      </div>
+    </footer>
+  );
+}
+
+/* ── Shared bits ───────────────────────────────────────────────────────── */
+function Section({ id, eyebrow, title, children }: { id?: string; eyebrow: string; title: string; children: React.ReactNode }) {
+  return (
+    <section id={id} className="mx-auto max-w-6xl px-6 py-24">
+      <Reveal className="mb-12 max-w-2xl">
+        <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary">{eyebrow}</p>
+        <h2 className="mt-3 text-balance text-3xl font-semibold tracking-tight sm:text-4xl">{title}</h2>
+      </Reveal>
+      {children}
+    </section>
+  );
+}
+
+function Feat({ icon: Icon, title, children }: { icon: React.ElementType; title: string; children: React.ReactNode }) {
+  return (
+    <li className="flex gap-4">
+      <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
+        <Icon className="h-[18px] w-[18px]" />
+      </span>
+      <div>
+        <h3 className="font-semibold">{title}</h3>
+        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{children}</p>
+      </div>
+    </li>
+  );
+}
+
+function Bento({ icon: Icon, title, children, className }: { icon: React.ElementType; title: string; children: React.ReactNode; className?: string }) {
+  return (
+    <Reveal className={className}>
+      <div className="card-lift h-full rounded-xl border border-border bg-card p-6">
+        <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
+          <Icon className="h-5 w-5" />
+        </div>
+        <h3 className="text-base font-semibold">{title}</h3>
+        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{children}</p>
+      </div>
+    </Reveal>
   );
 }
