@@ -13,6 +13,7 @@ import { buildPaywall, type Paywall } from "./paywall.js";
 import { connectUpstream, type UpstreamConnection } from "./upstream.js";
 import { ReceiptStore, makeEventPusher } from "./store.js";
 import { Anchorer } from "./anchor.js";
+import { buildDiscovery } from "./discovery.js";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -93,6 +94,14 @@ export async function startGateway(cfg: CascetConfig): Promise<RunningGateway> {
   });
 
   app.get("/receipts", (_req, res) => void res.json({ receipts: store.list() }));
+
+  // x402 Bazaar-compatible discovery so agents can find these paid tools.
+  const discoveryHandler = (req: Request, res: Response): void => {
+    const baseUrl = `${req.protocol}://${req.get("host") ?? `localhost:${cfg.port}`}`;
+    res.json(buildDiscovery(cfg, paywall, toolNames, baseUrl, new Date().toISOString()));
+  };
+  app.get("/.well-known/x402.json", discoveryHandler);
+  app.get("/discovery/resources", discoveryHandler);
 
   app.post("/mcp", (req, res) => {
     void handleMcp(req, res).catch(err => {
