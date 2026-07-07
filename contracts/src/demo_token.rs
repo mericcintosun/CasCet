@@ -32,6 +32,20 @@ impl DemoToken {
         self.token.balance_of(&address)
     }
 
+    /// Approve `spender` to move up to `amount` of the caller's tokens.
+    pub fn approve(&mut self, spender: Address, amount: U256) {
+        self.token.approve(&spender, &amount);
+    }
+
+    /// Move `amount` from `owner` to `recipient` using the caller's allowance.
+    pub fn transfer_from(&mut self, owner: Address, recipient: Address, amount: U256) {
+        self.token.transfer_from(&owner, &recipient, &amount);
+    }
+
+    pub fn allowance(&self, owner: Address, spender: Address) -> U256 {
+        self.token.allowance(&owner, &spender)
+    }
+
     pub fn total_supply(&self) -> U256 {
         self.token.total_supply()
     }
