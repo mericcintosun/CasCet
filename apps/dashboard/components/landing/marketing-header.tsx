@@ -13,7 +13,7 @@ const NAV = [
   { href: "#cascade", label: "Cascade" },
   { href: "#agent", label: "Agent" },
   { href: "/playground", label: "Playground" },
-  { href: "#contracts", label: "Contracts" },
+  { href: "#roadmap", label: "Roadmap" },
 ];
 
 export function MarketingHeader() {

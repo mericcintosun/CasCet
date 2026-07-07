@@ -22,8 +22,16 @@ import { CinematicIntro } from "@/components/landing/cinematic-intro";
 import { Steps } from "@/components/landing/steps";
 import { Reveal } from "@/components/landing/reveal";
 import { CascadeFlow } from "@/components/landing/cascade-flow";
+import { XIcon, TelegramIcon, DiscordIcon } from "@/components/social-icons";
+import { cn } from "@/lib/utils";
 
 const GH = "https://github.com/mericcintosun/CasCet";
+const SOCIALS = {
+  x: "https://x.com/cascet_xyz",
+  telegram: "https://t.me/cascet",
+  discord: "https://discord.gg/cascet",
+  github: GH,
+};
 const CONTRACT = (hash: string) => `https://testnet.cspr.live/contract-package/${hash}`;
 
 const CONTRACTS = [
@@ -54,6 +62,7 @@ export default function LandingPage() {
       <X402Flow />
       <AgentSection />
       <Contracts />
+      <Roadmap />
       <Faq />
       <FinalCta />
       <Footer />
@@ -423,6 +432,100 @@ function Faq() {
   );
 }
 
+/* ── Roadmap / long-term plan (de-boxed timeline) ──────────────────────── */
+function Roadmap() {
+  const phases = [
+    {
+      tag: "shipped",
+      when: "Qualification · Jul 2026",
+      title: "The primitive, proven on-chain",
+      points: [
+        "7 Odra contracts live on testnet; real x402 settlement, no mock.",
+        "CascadeController — budget-bounded cascades + recursive attribution.",
+        "Autonomous LLM buyer, live dashboard, cascade playground, and a proposed x402-MCP spec.",
+      ],
+    },
+    {
+      tag: "next",
+      when: "Final round · Jul 13–26",
+      title: "From primitive to product",
+      points: [
+        "Hosted CasCet control plane — register a server, get a paid endpoint + dashboard in one step.",
+        "npx cascet published to npm; RevenueSplit withdraw UI on real revenue.",
+        "Take the paid-MCP + cascade spec to the x402 / MCP ecosystem.",
+      ],
+    },
+    {
+      tag: "planned",
+      when: "Q4 2026",
+      title: "Mainnet & monetization",
+      points: [
+        "Mainnet launch; a protocol take-rate on settled volume — the business model.",
+        "Per-second / streaming price schemes for high-frequency agent traffic.",
+        "Stable SDKs (JS / Rust / Python) and a public metrics API.",
+      ],
+    },
+    {
+      tag: "vision",
+      when: "2027 →",
+      title: "The trust layer for the agent economy",
+      points: [
+        "An agent-facing pricing-discovery API and a Bazaar marketplace of paid MCP tools.",
+        "On-chain reputation for tools and agents; cross-chain settlement.",
+        "CasCet as default rails for machine-to-machine commerce.",
+      ],
+    },
+  ];
+  const tagStyle: Record<string, string> = {
+    shipped: "border-success/40 bg-success/10 text-success",
+    next: "border-primary/40 bg-primary/10 text-primary",
+    planned: "border-border bg-secondary text-muted-foreground",
+    vision: "border-flow/40 bg-flow/10 text-flow",
+  };
+  return (
+    <Section id="roadmap" eyebrow="Where this goes" title="A real project with a long-term plan">
+      <div className="relative">
+        <div className="absolute bottom-2 left-[7px] top-2 w-px bg-border sm:left-[9px]" />
+        <div className="space-y-2">
+          {phases.map((p, i) => (
+            <Reveal key={i} delay={(i % 2) * 60}>
+              <div className="group relative grid grid-cols-[auto_1fr] gap-5 rounded-lg py-6 pl-1 pr-4 transition-colors hover:bg-card/40 sm:gap-8">
+                <span
+                  className={cn(
+                    "relative z-10 mt-1.5 h-4 w-4 shrink-0 rounded-full border-2 transition-all sm:h-5 sm:w-5",
+                    p.tag === "shipped"
+                      ? "border-success bg-success shadow-[0_0_16px_-2px_hsl(var(--success)/0.6)]"
+                      : p.tag === "next"
+                        ? "border-primary bg-primary shadow-[0_0_16px_-2px_hsl(var(--primary)/0.6)]"
+                        : "border-border bg-background group-hover:border-primary/50",
+                  )}
+                />
+                <div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className={cn("rounded-md border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide", tagStyle[p.tag])}>
+                      {p.tag}
+                    </span>
+                    <span className="font-mono text-xs text-muted-foreground">{p.when}</span>
+                  </div>
+                  <h3 className="mt-2.5 text-lg font-semibold tracking-tight">{p.title}</h3>
+                  <ul className="mt-2 space-y-1.5">
+                    {p.points.map((pt, j) => (
+                      <li key={j} className="flex gap-2.5 text-sm leading-relaxed text-muted-foreground">
+                        <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-primary/60" />
+                        {pt}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </Reveal>
+          ))}
+        </div>
+      </div>
+    </Section>
+  );
+}
+
 /* ── Final CTA ─────────────────────────────────────────────────────────── */
 function FinalCta() {
   return (
@@ -451,6 +554,24 @@ function FinalCta() {
               </Link>
             </Button>
           </div>
+          <div className="mt-8 flex items-center justify-center gap-2">
+            <span className="mr-1 font-mono text-xs text-muted-foreground">Follow the build</span>
+            {[
+              { href: SOCIALS.x, label: "X", Icon: XIcon },
+              { href: SOCIALS.telegram, label: "Telegram", Icon: TelegramIcon },
+              { href: SOCIALS.discord, label: "Discord", Icon: DiscordIcon },
+            ].map(s => (
+              <Link
+                key={s.label}
+                href={s.href}
+                target="_blank"
+                aria-label={s.label}
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary"
+              >
+                <s.Icon />
+              </Link>
+            ))}
+          </div>
         </Reveal>
       </div>
     </section>
@@ -459,19 +580,64 @@ function FinalCta() {
 
 /* ── Footer ────────────────────────────────────────────────────────────── */
 function Footer() {
+  const socials = [
+    { href: SOCIALS.x, label: "X", Icon: XIcon },
+    { href: SOCIALS.telegram, label: "Telegram", Icon: TelegramIcon },
+    { href: SOCIALS.discord, label: "Discord", Icon: DiscordIcon },
+    { href: SOCIALS.github, label: "GitHub", Icon: Github },
+  ];
   return (
     <footer className="border-t border-border">
-      <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 py-10 sm:flex-row">
-        <Logo subtitle="Payments that cascade" />
-        <div className="flex items-center gap-5 text-sm text-muted-foreground">
-          <Link href="/dashboard" className="hover:text-foreground">Dashboard</Link>
-          <Link href="/playground" className="hover:text-foreground">Playground</Link>
-          <Link href="/explorer" className="hover:text-foreground">Explorer</Link>
-          <Link href={GH} target="_blank" className="hover:text-foreground">GitHub</Link>
+      <div className="mx-auto max-w-6xl px-6 py-12">
+        <div className="flex flex-col gap-8 sm:flex-row sm:items-start sm:justify-between">
+          <div className="max-w-xs">
+            <Logo subtitle="Payments that cascade" />
+            <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
+              The monetization layer for MCP on Casper. Follow the build.
+            </p>
+            <div className="mt-5 flex items-center gap-2">
+              {socials.map(s => (
+                <Link
+                  key={s.label}
+                  href={s.href}
+                  target="_blank"
+                  aria-label={s.label}
+                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary"
+                >
+                  <s.Icon />
+                </Link>
+              ))}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-x-12 gap-y-2 text-sm sm:grid-cols-3">
+            <FooterCol title="Product" links={[["Dashboard", "/dashboard"], ["Playground", "/playground"], ["Explorer", "/explorer"]]} />
+            <FooterCol title="Learn" links={[["How it works", "#how"], ["The primitive", "#cascade"], ["Roadmap", "#roadmap"]]} />
+            <FooterCol title="Build" links={[["GitHub", SOCIALS.github], ["x402 spec", `${GH}/blob/main/docs/x402-mcp-spec.md`]]} />
+          </div>
         </div>
-        <p className="font-mono text-xs text-muted-foreground/70">Casper Agentic Buildathon 2026</p>
+        <div className="mt-10 flex flex-col items-center justify-between gap-3 border-t border-border pt-6 sm:flex-row">
+          <p className="font-mono text-xs text-muted-foreground/70">Casper Agentic Buildathon 2026 · Apache-2.0</p>
+          <p className="font-mono text-xs text-muted-foreground/70">Built on Casper</p>
+        </div>
       </div>
     </footer>
+  );
+}
+
+function FooterCol({ title, links }: { title: string; links: [string, string][] }) {
+  return (
+    <div>
+      <div className="mb-2.5 font-mono text-xs uppercase tracking-wide text-muted-foreground/60">{title}</div>
+      <ul className="space-y-2">
+        {links.map(([label, href]) => (
+          <li key={label}>
+            <Link href={href} target={href.startsWith("http") ? "_blank" : undefined} className="text-muted-foreground transition-colors hover:text-foreground">
+              {label}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

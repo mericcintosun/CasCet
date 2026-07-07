@@ -8,6 +8,10 @@ Casper Agentic Buildathon 2026 · Casper Innovation Track
 
 [Architecture](#architecture) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [Contracts](#on-chain-layer) · [Roadmap](#roadmap)
 
+[Website](#) · [X](https://x.com/cascet_xyz) · [Telegram](https://t.me/cascet) · [Discord](https://discord.gg/cascet) · [GitHub](https://github.com/mericcintosun/CasCet)
+
+<sub>Social handles are the launch-kit defaults (see [docs/launch-kit.md](docs/launch-kit.md)); swap for the final URLs once the accounts are live.</sub>
+
 </div>
 
 ---
@@ -280,11 +284,16 @@ without migrating data.
 
 ---
 
-## Roadmap
+## Roadmap & long-term plan
 
-- **Now (qualification):** working gateway + client + CLI, two flagship paid MCP servers, cascading payments, live dashboard, two Odra contracts deployed to testnet.
-- **Final round:** on-chain receipt anchoring wired into the live gateway; RevenueSplit funded by real x402 revenue with a withdraw UI; a public x402 economy explorer indexing the ReceiptRegistry; `npx cascet` published to npm.
-- **Beyond:** a hosted CasCet control plane (register a server, get a paid endpoint + dashboard in one step); mainnet; per-second/streaming price schemes; an agent-facing pricing-discovery API.
+This is a real project, not a hackathon throwaway — there's a live [roadmap section on the site](#) and a concrete path to a business.
+
+- **Shipped (Qualification · Jul 2026):** 7 Odra contracts live on testnet; real x402 settlement (no mock); the `CascadeController` primitive (budget tree + recursive attribution); an autonomous LLM buyer; a live dashboard, an interactive cascade playground, and a proposed [x402-MCP spec](docs/x402-mcp-spec.md).
+- **Final round (Jul 13–26):** a hosted CasCet control plane — register a server, get a paid endpoint + dashboard in one step; `npx cascet` published to npm; a RevenueSplit withdraw UI on real revenue; take the paid-MCP + cascade spec to the x402 / MCP ecosystem.
+- **Q4 2026 — mainnet & monetization:** mainnet launch; **a protocol take-rate on settled volume** (the business model); per-second / streaming price schemes for high-frequency agent traffic; stable JS/Rust/Python SDKs and a public metrics API.
+- **2027 — the agent-economy layer:** an agent-facing pricing-discovery API and a Bazaar marketplace of paid MCP tools; on-chain reputation for tools and agents; cross-chain settlement — CasCet as default rails for machine-to-machine commerce.
+
+**Socials & launch:** X / Telegram / Discord / GitHub linked above; copy-paste launch content (bio, pinned thread, channel descriptions) is in [docs/launch-kit.md](docs/launch-kit.md).
 
 ## Tech
 
