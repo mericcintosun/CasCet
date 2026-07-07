@@ -8,9 +8,11 @@
     "gen-keys": "tsx src/gen-keys.ts",
     "demo": "tsx src/run-demo.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "demo-real": "tsx src/run-real.ts"
+    "demo-real": "tsx src/run-real.ts",
+    "agent": "tsx src/run-agent-demo.ts"
   },
   "dependencies": {
+    "@cascet/agent": "workspace:*",
     "@cascet/client": "workspace:*",
     "@cascet/core": "workspace:*",
     "@cascet/gateway": "workspace:*",

@@ -13,6 +13,14 @@ export interface ToolCallOutcome {
   paymentId?: string;
 }
 
+/** A tool as advertised by an MCP server (with CasCet's price annotation). */
+export interface McpToolInfo {
+  name: string;
+  description?: string;
+  inputSchema?: { type: "object"; properties?: Record<string, unknown>; required?: string[] };
+  _meta?: { cascet?: { priceUsd?: string; network?: string } };
+}
+
 /**
  * Minimal MCP-over-HTTP client used for programmatic (agent-to-agent) tool
  * calls. Pair it with a paying fetch from `createPayingFetch` and every 402 is
@@ -51,9 +59,9 @@ export class PaidMcpHttpClient {
     });
   }
 
-  async listTools(): Promise<Array<{ name: string; description?: string }>> {
+  async listTools(): Promise<McpToolInfo[]> {
     const { result } = await this.request("tools/list");
-    return (result as { tools: Array<{ name: string; description?: string }> }).tools;
+    return (result as { tools: McpToolInfo[] }).tools;
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<ToolCallOutcome> {
