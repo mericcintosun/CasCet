@@ -1,0 +1,46 @@
+{
+  "name": "everything-mcp-paid",
+  "upstream": {
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-everything"
+    ]
+  },
+  "network": "casper:casper-test",
+  "payTo": "01dd710d5083920b20c706a92d742c7bf9162d09c96fa373bd0a67b0bf51d3f183",
+  "asset": {
+    "packageHash": "hash-b3e9908b6cdbf5c565b686938994e3ac8e6749f41bcbe83615604321a0965d49",
+    "name": "Wrapped CSPR (CasCet demo)",
+    "symbol": "WCSPR",
+    "decimals": 9,
+    "version": "1",
+    "tokensPerUsd": 50
+  },
+  "facilitator": {
+    "url": "https://x402-facilitator.cspr.cloud",
+    "apiKey": "<YOUR CSPR.cloud ACCESS TOKEN>"
+  },
+  "pricing": {
+    "tools": {
+      "echo": {
+        "price": "$0.001",
+        "description": "Echo a message back"
+      },
+      "get-sum": {
+        "price": "$0.002",
+        "description": "Add two numbers"
+      },
+      "get-env": {
+        "price": "$0.01",
+        "description": "Return server environment"
+      },
+      "simulate-research-query": {
+        "price": "$0.05",
+        "description": "Run a simulated research query"
+      }
+    }
+  },
+  "port": 4410
+}
