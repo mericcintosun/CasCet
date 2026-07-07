@@ -3,14 +3,11 @@ import Link from "next/link";
 import {
   ArrowRight,
   ArrowUpRight,
-  Boxes,
   Coins,
   GitBranch,
   Github,
-  LayoutDashboard,
   Lock,
   Network,
-  Plug,
   Receipt,
   ShieldCheck,
   Sparkles,
@@ -21,6 +18,8 @@ import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Logo, LogoMark } from "@/components/logo";
 import { MarketingHeader } from "@/components/landing/marketing-header";
+import { CinematicIntro } from "@/components/landing/cinematic-intro";
+import { Steps } from "@/components/landing/steps";
 import { Reveal } from "@/components/landing/reveal";
 import { CascadeFlow } from "@/components/landing/cascade-flow";
 
@@ -47,8 +46,8 @@ export default function LandingPage() {
   return (
     <div className="relative min-h-screen">
       <MarketingHeader />
+      <CinematicIntro />
       <Hero />
-      <Marquee />
       <HowItWorks />
       <CascadePrimitive />
       <Features />
@@ -131,61 +130,13 @@ function Hero() {
   );
 }
 
-/* ── Trust marquee ─────────────────────────────────────────────────────── */
-function Marquee() {
-  const items = [
-    "x402 · HTTP 402",
-    "Casper 2.0 · Zug finality",
-    "CEP-18 · EIP-3009",
-    "Model Context Protocol",
-    "casper-eip-712",
-    "Odra contracts",
-    "CSPR.cloud facilitator",
-    "cascading receipts",
-  ];
-  const row = [...items, ...items];
-  return (
-    <section className="border-y border-border bg-card/40 py-4">
-      <div className="relative flex overflow-hidden [mask-image:linear-gradient(90deg,transparent,#000_12%,#000_88%,transparent)]">
-        <div className="flex shrink-0 animate-marquee items-center gap-8 pr-8">
-          {row.map((t, i) => (
-            <span key={i} className="flex items-center gap-8 whitespace-nowrap font-mono text-sm text-muted-foreground">
-              {t}
-              <span className="text-primary/50">/</span>
-            </span>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/* ── How it works ──────────────────────────────────────────────────────── */
+/* ── How it works (interactive stepper) ────────────────────────────────── */
 function HowItWorks() {
-  const steps = [
-    { icon: Boxes, t: "Wrap", d: "Put a paywall in front of any MCP server. Price each tool; agents pay per call in CEP-18 over x402. Your tool code is unchanged." },
-    { icon: Plug, t: "Connect", d: "A stdio bridge lets any MCP host — Claude, Cursor — call paid servers, answering 402 challenges automatically under a spending budget." },
-    { icon: GitBranch, t: "Cascade", d: "When a paid tool buys from other paid tools, CasCet links every hop to its parent and enforces budgets and revenue splits on-chain." },
-    { icon: LayoutDashboard, t: "See it", d: "A live dashboard streams revenue, receipts with cspr.live settlement links, and the cascading payment graph in real time." },
-  ];
   return (
-    <Section id="how" eyebrow="How it works" title="Four moves from free tool to paid, composable service">
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {steps.map((s, i) => (
-          <Reveal key={s.t} delay={i * 70}>
-            <div className="card-lift h-full rounded-xl border border-border bg-card p-6">
-              <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
-                <s.icon className="h-5 w-5" />
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-xs text-muted-foreground">0{i + 1}</span>
-                <h3 className="text-base font-semibold">{s.t}</h3>
-              </div>
-              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{s.d}</p>
-            </div>
-          </Reveal>
-        ))}
-      </div>
+    <Section id="how" eyebrow="How it works" title="From free tool to paid, composable service">
+      <Reveal>
+        <Steps />
+      </Reveal>
     </Section>
   );
 }
@@ -247,29 +198,32 @@ function CascadePrimitive() {
   );
 }
 
-/* ── Bento features ────────────────────────────────────────────────────── */
+/* ── Features (editorial hover list, no boxes) ─────────────────────────── */
 function Features() {
+  const feats = [
+    { icon: ShieldCheck, t: "Real x402 settlement, no mock", d: <>Agents pay from an on-chain balance of a real <span className="font-mono text-foreground">transfer_with_authorization</span> CEP-18 token; the hosted CSPR.cloud facilitator verifies and settles it; receipts anchor on-chain. Every hop is a real Casper transaction.</> },
+    { icon: Receipt, t: "Receipts, on-chain", d: <>Every settled call is anchored with its cascade parent id — the whole payment graph reconstructs from chain data alone, no central coordinator.</> },
+    { icon: Lock, t: "Upgradable contracts", d: <>The ReceiptRegistry was upgraded v1.1 → v1.2 in-place on Casper — all anchored state survived the upgrade.</> },
+    { icon: Coins, t: "Revenue splits", d: <>Point a server&apos;s payTo at the RevenueSplit contract and earnings split between co-authors on-chain, pull-based.</> },
+    { icon: GitBranch, t: "Wrap any MCP server", d: <>CasCet monetizes the unmodified official <span className="font-mono text-foreground">server-everything</span> — not just first-party tools.</> },
+  ];
   return (
     <Section eyebrow="Built end-to-end" title="Not a demo — a working machine-money stack">
-      <div className="grid gap-4 md:grid-cols-3">
-        <Bento className="md:col-span-2" icon={ShieldCheck} title="Real x402 settlement, no mock">
-          Agents pay from an on-chain balance of a real <span className="font-mono text-foreground">transfer_with_authorization</span>{" "}
-          CEP-18 token; the hosted CSPR.cloud facilitator verifies and settles it; receipts anchor on-chain. Every hop is a real
-          Casper transaction you can open on cspr.live.
-        </Bento>
-        <Bento icon={Receipt} title="Receipts, on-chain">
-          Every settled call is anchored with its cascade parent id — the whole payment graph reconstructs from chain data alone.
-        </Bento>
-        <Bento icon={Lock} title="Upgradable contracts">
-          The ReceiptRegistry was upgraded v1.1 → v1.2 in-place on Casper — all anchored state survived the upgrade.
-        </Bento>
-        <Bento icon={Coins} title="Revenue splits">
-          Point a server&apos;s payTo at the RevenueSplit contract and earnings split between co-authors on-chain, pull-based.
-        </Bento>
-        <Bento icon={GitBranch} title="Wrap any MCP server">
-          CasCet monetizes the unmodified official <span className="font-mono text-foreground">server-everything</span> — not just
-          first-party tools.
-        </Bento>
+      <div className="border-t border-border">
+        {feats.map((f, i) => (
+          <Reveal key={i} delay={(i % 2) * 60}>
+            <div className="group relative grid grid-cols-[auto_1fr] items-start gap-5 border-b border-border py-7 pl-5 pr-4 transition-colors hover:bg-card/40 sm:grid-cols-[220px_1fr] sm:gap-10 sm:pl-6">
+              <span className="absolute left-0 top-0 h-full w-[3px] origin-top scale-y-0 bg-primary transition-transform duration-300 group-hover:scale-y-100" />
+              <div className="flex items-center gap-3">
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20 transition-transform duration-300 group-hover:-translate-y-0.5">
+                  <f.icon className="h-[18px] w-[18px]" />
+                </span>
+                <h3 className="text-base font-semibold leading-tight">{f.t}</h3>
+              </div>
+              <p className="text-pretty text-sm leading-relaxed text-muted-foreground">{f.d}</p>
+            </div>
+          </Reveal>
+        ))}
       </div>
     </Section>
   );
@@ -354,10 +308,8 @@ function AgentSection() {
             </p>
             <ol className="mt-6 space-y-3">
               {steps.map((s, i) => (
-                <li key={i} className="flex gap-3 text-sm">
-                  <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-primary/15 font-mono text-[11px] text-primary">
-                    {i + 1}
-                  </span>
+                <li key={i} className="flex items-start gap-3 text-sm">
+                  <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                   <span className="text-muted-foreground">{s}</span>
                 </li>
               ))}
@@ -452,9 +404,13 @@ function Faq() {
     },
   ];
   return (
-    <Section eyebrow="FAQ" title="Questions, answered">
+    <section className="mx-auto max-w-3xl px-6 py-24 text-center">
+      <Reveal className="mb-10">
+        <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary">FAQ</p>
+        <h2 className="mt-3 text-balance text-3xl font-semibold tracking-tight sm:text-4xl">Questions, answered</h2>
+      </Reveal>
       <Reveal>
-        <Accordion type="single" collapsible className="max-w-3xl">
+        <Accordion type="single" collapsible className="text-left">
           {items.map((it, i) => (
             <AccordionItem key={i} value={`q${i}`}>
               <AccordionTrigger>{it.q}</AccordionTrigger>
@@ -463,7 +419,7 @@ function Faq() {
           ))}
         </Accordion>
       </Reveal>
-    </Section>
+    </section>
   );
 }
 
@@ -546,16 +502,3 @@ function Feat({ icon: Icon, title, children }: { icon: React.ElementType; title:
   );
 }
 
-function Bento({ icon: Icon, title, children, className }: { icon: React.ElementType; title: string; children: React.ReactNode; className?: string }) {
-  return (
-    <Reveal className={className}>
-      <div className="card-lift h-full rounded-xl border border-border bg-card p-6">
-        <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
-          <Icon className="h-5 w-5" />
-        </div>
-        <h3 className="text-base font-semibold">{title}</h3>
-        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{children}</p>
-      </div>
-    </Reveal>
-  );
-}
