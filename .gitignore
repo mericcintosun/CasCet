@@ -13,6 +13,7 @@ target/
 .env
 .env.*
 !.env.example
+!.env.sample
 *.pem
 keys/
 
