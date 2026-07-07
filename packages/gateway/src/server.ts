@@ -199,6 +199,9 @@ export async function startGateway(cfg: CascetConfig): Promise<RunningGateway> {
 
     if (processed.type === "payment-error") {
       // 402 challenge (or verification failure): forward exactly what x402 built.
+      if (context.paymentHeader) {
+        console.error(`    [x402] verify failed for ${toolName}:`, JSON.stringify(processed.response.body));
+      }
       res.status(processed.response.status).set(processed.response.headers);
       res.json(processed.response.body ?? rpcError(body.id, -32002, "payment required"));
       return;
@@ -243,6 +246,7 @@ export async function startGateway(cfg: CascetConfig): Promise<RunningGateway> {
     );
 
     if (!settled.success) {
+      console.error(`    [x402] settlement failed for ${toolName}: ${settled.errorReason} — ${settled.errorMessage ?? ""}`);
       res
         .status(settled.response.status)
         .set(settled.response.headers)

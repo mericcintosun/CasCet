@@ -27,7 +27,10 @@ if (!CSPR_CLOUD_TOKEN) {
 
 // Real x402 payment token deployed by CasCet (transfer_with_authorization).
 const X402_TOKEN = "hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
-const pub = (name: string) => readFileSync(resolve(KEYS, `${name}.pub`), "utf8").trim();
+// payTo MUST be a serialized account-hash Key: "00" (account tag) + 32-byte
+// account hash — NOT a public key. The x402 authorization signs `to` as this
+// 33-byte value and the facilitator settles the transfer to that account hash.
+const SELLER_DATA_ACCOUNT_HASH = "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36";
 
 const dataConfig: CascetConfig = cascetConfigSchema.parse({
   name: "casper-defi-data",
@@ -37,7 +40,7 @@ const dataConfig: CascetConfig = cascetConfigSchema.parse({
     args: [resolve(ROOT, "servers/casper-defi-data/dist/index.js")],
   },
   network: "casper:casper-test",
-  payTo: pub("seller-data"),
+  payTo: SELLER_DATA_ACCOUNT_HASH,
   asset: { packageHash: X402_TOKEN, name: "CasCet X402 Token", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 50 },
   facilitator: { url: "https://x402-facilitator.cspr.cloud", apiKey: CSPR_CLOUD_TOKEN },
   anchoring: {
