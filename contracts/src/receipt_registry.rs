@@ -58,7 +58,7 @@ pub enum Error {
 /// Semantic version of the registry logic. Bumped on each upgrade so anyone can
 /// see which revision is live; the deployed contract is upgradable in place
 /// (Casper native upgrades) so this can change without losing anchored state.
-pub const REGISTRY_VERSION: &str = "1.1.0";
+pub const REGISTRY_VERSION: &str = "1.2.0";
 
 #[odra::module(events = [ReceiptAnchored], errors = Error)]
 pub struct ReceiptRegistry {
@@ -210,7 +210,7 @@ mod tests {
         assert_eq!(reg.count(), 1);
         assert!(reg.is_anchored("pay-root".into()));
         assert_eq!(reg.total_volume(), U256::from(5_000_000_000u64));
-        assert_eq!(reg.version(), "1.1.0");
+        assert_eq!(reg.version(), "1.2.0");
 
         let r = reg.get("pay-root".into());
         assert_eq!(r.parent_id, "");
