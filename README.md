@@ -68,9 +68,22 @@ This is not a portable pattern dressed in Casper branding — it leans on things
 | `packages/cli` | `cascet` CLI — `init` / `wrap` / `connect` |
 | `servers/casper-defi-data` | Flagship paid MCP: CSPR market data, RWA prices, DeFi yields (live + labeled fallback) |
 | `servers/portfolio-analyst` | Paid MCP that **buys** from the data server — the cascade in action |
-| `apps/dashboard` | Next.js + shadcn/ui live dashboard (dark/light/system) |
-| `contracts` | Odra 2.8.2: `ReceiptRegistry` + `RevenueSplit`, with tests |
+| `apps/dashboard` | Next.js + shadcn/ui live dashboard + x402 economy explorer (dark/light/system) |
+| `contracts` | Odra 2.8.2: `ReceiptRegistry` + `RevenueSplit` + `DemoToken` (CEP-18), with tests |
+| `examples/wrap-third-party` | Wrapping the official `server-everything` MCP server as paid |
 | `tools/e2e` | Local end-to-end demo + mock facilitator (no chain needed) |
+
+### Also built
+
+- **x402 Bazaar discovery** — every gateway serves a Bazaar-compatible catalog at
+  `/.well-known/x402.json`, so any x402 agent can *discover* CasCet-monetized MCP
+  tools like any paid API.
+- **Wrap any MCP server** — `examples/wrap-third-party` monetizes the unmodified
+  official `@modelcontextprotocol/server-everything`; CasCet isn't limited to
+  first-party servers.
+- **x402 economy explorer** — `/explorer` aggregates the on-chain-anchored
+  receipts into a revenue leaderboard, top tools, cascade stats and unique
+  paying agents, linking the live contracts to cspr.live.
 
 ---
 
