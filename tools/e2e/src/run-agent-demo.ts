@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { cascetConfigSchema, type CascetConfig } from "@cascet/core";
 import { startGateway } from "@cascet/gateway";
 import { createPayingFetch } from "@cascet/client";
-import { runAgent, type AgentEvent } from "@cascet/agent";
+import { runAgent, createMockBrain, type AgentEvent } from "@cascet/agent";
 import { startMockFacilitator } from "./mock-facilitator.js";
 
 /**
@@ -26,15 +26,33 @@ const KEYS = resolve(import.meta.dirname, "../keys");
 const FACILITATOR_PORT = 4500;
 const GATEWAY_MCP = "http://localhost:4402/mcp";
 
-if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
-  console.error(
-    "❌ ANTHROPIC_API_KEY (or an `ant auth login` profile) required — the agent reasons with Claude.",
-  );
-  process.exit(1);
-}
+// Reasoning backend: live Claude (needs API credits) vs a labeled offline simulation.
+// Default is the simulation so the demo runs for free; the payments stay real either way.
+const LIVE = process.env.CASCET_AGENT_LIVE === "1";
 
+// Settlement backend: mock facilitator (offline) vs real CSPR.cloud on-chain settlement.
 const CSPR_CLOUD_TOKEN = process.env.CSPR_CLOUD_TOKEN;
 const REAL = Boolean(CSPR_CLOUD_TOKEN);
+
+function banner(): void {
+  // Rule-only frame (no right border) so emoji/unicode widths can't misalign it.
+  const rule = "═".repeat(74);
+  const rows = [
+    " ⚠  SIMULATED AGENT REASONING — no Anthropic API key purchased",
+    "",
+    " For this hackathon build no paid API key was bought, so the LLM's tool",
+    " decisions and final wording are SCRIPTED offline.",
+    "",
+    " Everything else is REAL and unchanged: tool discovery, x402 pricing, per-",
+    " call payments, budget enforcement, cascade receipts, and settlement — and",
+    " the recommendation is grounded in the real data the agent paid for.",
+    "",
+    " Run it live with real Claude:  CASCET_AGENT_LIVE=1 <same command>",
+  ];
+  console.log(`\n${rule}`);
+  for (const r of rows) console.log(r);
+  console.log(`${rule}\n`);
+}
 
 const pub = (name: string) => readFileSync(resolve(KEYS, `${name}.pub`), "utf8").trim();
 
@@ -100,7 +118,9 @@ const goal =
   "liquid staking (stCSPR) or into tokenized real-world assets like gold or US treasuries? " +
   "Back your recommendation with current market data, on-chain yields, and RWA prices.";
 
-console.log(`\n──────── autonomous agent (${REAL ? "REAL settlement" : "mock facilitator"}) ────────`);
+if (!LIVE) banner();
+
+console.log(`──────── autonomous agent · reasoning: ${LIVE ? "LIVE Claude (Opus 4.8)" : "SIMULATED"} · settlement: ${REAL ? "REAL on-chain" : "mock facilitator"} ────────`);
 console.log(`goal: ${goal}\n`);
 
 const onEvent = (e: AgentEvent) => {
@@ -122,28 +142,47 @@ const onEvent = (e: AgentEvent) => {
   }
 };
 
-const result = await runAgent({ goal, gatewayMcpUrl: GATEWAY_MCP, paying, onEvent });
+const result = await runAgent({
+  goal,
+  gatewayMcpUrl: GATEWAY_MCP,
+  paying,
+  onEvent,
+  brain: LIVE ? undefined : createMockBrain(),
+});
 
-console.log("──────── recommendation ────────");
-console.log(result.answer);
-console.log("\n──────── settlement summary ────────");
-console.log(`paid tool calls: ${result.toolCalls.filter(c => c.ok).length} (${result.toolCalls.map(c => c.tool).join(", ")})`);
+const paidOk = result.toolCalls.filter(c => c.ok);
+const runPaymentIds = new Set(paidOk.map(c => c.paymentId).filter(Boolean));
+
+console.log("\n──────── settlement summary (this run) ────────");
+console.log(`reasoning: ${result.brain.live ? "LIVE Claude" : "SIMULATED"} (${result.brain.name})`);
+console.log(`paid tool calls: ${paidOk.length} (${paidOk.map(c => c.tool).join(", ")})`);
 console.log(`total authorized: ${result.spentRaw} raw token units (budget ${maxSessionRaw})`);
 
+// The gateway's receipt store is cumulative across runs — filter to THIS run's payments.
 const receipts = ((await (await fetch("http://localhost:4402/receipts")).json()) as {
   receipts: Array<{ id: string; tool: string; status: string; txHash?: string }>;
 }).receipts;
-const settled = receipts.filter(r => r.status === "settled");
-console.log(`gateway receipts settled: ${settled.length}`);
-for (const r of settled) {
-  if (r.txHash) console.log(`  ${r.tool} → https://testnet.cspr.live/transaction/${r.txHash}`);
+const settled = receipts.filter(r => r.status === "settled" && runPaymentIds.has(r.id));
+console.log(`settled this run: ${settled.length}${REAL ? " (real on-chain)" : " (mock facilitator — no on-chain tx)"}`);
+// Only real settlement produces resolvable cspr.live transactions; mock tx hashes are synthetic.
+if (REAL) {
+  for (const r of settled) {
+    if (r.txHash) console.log(`  ${r.tool} → https://testnet.cspr.live/transaction/${r.txHash}`);
+  }
 }
 
-if (result.toolCalls.filter(c => c.ok).length === 0) {
-  throw new Error("AGENT FAIL: Claude bought no tools — it should have purchased data to answer the goal.");
+if (paidOk.length === 0) {
+  throw new Error("AGENT FAIL: the agent bought no tools — it should have purchased data to answer the goal.");
 }
-if (settled.length === 0) throw new Error("AGENT FAIL: no settled receipts on the gateway.");
-console.log(`\n✅ AGENT PASS — Claude autonomously bought ${settled.length} paid DeFi/RWA tool call(s) and synthesized a recommendation.\n`);
+console.log(
+  `\n✅ AGENT PASS — the agent autonomously bought ${paidOk.length} paid DeFi/RWA tool call(s) and synthesized a recommendation.`,
+);
+if (!result.brain.live) {
+  console.log(
+    "   (reasoning SIMULATED — no API key purchased; payments/settlement above are real. CASCET_AGENT_LIVE=1 for real Claude.)",
+  );
+}
+console.log("");
 
 await new Promise(r => setTimeout(r, REAL ? 12_000 : 500));
 await gateway.close();

@@ -4,7 +4,7 @@ import { PaidMcpHttpClient, type McpToolInfo, type PayingFetch } from "@cascet/c
 /** Model the agent reasons with. Opus 4.8 with adaptive thinking (see claude-api skill). */
 const DEFAULT_MODEL = "claude-opus-4-8";
 
-const SYSTEM_PROMPT = `You are an autonomous DeFi/RWA portfolio agent operating on the Casper Network.
+export const SYSTEM_PROMPT = `You are an autonomous DeFi/RWA portfolio agent operating on the Casper Network.
 
 You reach the outside world through paid MCP tools served over x402: every tool call costs
 real money and is settled on-chain in CEP-18 tokens. You hold a fixed budget for this task — when
@@ -17,6 +17,24 @@ Rules:
   bought instead of retrying.
 - Ground every claim in data you actually purchased. Cite the tool and the numbers it returned.
 - End with a concrete, actionable recommendation for the user's DeFi/RWA goal.`;
+
+/** A reasoning backend: real Claude, or a labeled offline simulation. */
+export interface Brain {
+  /** Human-readable name, surfaced in results (e.g. "claude-opus-4-8" or "simulated"). */
+  readonly name: string;
+  /** Whether this brain calls a real LLM (false ⇒ scripted/offline). */
+  readonly live: boolean;
+  createMessage(input: {
+    system: string;
+    tools: Anthropic.Tool[];
+    messages: Anthropic.MessageParam[];
+  }): Promise<BrainResponse>;
+}
+
+export interface BrainResponse {
+  content: Anthropic.ContentBlockParam[];
+  stop_reason: "tool_use" | "end_turn" | (string & {});
+}
 
 export interface AgentToolCall {
   tool: string;
@@ -33,6 +51,8 @@ export interface AgentResult {
   toolCalls: AgentToolCall[];
   /** Total raw CEP-18 units the agent authorized this run. */
   spentRaw: string;
+  /** Which reasoning backend produced this run, and whether it was a real LLM. */
+  brain: { name: string; live: boolean };
 }
 
 export type AgentEvent =
@@ -50,7 +70,9 @@ export interface RunAgentOptions {
   gatewayMcpUrl: string;
   /** A paying fetch (from createPayingFetch) that answers x402 challenges under a budget. */
   paying: PayingFetch;
-  /** Override the reasoning model (default claude-opus-4-8). */
+  /** Reasoning backend. Defaults to real Claude (claude-opus-4-8). */
+  brain?: Brain;
+  /** Override the reasoning model for the default (real) brain. */
   model?: string;
   /** Cap on agent<->tool round trips. Defaults to 8. */
   maxTurns?: number;
@@ -58,20 +80,42 @@ export interface RunAgentOptions {
   onEvent?: (event: AgentEvent) => void;
 }
 
+/** The default brain: real Claude via the Anthropic SDK (Opus 4.8, adaptive thinking). */
+export function realBrain(model = DEFAULT_MODEL): Brain {
+  const anthropic = new Anthropic();
+  return {
+    name: model,
+    live: true,
+    async createMessage({ system, tools, messages }) {
+      const msg = await anthropic.messages.create({
+        model,
+        max_tokens: 16000,
+        thinking: { type: "adaptive" },
+        system,
+        tools,
+        messages,
+      });
+      return {
+        content: msg.content as unknown as Anthropic.ContentBlockParam[],
+        stop_reason: msg.stop_reason ?? "end_turn",
+      };
+    },
+  };
+}
+
 /**
- * Run an autonomous Claude agent against a paid MCP gateway.
+ * Run an autonomous agent against a paid MCP gateway.
  *
- * Claude discovers the paid tools on offer (with their x402 prices), decides which to buy to
+ * The agent discovers the paid tools on offer (with their x402 prices), decides which to buy to
  * satisfy a DeFi/RWA goal, pays per call out of a fixed on-chain budget, and synthesizes a
- * recommendation. This is the LLM-in-the-loop half of CasCet: the buyer that makes the paid-MCP
- * economy autonomous.
+ * recommendation. The reasoning backend is pluggable: `realBrain()` uses Claude; an offline
+ * `Brain` can drive the exact same loop (payments, budget, cascade stay real) for chain-free demos.
  */
 export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
   const { goal, gatewayMcpUrl, paying, onEvent } = opts;
-  const model = opts.model ?? DEFAULT_MODEL;
+  const brain = opts.brain ?? realBrain(opts.model);
   const maxTurns = opts.maxTurns ?? 8;
 
-  const anthropic = new Anthropic();
   const mcp = new PaidMcpHttpClient(gatewayMcpUrl, paying.fetch);
   await mcp.initialize();
 
@@ -88,14 +132,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
   const toolCalls: AgentToolCall[] = [];
 
   for (let turn = 0; turn < maxTurns; turn++) {
-    const response = await anthropic.messages.create({
-      model,
-      max_tokens: 16000,
-      thinking: { type: "adaptive" },
-      system: SYSTEM_PROMPT,
-      tools,
-      messages,
-    });
+    const response = await brain.createMessage({ system: SYSTEM_PROMPT, tools, messages });
 
     for (const block of response.content) {
       if (block.type === "text") onEvent?.({ type: "assistant_text", text: block.text });
@@ -107,17 +144,22 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
 
     if (response.stop_reason !== "tool_use") {
       const answer = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === "text")
+        .filter((b): b is Anthropic.TextBlockParam => b.type === "text")
         .map(b => b.text)
         .join("\n")
         .trim();
-      const result: AgentResult = { answer, toolCalls, spentRaw: paying.spentRaw() };
+      const result: AgentResult = {
+        answer,
+        toolCalls,
+        spentRaw: paying.spentRaw(),
+        brain: { name: brain.name, live: brain.live },
+      };
       onEvent?.({ type: "final", result });
       return result;
     }
 
     const toolUses = response.content.filter(
-      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+      (b): b is Anthropic.ToolUseBlockParam => b.type === "tool_use",
     );
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
@@ -133,7 +175,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
         onEvent?.({ type: "tool_result", tool: use.name, ok: true, paymentId });
         toolResults.push({ type: "tool_result", tool_use_id: use.id, content: text });
       } catch (err) {
-        // Over-budget rejections and upstream errors land here — tell Claude so it can adapt.
+        // Over-budget rejections and upstream errors land here — tell the brain so it can adapt.
         const message = err instanceof Error ? err.message : String(err);
         toolCalls.push({ tool: use.name, priceUsd, ok: false });
         onEvent?.({ type: "tool_result", tool: use.name, ok: false });
@@ -149,11 +191,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
     messages.push({ role: "user", content: toolResults });
   }
 
-  // Ran out of turns without a natural end — return what we have.
   const result: AgentResult = {
     answer: "(agent stopped after reaching the maximum number of tool-buying turns)",
     toolCalls,
     spentRaw: paying.spentRaw(),
+    brain: { name: brain.name, live: brain.live },
   };
   onEvent?.({ type: "final", result });
   return result;
