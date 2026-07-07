@@ -1,10 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { Activity, Boxes } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ModeToggle } from "@/components/mode-toggle";
+import { SiteHeader } from "@/components/site-header";
 import { StatTiles } from "@/components/stat-tiles";
 import { PaymentGraph } from "@/components/payment-graph";
 import { ReceiptsTable } from "@/components/receipts-table";
@@ -27,26 +26,7 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen">
-      <header className="glass sticky top-0 z-10 border-b">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <Boxes className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="font-semibold leading-tight">CasCet</div>
-              <div className="text-[11px] leading-tight text-muted-foreground">Paid MCP · Casper Testnet</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <Badge variant={connected ? "success" : "secondary"} className="gap-1.5">
-              <Activity className="h-3 w-3" />
-              {connected ? "live" : "connecting…"}
-            </Badge>
-            <ModeToggle />
-          </div>
-        </div>
-      </header>
+      <SiteHeader connected={connected} />
 
       <main className="mx-auto max-w-6xl space-y-6 px-6 py-8">
         <div>
