@@ -6,3 +6,6 @@ fqn = "revenue_split::RevenueSplit"
 
 [[contracts]]
 fqn = "demo_token::DemoToken"
+
+[[contracts]]
+fqn = "payment_channel::PaymentChannel"

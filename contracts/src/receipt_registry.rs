@@ -55,6 +55,11 @@ pub enum Error {
     NotFound = 3,
 }
 
+/// Semantic version of the registry logic. Bumped on each upgrade so anyone can
+/// see which revision is live; the deployed contract is upgradable in place
+/// (Casper native upgrades) so this can change without losing anchored state.
+pub const REGISTRY_VERSION: &str = "1.1.0";
+
 #[odra::module(events = [ReceiptAnchored], errors = Error)]
 pub struct ReceiptRegistry {
     owner: Var<Address>,
@@ -62,6 +67,9 @@ pub struct ReceiptRegistry {
     receipts: Mapping<String, Receipt>,
     exists: Mapping<String, bool>,
     count: Var<u64>,
+    /// Lifetime sum of all anchored amounts (added in v1.1.0 — safe because
+    /// upgrades preserve existing storage and new Vars default to zero).
+    total_volume: Var<U256>,
 }
 
 #[odra::module]
@@ -118,6 +126,7 @@ impl ReceiptRegistry {
         self.receipts.set(&payment_id, receipt);
         self.exists.set(&payment_id, true);
         self.count.set(self.count.get_or_default() + 1);
+        self.total_volume.set(self.total_volume.get_or_default() + amount);
         self.env().emit_event(ReceiptAnchored {
             payment_id,
             parent_id,
@@ -129,6 +138,16 @@ impl ReceiptRegistry {
     /// Total number of anchored receipts.
     pub fn count(&self) -> u64 {
         self.count.get_or_default()
+    }
+
+    /// Lifetime sum of all anchored payment amounts (raw CEP-18 units).
+    pub fn total_volume(&self) -> U256 {
+        self.total_volume.get_or_default()
+    }
+
+    /// Semantic version of the deployed registry logic.
+    pub fn version(&self) -> String {
+        REGISTRY_VERSION.to_string()
     }
 
     /// Whether a payment id has been anchored.
@@ -190,6 +209,8 @@ mod tests {
         );
         assert_eq!(reg.count(), 1);
         assert!(reg.is_anchored("pay-root".into()));
+        assert_eq!(reg.total_volume(), U256::from(5_000_000_000u64));
+        assert_eq!(reg.version(), "1.1.0");
 
         let r = reg.get("pay-root".into());
         assert_eq!(r.parent_id, "");
