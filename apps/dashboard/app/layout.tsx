@@ -4,7 +4,7 @@ import { GeistMono } from "geist/font/mono";
 import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
-const SITE = "https://cascet.dev";
+const SITE = "https://cascet.vercel.app";
 const TITLE = "CasCet · Payments that cascade";
 const DESCRIPTION =
   "The monetization layer for MCP on Casper. Turn any MCP server into a paid service with per-tool x402 micropayments, plus composable, budget-bounded cascading payments settled on-chain.";

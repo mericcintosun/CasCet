@@ -8,7 +8,7 @@ Casper Agentic Buildathon 2026 · Casper Innovation Track
 
 [Architecture](#architecture) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [Contracts](#on-chain-layer) · [Roadmap](#roadmap)
 
-[Website](#) · [X](https://x.com/cascet_xyz) · [Telegram](https://t.me/cascet) · [Discord](https://discord.gg/cascet) · [GitHub](https://github.com/mericcintosun/CasCet)
+[**Live site**](https://cascet.vercel.app) · [X](https://x.com/cascet_xyz) · [Telegram](https://t.me/cascet) · [Discord](https://discord.gg/cascet) · [GitHub](https://github.com/mericcintosun/CasCet)
 
 <sub>Social handles are the launch-kit defaults (see [docs/launch-kit.md](docs/launch-kit.md)); swap for the final URLs once the accounts are live.</sub>
 
