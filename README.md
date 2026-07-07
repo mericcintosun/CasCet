@@ -131,6 +131,14 @@ npx cascet connect http://localhost:4402/mcp
 
 **The x402 flow, per tool call.** MCP speaks JSON-RPC over one HTTP endpoint, so the gateway maps each priced tool to a synthetic x402 route. On `tools/call`, the gateway returns `402 Payment Required` with the price; the agent's wallet signs a CEP-18 `transfer_with_authorization` (EIP-712) and retries; the gateway runs the tool, and **only settles payment if the tool succeeds** (a failed call is never charged). Settlement uses the hosted Casper facilitator — CasCet builds *on* the official rails, it does not reimplement verification.
 
+> **Real settlement, verified.** `pnpm --filter @cascet/e2e demo-real` (with a
+> CSPR.cloud token) runs the flow with **no mock**: the agent pays from its
+> on-chain balance of a real `transfer_with_authorization` CEP-18 token, the
+> hosted CSPR.cloud facilitator verifies and settles it, and the receipt is
+> anchored on-chain — e.g. settlement tx
+> [`9bc90044…`](https://testnet.cspr.live/transaction/9bc90044ac4053be6bd87fa1a09cec80ea24d509decfe747b001fc1bfc561fc2).
+> The bundled mock facilitator (`tools/e2e`) exists only for chain-free local dev.
+
 **Cascading payments.** When the gateway settles a call it mints a `paymentId` and passes it to the upstream tool via `_meta`. If that tool buys from other paid tools, its paying client forwards the id as `X-CASCET-PARENT-ID`, so each downstream receipt records its parent. The full chain reconstructs from receipts alone — no central coordinator — and renders as a payment graph.
 
 **Budgets.** The buyer client enforces per-call and per-session spend caps and aborts a payment *before signing* if it would breach them — an agent can't be drained past its allowance.
