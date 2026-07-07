@@ -29,7 +29,7 @@ impl DeployScript for CascetDeployScript {
         container: &mut DeployedContractsContainer,
     ) -> Result<(), odra_cli::deploy::Error> {
         // The deployer becomes the registry owner + first authorized recorder.
-        let _registry = ReceiptRegistry::load_or_deploy(env, NoArgs, container, 200_000_000_000);
+        let _registry = ReceiptRegistry::load_or_deploy(env, NoArgs, container, 500_000_000_000);
         Ok(())
     }
 }

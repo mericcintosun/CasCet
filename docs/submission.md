@@ -27,12 +27,14 @@ AI agents reach the world through MCP servers, but almost all of them are free �
 4. **The cascade on-chain (1:30–2:05).** Cut to the dashboard: revenue ticks up live, receipts stream in, the **payment graph** branches (agent → analyst → data server) and the newest chain highlights. Click a settlement link → cspr.live testnet deploy. "Every hop, real, on Casper — instant finality, so the chain never stalls."
 5. **On-chain layer + close (2:05–2:30).** Show `cargo odra test` (8/8) and the deployed ReceiptRegistry / RevenueSplit on cspr.live. "Receipts anchored, revenue split by contract. CasCet: the payment layer for the MCP economy, first on Casper." End on repo + socials.
 
-## Testnet artifacts (fill after deploy)
+## Testnet artifacts
 
-- Deployer account: `01dd710d5083920b20c706a92d742c7bf9162d09c96fa373bd0a67b0bf51d3f183`
-- ReceiptRegistry contract hash: `<TBD>`
-- RevenueSplit contract hash: `<TBD>`
-- Example anchored receipt / settlement deploy: `<TBD>`
+- Deployer account: [`01dd710d…`](https://testnet.cspr.live/account/01dd710d5083920b20c706a92d742c7bf9162d09c96fa373bd0a67b0bf51d3f183)
+- **ReceiptRegistry** package: `hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97`
+- Deploy tx: [`632a0d75…`](https://testnet.cspr.live/transaction/632a0d756c51c18ec0804b8bec338772691dca5a981835777c6512687afe1866)
+- On-chain `record` (anchored receipt): [`0f796802…`](https://testnet.cspr.live/transaction/0f79680230269c43b31528d282dc094d1f5fea000087332f6193e29361b16e4d)
+- Verified on-chain: `count → 1`, receipt reads back with intact fields.
+- RevenueSplit: unit-tested (8/8); testnet deploy pending final round.
 
 ## Long-term launch plans (judging criterion)
 

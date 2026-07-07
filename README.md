@@ -141,6 +141,19 @@ cargo run --bin cascet_contracts_cli -- deploy
 
 Network: **Casper Testnet** (`casper:casper-test`), CEP-18 payment token, `casper-eip-712` signatures.
 
+### Live on Casper Testnet
+
+`ReceiptRegistry` is deployed and exercised on testnet:
+
+| | |
+| --- | --- |
+| Contract package | `hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97` |
+| Deploy tx | [`632a0d75…`](https://testnet.cspr.live/transaction/632a0d756c51c18ec0804b8bec338772691dca5a981835777c6512687afe1866) |
+| Anchored receipt (`record`) | [`0f796802…`](https://testnet.cspr.live/transaction/0f79680230269c43b31528d282dc094d1f5fea000087332f6193e29361b16e4d) |
+| Deployer account | [`01dd710d…`](https://testnet.cspr.live/account/01dd710d5083920b20c706a92d742c7bf9162d09c96fa373bd0a67b0bf51d3f183) |
+
+Reading it back on-chain (`count → 1`, receipt fields intact) confirms the anchor round-trips.
+
 ---
 
 ## Roadmap
