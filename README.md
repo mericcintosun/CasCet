@@ -68,9 +68,20 @@ chooses. This is the LLM-in-the-loop half of CasCet: agentic AI spending real
 money on real DeFi/RWA data, under budget, settled on Casper.
 
 ```bash
-ANTHROPIC_API_KEY=… pnpm --filter @cascet/e2e agent        # mock facilitator
-CSPR_CLOUD_TOKEN=… ANTHROPIC_API_KEY=… pnpm --filter @cascet/e2e agent   # real settlement
+pnpm --filter @cascet/e2e agent                       # simulated reasoning, mock facilitator (free)
+CASCET_AGENT_LIVE=1 pnpm --filter @cascet/e2e agent    # real Claude (needs API credits)
+CSPR_CLOUD_TOKEN=… CASCET_AGENT_LIVE=1 pnpm … agent    # real Claude + real on-chain settlement
 ```
+
+> **On the simulation (full disclosure).** No paid Anthropic API key was bought
+> for this hackathon build, so the demo **defaults to a clearly-labeled offline
+> simulation** of the reasoning — behind a prominent banner that says so. Only the
+> two model decisions (which tools to buy, and the final wording) are scripted;
+> the recommendation is still grounded in the **real data the agent purchased**,
+> and tool discovery, x402 pricing, per-call payment, budget enforcement, cascade
+> receipts and settlement are all **real and unchanged**. The reasoning backend is
+> a one-line swap (`Brain`) — `CASCET_AGENT_LIVE=1` runs the exact same loop with
+> real Claude the moment credits are available.
 
 The wire convention it relies on — per-tool price advertisement, x402
 settlement, and cascade attribution — is written up as a reusable standard
@@ -153,11 +164,12 @@ pnpm --filter @cascet/e2e demo
 You'll see an agent pay `$0.10` for `analyze_portfolio`, which autonomously spends `$0.07` buying four data tools underneath — every downstream payment linked to the root, asserted at the end.
 
 ```bash
-# Autonomous Claude agent: it prices the paid tools and decides what to buy.
-ANTHROPIC_API_KEY=… pnpm --filter @cascet/e2e agent
+# Autonomous agent: it prices the paid tools and decides what to buy.
+pnpm --filter @cascet/e2e agent                     # free — labeled simulated reasoning
+CASCET_AGENT_LIVE=1 pnpm --filter @cascet/e2e agent # real Claude (needs API credits)
 ```
 
-Claude reads the three priced DeFi/RWA tools, buys the ones it judges necessary for the goal, pays x402 per call under a fixed budget, and returns a recommendation citing the data it purchased.
+The agent reads the three priced DeFi/RWA tools, buys the ones it judges necessary for the goal, pays x402 per call under a fixed budget, and returns a recommendation citing the data it purchased. (Reasoning defaults to a clearly-labeled offline simulation — see the note under [The autonomous buyer](#the-autonomous-buyer-an-llm-that-prices-budgets-and-buys-tools).)
 
 ### With the live dashboard
 
