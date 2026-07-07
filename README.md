@@ -151,6 +151,8 @@ Two Odra contracts (Rust), unit-tested against a real CEP-18 in Odra's mock VM (
 
 - **`ReceiptRegistry`** — anchors settled tool-call receipts on-chain, each carrying its cascade `parent_id`. Makes two things verifiable without trusting the gateway: that a call was paid, and how payments compose. Permissioned recorders, duplicate protection, events.
 - **`RevenueSplit`** — an OpenZeppelin-style PaymentSplitter for CEP-18. A gateway can set its `payTo` to this contract so a server's earnings split between payees by fixed weights, pull-based, enforced on-chain.
+- **`PaymentChannel`** — prepaid channels for high-frequency traffic: deposit once, authorize usage off-chain with signed vouchers, redeem/reclaim on-chain. Vouchers verified in-contract via Casper `verify_signature`.
+- **`DemoToken` / `Cep18X402`** — CEP-18 payment tokens; the latter implements `transfer_with_authorization` so the hosted facilitator can settle real x402 payments.
 
 ```bash
 cd contracts
@@ -171,6 +173,9 @@ All three contracts are deployed and exercised on testnet:
 | ReceiptRegistry | `hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97` |
 | RevenueSplit | `hash-fa21efb406a8151d15a393bc366e51192a9ea15fd7fe23faffc54f021b32883c` |
 | DemoToken (CEP-18, WCSPR) | `hash-b3e9908b6cdbf5c565b686938994e3ac8e6749f41bcbe83615604321a0965d49` |
+| Cep18X402 (payment token, `transfer_with_authorization`) | `hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3` |
+| PaymentChannel | `hash-53930d3982a5bea717ec919096cef407b71a1ce9022b241c1d94f19ca770ccb0` |
+| ReceiptRegistry (upgradable) | `hash-764ed7190b69dafbc94a0148a07be85227f268a85424e7186be66cdb711b8222` |
 
 Deployer / operator account: [`01dd710d…`](https://testnet.cspr.live/account/01dd710d5083920b20c706a92d742c7bf9162d09c96fa373bd0a67b0bf51d3f183)
 
@@ -186,6 +191,21 @@ account exactly **400 WCSPR** (its 40%), zeroing its releasable balance.
 ([fund](https://testnet.cspr.live/transaction/b7c7bbf54f4dbe9375d536c50264b399191f362ce051e3a8ea2f08f86512390d) ·
 [release 40%](https://testnet.cspr.live/transaction/462b1dafa7968ad238f671fd44e6fb3e12a9ce5e9994f1a79330c1adc15a710c) ·
 [release 60%](https://testnet.cspr.live/transaction/6fc0195ddfb9d6cd8a80eab240cf6d0f4a76c89afcea45679c0f883de9b87e3c))
+
+**PaymentChannel — prepaid channels for high-frequency agents.** An agent opens a
+channel with one CEP-18 deposit, then authorizes usage off-chain by signing
+monotonic vouchers (`channel_id || cumulative`); the payee redeems the latest
+voucher on-chain, verified in-contract with Casper's native `verify_signature`.
+Two on-chain writes cover thousands of paid calls. Unit-tested with real ed25519
+signatures (redeem, forged-voucher rejection, expiry guard).
+
+**Upgradable ReceiptRegistry — Casper native in-place upgrade.** Deployed
+upgradable, anchored a receipt, then upgraded the logic **v1.1.0 → v1.2.0** on
+the same package
+([upgrade tx `0202cc29…`](https://testnet.cspr.live/transaction/0202cc298c844cb771835612ac028df978c5d8fd0e442b724bdf995c17547e34)).
+The package now carries two contract versions and **all anchored state survived**
+the upgrade (count, `total_volume`, receipts intact) — feature upgrades ship
+without migrating data.
 
 ---
 
