@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ExternalLink, CornerDownRight } from "lucide-react";
+import { ExternalLink, CornerDownRight, Anchor } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { formatTokens, shortHex, timeAgo } from "@/lib/utils";
@@ -28,6 +28,7 @@ export function ReceiptsTable({
           <TableHead>Amount</TableHead>
           <TableHead>Payer</TableHead>
           <TableHead>Settlement</TableHead>
+          <TableHead>On-chain</TableHead>
           <TableHead className="text-right">When</TableHead>
         </TableRow>
       </TableHeader>
@@ -59,6 +60,20 @@ export function ReceiptsTable({
                 )
               ) : (
                 <Badge variant="destructive">failed</Badge>
+              )}
+            </TableCell>
+            <TableCell>
+              {r.anchoredTxHash ? (
+                <a
+                  href={`${TESTNET_DEPLOY}${r.anchoredTxHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                >
+                  <Anchor className="h-3 w-3" /> anchored
+                </a>
+              ) : (
+                <span className="text-xs text-muted-foreground">—</span>
               )}
             </TableCell>
             <TableCell className="text-right text-xs text-muted-foreground">{timeAgo(r.createdAt)}</TableCell>

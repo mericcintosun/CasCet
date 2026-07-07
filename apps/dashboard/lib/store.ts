@@ -35,8 +35,15 @@ export function ingest(event: CascetEvent): void {
   const store = getStore();
   switch (event.type) {
     case "receipt": {
-      store.receipts.unshift(event.receipt);
-      if (store.receipts.length > 500) store.receipts.pop();
+      // Dedupe by id: a receipt is pushed once on settle, then again once its
+      // on-chain anchor tx lands — the second push updates the same row.
+      const existing = store.receipts.findIndex(r => r.id === event.receipt.id);
+      if (existing >= 0) {
+        store.receipts[existing] = event.receipt;
+      } else {
+        store.receipts.unshift(event.receipt);
+        if (store.receipts.length > 500) store.receipts.pop();
+      }
       break;
     }
     case "server-online": {

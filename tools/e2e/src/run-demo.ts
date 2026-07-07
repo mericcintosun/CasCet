@@ -24,6 +24,21 @@ const DASHBOARD_INGEST =
 
 const pub = (name: string) => readFileSync(resolve(KEYS, `${name}.pub`), "utf8").trim();
 
+// Opt-in on-chain anchoring to the live ReceiptRegistry (CASCET_ANCHOR=1).
+// Uses the deployer key (an authorized recorder). Off by default so the demo
+// stays chain-free and reproducible.
+const anchoring =
+  process.env.CASCET_ANCHOR === "1"
+    ? {
+        contractPackageHash: "hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97",
+        keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
+        keyAlgo: "ed25519" as const,
+        nodeUrl: "https://node.testnet.casper.network/rpc",
+        chainName: "casper-test",
+        gasMotes: 5_000_000_000,
+      }
+    : undefined;
+
 const baseAsset = {
   packageHash: "0000000000000000000000000000000000000000000000000000000000000000",
   name: "Demo Wrapped CSPR",
@@ -44,6 +59,7 @@ const dataConfig: CascetConfig = cascetConfigSchema.parse({
   asset: baseAsset,
   facilitator: { url: `http://localhost:${FACILITATOR_PORT}` },
   eventsUrl: DASHBOARD_INGEST || undefined,
+  anchoring,
   pricing: {
     tools: {
       get_cspr_market_data: { price: "$0.01" },
@@ -69,6 +85,7 @@ const analystConfig: CascetConfig = cascetConfigSchema.parse({
   asset: baseAsset,
   facilitator: { url: `http://localhost:${FACILITATOR_PORT}` },
   eventsUrl: DASHBOARD_INGEST || undefined,
+  anchoring,
   pricing: { tools: { analyze_portfolio: { price: "$0.10" } } },
   port: 4403,
 });
@@ -121,8 +138,8 @@ if (!rootReceipt) throw new Error("E2E FAIL: no settled root receipt on analyst 
 if (children.length < 3) throw new Error(`E2E FAIL: expected ≥3 cascade children, got ${children.length}`);
 console.log(`\n✅ E2E PASS — ${children.length} downstream payments correctly linked to root ${rootReceipt.id}\n`);
 
-// Let fire-and-forget dashboard event pushes flush before we tear down.
-await new Promise(resolveDelay => setTimeout(resolveDelay, 800));
+// Let fire-and-forget pushes (and on-chain anchor submissions) flush before teardown.
+await new Promise(resolveDelay => setTimeout(resolveDelay, anchoring ? 12_000 : 800));
 
 await analystGateway.close();
 await dataGateway.close();

@@ -52,8 +52,21 @@ export const cascetConfigSchema = z.object({
   port: z.number().int().default(DEFAULT_GATEWAY_PORT),
   /** Optional dashboard ingest endpoint; the gateway POSTs receipt events there. */
   eventsUrl: z.string().url().optional(),
-  /** Optional ReceiptRegistry contract hash for on-chain anchoring. */
-  receiptsContract: z.string().optional(),
+  /**
+   * Optional on-chain anchoring: when set, each settled receipt is recorded in
+   * a deployed ReceiptRegistry contract (async, non-blocking). The anchoring key
+   * must be an authorized recorder on that registry.
+   */
+  anchoring: z
+    .object({
+      contractPackageHash: z.string().describe("ReceiptRegistry package hash (with or without hash- prefix)"),
+      keyPath: z.string().describe("PEM secret key of an authorized recorder"),
+      keyAlgo: z.enum(["ed25519", "secp256k1"]).default("ed25519"),
+      nodeUrl: z.string().url(),
+      chainName: z.string().default("casper-test"),
+      gasMotes: z.number().int().default(5_000_000_000),
+    })
+    .optional(),
 });
 
 export type Upstream = z.infer<typeof upstreamSchema>;

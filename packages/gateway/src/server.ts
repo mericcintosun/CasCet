@@ -12,6 +12,7 @@ import { expressAdapter } from "./adapter.js";
 import { buildPaywall, type Paywall } from "./paywall.js";
 import { connectUpstream, type UpstreamConnection } from "./upstream.js";
 import { ReceiptStore, makeEventPusher } from "./store.js";
+import { Anchorer } from "./anchor.js";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -43,6 +44,25 @@ export async function startGateway(cfg: CascetConfig): Promise<RunningGateway> {
 
   const store = new ReceiptStore(`.cascet/${slug(cfg.name)}.receipts.jsonl`);
   const pushEvent = makeEventPusher(cfg.eventsUrl);
+  const anchorer = cfg.anchoring ? new Anchorer(cfg.anchoring) : undefined;
+  if (anchorer) {
+    console.log(`    on-chain anchoring: ReceiptRegistry ${cfg.anchoring!.contractPackageHash}`);
+  }
+
+  // Anchor a settled receipt on-chain without blocking the tool response.
+  function anchorAsync(receipt: PaymentReceipt): void {
+    if (!anchorer || receipt.status !== "settled") return;
+    anchorer
+      .anchor(receipt)
+      .then(anchoredTxHash => {
+        // Mutates the same object already held in the store's in-memory list;
+        // re-push so the dashboard updates the row with its on-chain anchor.
+        receipt.anchoredTxHash = anchoredTxHash;
+        pushEvent({ type: "receipt", receipt });
+        console.log(`    ⚓ anchored ${receipt.id} → ${anchoredTxHash.slice(0, 12)}…`);
+      })
+      .catch(err => console.error(`    anchor failed for ${receipt.id}: ${message(err)}`));
+  }
 
   const app = express();
   app.use(express.json({ limit: "4mb" }));
@@ -284,6 +304,7 @@ export async function startGateway(cfg: CascetConfig): Promise<RunningGateway> {
     };
     store.add(receipt);
     pushEvent({ type: "receipt", receipt });
+    anchorAsync(receipt);
     return receipt;
   }
 
