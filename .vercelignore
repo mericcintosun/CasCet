@@ -1,0 +1,14 @@
+.git
+**/node_modules
+**/.next
+contracts/target
+contracts/wasm
+contracts/bin/*/
+*.mp3
+/isometric.png
+/logo.png
+/social-share.png
+/cinematic-cascet.mp4
+tools/e2e/.cascet
+**/.cascet
+*.log
