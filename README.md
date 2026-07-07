@@ -27,6 +27,27 @@ CasCet is the **monetization layer for MCP on Casper** — think *Stripe for MCP
 3. **Cascade** — when a paid tool itself buys from other paid tools, CasCet composes the payments into a chain, links every hop to its parent, and enforces revenue splits on-chain.
 4. **See it** — a live dashboard shows revenue, receipts (with cspr.live settlement links) and the cascading payment graph in real time.
 
+### The primitive: budget-bounded cascades with recursive attribution
+
+CasCet's headline isn't "agents pay per call" — it's a new machine-to-machine
+primitive that only makes sense once payments compose into trees. The
+**`CascadeController`** contract turns a cascade into a programmable supply chain:
+
+- **On-chain budget tree.** An agent opens a cascade with **one deposit that caps
+  the whole call tree**. Every hop is paid out of it and the contract *refuses*
+  any hop that would exceed the budget — enforcement by construction, not by
+  trusting the gateway. (Every rival agent-wallet only caps *per-call* spend.)
+- **Recursive attribution.** A configurable share of a child hop's earnings flows
+  **up** to the parent hop's payee — the composing service earns margin on what
+  it resells. The payment graph *is* the revenue-sharing graph.
+
+Verified on testnet end-to-end: open (budget 1000) → root hop pays analyst 100 →
+child hop pays data 30 with 20% attribution (data +24, analyst +6 up the tree) →
+an over-budget hop is **rejected on-chain** (`BudgetExceeded`) → close refunds the
+unspent 870. ([open](https://testnet.cspr.live/transaction/9bea3ea79762d0b8a6fe3e44a593d5943bd03b2ba86dfbfab0043ca018cb28e0) ·
+[attribution hop](https://testnet.cspr.live/transaction/eb96a049692b7918a949bb2cd84982980d643e23678f490f8b851b84f0815b68) ·
+[over-budget rejected](https://testnet.cspr.live/transaction/d1df6c898bbc8edc63fca9018dd4352f40afc6cea45a20666c91dbaf28887572))
+
 ### Why Casper
 
 This is not a portable pattern dressed in Casper branding — it leans on things Casper does that alternatives don't:
@@ -151,6 +172,7 @@ Two Odra contracts (Rust), unit-tested against a real CEP-18 in Odra's mock VM (
 
 - **`ReceiptRegistry`** — anchors settled tool-call receipts on-chain, each carrying its cascade `parent_id`. Makes two things verifiable without trusting the gateway: that a call was paid, and how payments compose. Permissioned recorders, duplicate protection, events.
 - **`RevenueSplit`** — an OpenZeppelin-style PaymentSplitter for CEP-18. A gateway can set its `payTo` to this contract so a server's earnings split between payees by fixed weights, pull-based, enforced on-chain.
+- **`CascadeController`** — the budget-bounded cascade primitive: one deposit caps a whole call tree (enforced on-chain), with recursive revenue attribution up the tree.
 - **`PaymentChannel`** — prepaid channels for high-frequency traffic: deposit once, authorize usage off-chain with signed vouchers, redeem/reclaim on-chain. Vouchers verified in-contract via Casper `verify_signature`.
 - **`DemoToken` / `Cep18X402`** — CEP-18 payment tokens; the latter implements `transfer_with_authorization` so the hosted facilitator can settle real x402 payments.
 
@@ -176,6 +198,7 @@ All three contracts are deployed and exercised on testnet:
 | Cep18X402 (payment token, `transfer_with_authorization`) | `hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3` |
 | PaymentChannel | `hash-53930d3982a5bea717ec919096cef407b71a1ce9022b241c1d94f19ca770ccb0` |
 | ReceiptRegistry (upgradable) | `hash-764ed7190b69dafbc94a0148a07be85227f268a85424e7186be66cdb711b8222` |
+| CascadeController | `hash-624134336d1f63ce539ebef9c226e6c463f70a8e85b593bbc5d370520d797980` |
 
 Deployer / operator account: [`01dd710d…`](https://testnet.cspr.live/account/01dd710d5083920b20c706a92d742c7bf9162d09c96fa373bd0a67b0bf51d3f183)
 
