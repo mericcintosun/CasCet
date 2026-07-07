@@ -9,3 +9,6 @@ fqn = "demo_token::DemoToken"
 
 [[contracts]]
 fqn = "payment_channel::PaymentChannel"
+
+[[contracts]]
+fqn = "cascade_controller::CascadeController"

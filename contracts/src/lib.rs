@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), no_main)]
 extern crate alloc;
 
+pub mod cascade_controller;
 pub mod demo_token;
 pub mod payment_channel;
 pub mod receipt_registry;
