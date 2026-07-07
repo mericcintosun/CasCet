@@ -1,0 +1,11 @@
+last_updated = "2026-07-08T00:00:00Z"
+
+[[contracts]]
+name = "CascadeController"
+package_name = "CascadeController"
+package_hash = "hash-624134336d1f63ce539ebef9c226e6c463f70a8e85b593bbc5d370520d797980"
+
+[[contracts]]
+name = "DemoToken"
+package_name = "DemoToken"
+package_hash = "hash-b3e9908b6cdbf5c565b686938994e3ac8e6749f41bcbe83615604321a0965d49"

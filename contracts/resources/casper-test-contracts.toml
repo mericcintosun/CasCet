@@ -14,3 +14,8 @@ package_hash = "hash-b3e9908b6cdbf5c565b686938994e3ac8e6749f41bcbe83615604321a09
 name = "RevenueSplit"
 package_name = "RevenueSplit"
 package_hash = "hash-fa21efb406a8151d15a393bc366e51192a9ea15fd7fe23faffc54f021b32883c"
+
+[[contracts]]
+name = "CascadeController"
+package_name = "CascadeController"
+package_hash = "hash-624134336d1f63ce539ebef9c226e6c463f70a8e85b593bbc5d370520d797980"
