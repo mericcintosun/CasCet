@@ -32,7 +32,7 @@ export default function DashboardPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Seller dashboard</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Every tool call your MCP servers sell, paid per request over x402 and settled on Casper —
+            Every tool call your MCP servers sell, paid per request over x402 and settled on Casper,
             including cascades where a paid tool buys from other paid tools.
           </p>
         </div>

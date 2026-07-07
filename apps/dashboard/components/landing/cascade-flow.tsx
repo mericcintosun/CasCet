@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * The signature hero visual: an agent pays a root tool, which cascades payments to three
- * downstream paid tools. Pure SVG with animated flow lines (no WebGL) — the payment graph is
+ * downstream paid tools. Pure SVG with animated flow lines (no WebGL): the payment graph is
  * CasCet's brand asset.
  */
 export function CascadeFlow({ className }: { className?: string }) {

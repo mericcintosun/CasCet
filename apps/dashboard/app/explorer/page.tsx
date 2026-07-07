@@ -34,7 +34,7 @@ export default function ExplorerPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">x402 economy explorer</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            The machine-to-machine economy running through CasCet on Casper — every payment settled over
+            The machine-to-machine economy running through CasCet on Casper, every payment settled over
             x402 and anchored on-chain in the ReceiptRegistry.
           </p>
         </div>
@@ -60,7 +60,7 @@ export default function ExplorerPage() {
             <CardTitle className="flex items-center gap-2 text-base">
               <Boxes className="h-4 w-4" /> On-chain contracts
             </CardTitle>
-            <CardDescription>Live on Casper Testnet — the canonical state behind this explorer.</CardDescription>
+            <CardDescription>Live on Casper Testnet. The canonical state behind this explorer.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
             {CONTRACT_ROWS.map(c => (

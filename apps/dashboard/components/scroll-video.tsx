@@ -8,7 +8,7 @@ const smoothstep = (x: number) => x * x * (3 - 2 * x);
 
 /**
  * A scroll-scrubbed cinematic section. The video is pinned full-screen and its playhead follows
- * scroll — but smoothed: a persistent rAF loop eases the playhead toward the scroll target and
+ * scroll: but smoothed: a persistent rAF loop eases the playhead toward the scroll target and
  * drives caption opacity by writing styles directly (no per-frame React re-render), so scrubbing
  * stays buttery even with coarse scroll events. Degrades to the poster if the video can't scrub.
  */
@@ -28,7 +28,6 @@ export function ScrollVideo({
   const sectionRef = React.useRef<HTMLDivElement>(null);
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const capRefs = React.useRef<(HTMLDivElement | null)[]>([]);
-  const hintRef = React.useRef<HTMLDivElement>(null);
   const target = React.useRef(0);
   const current = React.useRef(0);
 
@@ -66,7 +65,7 @@ export function ScrollVideo({
       const vid = videoRef.current;
       if (vid && vid.duration && Number.isFinite(vid.duration)) {
         const t = p * (vid.duration - 0.05);
-        // only seek on a meaningful delta — repeated tiny seeks stutter
+        // only seek on a meaningful delta: repeated tiny seeks stutter
         if (Math.abs(vid.currentTime - t) > 0.015) {
           try {
             vid.currentTime = t;
@@ -87,8 +86,6 @@ export function ScrollVideo({
         el.style.transform = `translateY(${(p - center) * -34}px)`;
       }
 
-      if (hintRef.current) hintRef.current.style.opacity = p < 0.05 ? "0.7" : "0";
-
       raf = requestAnimationFrame(loop);
     };
 
@@ -106,7 +103,7 @@ export function ScrollVideo({
   return (
     <section ref={sectionRef} className="relative" style={{ height: `${heightVh}vh` }}>
       <div className="sticky top-0 flex h-screen items-center justify-center overflow-hidden bg-[hsl(228_16%_4%)]">
-        {/* poster underlay — shown until the video decodes / if it never loads */}
+        {/* poster underlay: shown until the video decodes / if it never loads */}
         <div className="absolute inset-0 bg-cover bg-center opacity-70" style={{ backgroundImage: `url(${poster})` }} aria-hidden />
         <video
           ref={videoRef}
@@ -124,7 +121,7 @@ export function ScrollVideo({
         <div className="absolute inset-0 bg-gradient-to-b from-background/55 via-background/25 to-background" />
         <div className="grain absolute inset-0" />
 
-        {/* pinned captions — full-width stage so lines don't collapse per-word */}
+        {/* pinned captions; full-width stage so lines don't collapse per-word */}
         {captions.map((c, i) => (
           <div
             key={i}
@@ -137,14 +134,6 @@ export function ScrollVideo({
             <div className="w-full max-w-4xl text-center">{c}</div>
           </div>
         ))}
-
-        <div
-          ref={hintRef}
-          className="absolute bottom-8 left-1/2 -translate-x-1/2 font-mono text-[11px] uppercase tracking-[0.25em] text-muted-foreground"
-          style={{ opacity: 0.7 }}
-        >
-          scroll ↓
-        </div>
       </div>
     </section>
   );

@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 
-/** CasCet mark — a cascading payment tree (one node branching into three). */
+/** CasCet mark: a cascading payment tree (one node branching into three). */
 export function LogoMark({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 32 32" fill="none" className={cn("h-full w-full", className)} aria-hidden>

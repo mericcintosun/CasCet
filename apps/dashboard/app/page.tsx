@@ -40,7 +40,7 @@ const CONTRACTS = [
   { name: "PaymentChannel", note: "prepaid channels, off-chain signed vouchers", hash: "53930d3982a5bea717ec919096cef407b71a1ce9022b241c1d94f19ca770ccb0" },
   { name: "RevenueSplit", note: "on-chain CEP-18 revenue splitter", hash: "fa21efb406a8151d15a393bc366e51192a9ea15fd7fe23faffc54f021b32883c" },
   { name: "Cep18X402", note: "payment token with transfer_with_authorization", hash: "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3" },
-  { name: "ReceiptRegistry v2", note: "upgradable — live in-place upgrade, state preserved", hash: "764ed7190b69dafbc94a0148a07be85227f268a85424e7186be66cdb711b8222" },
+  { name: "ReceiptRegistry v2", note: "upgradable; live in-place upgrade, state preserved", hash: "764ed7190b69dafbc94a0148a07be85227f268a85424e7186be66cdb711b8222" },
 ];
 
 const STATS = [
@@ -102,9 +102,9 @@ function Hero() {
           </h1>
 
           <p className="mt-6 max-w-xl text-pretty text-lg leading-relaxed text-muted-foreground">
-            CasCet is the monetization layer for MCP on Casper — <span className="text-foreground">Stripe for MCP servers</span>.
+            CasCet is the monetization layer for MCP on Casper, the <span className="text-foreground">Stripe for MCP servers</span>.
             Charge AI agents per tool call over x402, and settle the <span className="text-foreground">multi-hop payment chains</span> no
-            one else does — on-chain, in seconds.
+            one else does, on-chain and in seconds.
           </p>
 
           <div className="mt-8 flex flex-wrap items-center gap-3">
@@ -163,19 +163,19 @@ function CascadePrimitive() {
             Budget-bounded cascades with recursive attribution
           </h2>
           <p className="mt-5 text-pretty leading-relaxed text-muted-foreground">
-            The headline isn&apos;t &ldquo;agents pay per call&rdquo; — it&apos;s a machine-to-machine primitive that only
+            The headline isn&apos;t &ldquo;agents pay per call&rdquo;. It&apos;s a machine-to-machine primitive that only
             makes sense once payments compose into trees. The <span className="font-mono text-foreground">CascadeController</span>{" "}
             contract turns a cascade into a programmable supply chain.
           </p>
           <ul className="mt-7 space-y-5">
             <Feat icon={Wallet} title="On-chain budget tree">
               An agent opens a cascade with <span className="text-foreground">one deposit that caps the whole call tree</span>.
-              The contract pays each hop out of it and refuses any hop that would exceed the budget — enforcement by construction,
+              The contract pays each hop out of it and refuses any hop that would exceed the budget. Enforcement by construction,
               not by trusting the gateway.
             </Feat>
             <Feat icon={Network} title="Recursive attribution">
               A configurable share of a child hop&apos;s earnings flows <span className="text-foreground">up</span> to the parent
-              hop&apos;s payee — the composing service earns margin on what it resells. The payment graph <em>is</em> the
+              hop&apos;s payee, so the composing service earns margin on what it resells. The payment graph <em>is</em> the
               revenue-sharing graph.
             </Feat>
           </ul>
@@ -211,13 +211,13 @@ function CascadePrimitive() {
 function Features() {
   const feats = [
     { icon: ShieldCheck, t: "Real x402 settlement, no mock", d: <>Agents pay from an on-chain balance of a real <span className="font-mono text-foreground">transfer_with_authorization</span> CEP-18 token; the hosted CSPR.cloud facilitator verifies and settles it; receipts anchor on-chain. Every hop is a real Casper transaction.</> },
-    { icon: Receipt, t: "Receipts, on-chain", d: <>Every settled call is anchored with its cascade parent id — the whole payment graph reconstructs from chain data alone, no central coordinator.</> },
-    { icon: Lock, t: "Upgradable contracts", d: <>The ReceiptRegistry was upgraded v1.1 → v1.2 in-place on Casper — all anchored state survived the upgrade.</> },
+    { icon: Receipt, t: "Receipts, on-chain", d: <>Every settled call is anchored with its cascade parent id, so the whole payment graph reconstructs from chain data alone, no central coordinator.</> },
+    { icon: Lock, t: "Upgradable contracts", d: <>The ReceiptRegistry was upgraded v1.1 to v1.2 in-place on Casper, and all anchored state survived the upgrade.</> },
     { icon: Coins, t: "Revenue splits", d: <>Point a server&apos;s payTo at the RevenueSplit contract and earnings split between co-authors on-chain, pull-based.</> },
-    { icon: GitBranch, t: "Wrap any MCP server", d: <>CasCet monetizes the unmodified official <span className="font-mono text-foreground">server-everything</span> — not just first-party tools.</> },
+    { icon: GitBranch, t: "Wrap any MCP server", d: <>CasCet monetizes the unmodified official <span className="font-mono text-foreground">server-everything</span>, not just first-party tools.</> },
   ];
   return (
-    <Section eyebrow="Built end-to-end" title="Not a demo — a working machine-money stack">
+    <Section eyebrow="Built end-to-end" title="Not a demo, a working machine-money stack">
       <div className="border-t border-border">
         {feats.map((f, i) => (
           <Reveal key={i} delay={(i % 2) * 60}>
@@ -250,7 +250,7 @@ function X402Flow() {
           <h2 className="text-balance text-3xl font-semibold tracking-tight sm:text-4xl">One tool call, paid over HTTP 402</h2>
           <p className="mt-5 text-pretty leading-relaxed text-muted-foreground">
             MCP speaks JSON-RPC over one endpoint, so the gateway maps each priced tool to an x402 route. The agent&apos;s wallet
-            signs a CEP-18 authorization and retries — and the gateway <span className="text-foreground">only charges if the tool
+            signs a CEP-18 authorization and retries, and the gateway <span className="text-foreground">only charges if the tool
             succeeds</span>. A failed call is never billed.
           </p>
           <div className="mt-6 flex flex-wrap gap-4 font-mono text-xs text-muted-foreground">
@@ -303,7 +303,7 @@ function CodeCard() {
 function AgentSection() {
   const steps = ["discovers the paid tools + their x402 prices", "decides which to buy for a DeFi/RWA goal", "pays per call under a fixed on-chain budget", "cites the data it purchased in a recommendation"];
   return (
-    <Section id="agent" eyebrow="The autonomous buyer" title="An LLM that prices, budgets, and buys tools — on its own">
+    <Section id="agent" eyebrow="The autonomous buyer" title="An LLM that prices, budgets, and buys tools on its own">
       <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
         <Reveal>
           <div className="card-lift h-full rounded-2xl border border-border bg-card p-8">
@@ -325,7 +325,7 @@ function AgentSection() {
             </ol>
             <p className="mt-6 rounded-lg border border-warning/25 bg-warning/5 p-3 text-xs leading-relaxed text-muted-foreground">
               <span className="font-medium text-warning">Full disclosure:</span> the shipped demo runs a clearly-labeled offline
-              simulation of the reasoning (no paid API key) — but tool discovery, x402 pricing, payments, budget enforcement and
+              simulation of the reasoning (no paid API key), but tool discovery, x402 pricing, payments, budget enforcement and
               settlement are all real, and one flag swaps in live Claude.
             </p>
           </div>
@@ -397,11 +397,11 @@ function Faq() {
     },
     {
       q: "Why does \"cascading\" matter?",
-      a: "Real agent tools compose — a portfolio analyzer internally buys a price feed and an RWA feed, each a paid service. CasCet links every hop of that payment chain to its parent and can cap and split the whole tree on-chain. Point-to-point x402 can't express that.",
+      a: "Real agent tools compose. A portfolio analyzer internally buys a price feed and an RWA feed, each a paid service. CasCet links every hop of that payment chain to its parent and can cap and split the whole tree on-chain. Point-to-point x402 can't express that.",
     },
     {
       q: "Is this actually on-chain, or a mock?",
-      a: "On-chain. Seven Odra contracts are live on Casper Testnet and real x402 settlement is verified end-to-end with the hosted CSPR.cloud facilitator — no mock in the payment path. The bundled mock facilitator exists only for chain-free local dev.",
+      a: "On-chain. Seven Odra contracts are live on Casper Testnet and real x402 settlement is verified end-to-end with the hosted CSPR.cloud facilitator, with no mock in the payment path. The bundled mock facilitator exists only for chain-free local dev.",
     },
     {
       q: "What does the autonomous agent do?",
@@ -441,16 +441,16 @@ function Roadmap() {
       title: "The primitive, proven on-chain",
       points: [
         "7 Odra contracts live on testnet; real x402 settlement, no mock.",
-        "CascadeController — budget-bounded cascades + recursive attribution.",
+        "CascadeController: budget-bounded cascades + recursive attribution.",
         "Autonomous LLM buyer, live dashboard, cascade playground, and a proposed x402-MCP spec.",
       ],
     },
     {
       tag: "next",
-      when: "Final round · Jul 13–26",
+      when: "Final round · Jul 13 to 26",
       title: "From primitive to product",
       points: [
-        "Hosted CasCet control plane — register a server, get a paid endpoint + dashboard in one step.",
+        "Hosted CasCet control plane: register a server, get a paid endpoint + dashboard in one step.",
         "npx cascet published to npm; RevenueSplit withdraw UI on real revenue.",
         "Take the paid-MCP + cascade spec to the x402 / MCP ecosystem.",
       ],
@@ -460,7 +460,7 @@ function Roadmap() {
       when: "Q4 2026",
       title: "Mainnet & monetization",
       points: [
-        "Mainnet launch; a protocol take-rate on settled volume — the business model.",
+        "Mainnet launch; a protocol take-rate on settled volume (the business model).",
         "Per-second / streaming price schemes for high-frequency agent traffic.",
         "Stable SDKs (JS / Rust / Python) and a public metrics API.",
       ],

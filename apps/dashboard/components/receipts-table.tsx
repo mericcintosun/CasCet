@@ -73,7 +73,7 @@ export function ReceiptsTable({
                   <Anchor className="h-3 w-3" /> anchored
                 </a>
               ) : (
-                <span className="text-xs text-muted-foreground">—</span>
+                <span className="text-xs text-muted-foreground">·</span>
               )}
             </TableCell>
             <TableCell className="text-right text-xs text-muted-foreground">{timeAgo(r.createdAt)}</TableCell>

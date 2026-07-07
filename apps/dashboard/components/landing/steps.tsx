@@ -8,7 +8,7 @@ type Step = { key: string; icon: LucideIcon; title: string; body: string; cmd: s
 
 const STEPS: Step[] = [
   { key: "wrap", icon: Boxes, title: "Wrap", cmd: "cascet wrap", body: "Put a paywall in front of any MCP server. Price each tool; agents pay per call in CEP-18 over x402. Your tool code stays untouched." },
-  { key: "connect", icon: Plug, title: "Connect", cmd: "cascet connect", body: "A stdio bridge lets any MCP host — Claude, Cursor — call paid servers, answering every 402 challenge automatically under a spending budget." },
+  { key: "connect", icon: Plug, title: "Connect", cmd: "cascet connect", body: "A stdio bridge lets any MCP host (Claude, Cursor) call paid servers, answering every 402 challenge automatically under a spending budget." },
   { key: "cascade", icon: GitBranch, title: "Cascade", cmd: "→ on-chain", body: "When a paid tool buys from other paid tools, CasCet links every hop to its parent and enforces the budget and revenue splits on-chain." },
   { key: "see", icon: LayoutDashboard, title: "See it", cmd: "/dashboard", body: "A live dashboard streams revenue, receipts with cspr.live settlement links, and the cascading payment graph in real time." },
 ];
@@ -56,7 +56,7 @@ export function Steps() {
         })}
       </div>
 
-      {/* detail — animates on change via keyed fade */}
+      {/* detail: animates on change via keyed fade */}
       <div key={active} className="mt-12 grid animate-fade-in items-center gap-8 md:grid-cols-[auto_1fr]">
         <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/20">
           <Icon className="h-9 w-9" />

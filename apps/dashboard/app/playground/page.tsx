@@ -50,7 +50,7 @@ export default function PlaygroundPage() {
             <h1 className="text-3xl font-semibold tracking-tight">Cascade playground</h1>
             <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
               Model a budget-bounded cascade the way <span className="font-mono text-foreground">CascadeController</span> enforces
-              it on-chain. Move the sliders — watch payouts, recursive attribution up the tree, and the on-chain{" "}
+              it on-chain. Move the sliders and watch payouts, recursive attribution up the tree, and the on-chain{" "}
               <span className="text-foreground">budget rejection</span> react live.
             </p>
           </div>
@@ -119,7 +119,7 @@ export default function PlaygroundPage() {
                   <p className="mt-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 font-mono text-xs text-destructive">
                     <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                     <span>
-                      User error 5 · <span className="font-semibold">BudgetExceeded</span> — the contract rejects the hop that
+                      User error 5 · <span className="font-semibold">BudgetExceeded</span>. The contract rejects the hop that
                       would overspend. The gateway can&apos;t settle it; the agent must adapt.
                     </span>
                   </p>
