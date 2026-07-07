@@ -5,7 +5,7 @@ import { LogoMark } from "@/components/logo";
 export function CinematicIntro() {
   return (
     <ScrollVideo
-      src="/cascade-scrub.mp4"
+      src="/cinematic-cascet.mp4"
       poster="/hero.png"
       heightVh={300}
       // Crop ~16% off the bottom (anchored to the top) to hide any generator watermark
