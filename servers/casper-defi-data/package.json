@@ -1,0 +1,17 @@
+{
+  "name": "@cascet/server-casper-defi-data",
+  "version": "0.1.0",
+  "description": "Flagship paid MCP server: Casper DeFi & RWA market data, sold per call via CasCet",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.24.0"
+  }
+}

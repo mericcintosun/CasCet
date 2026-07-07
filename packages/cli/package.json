@@ -1,0 +1,21 @@
+{
+  "name": "cascet",
+  "version": "0.1.0",
+  "description": "CasCet CLI — monetize any MCP server with x402 micropayments on Casper (wrap), or connect any MCP host to paid servers (connect)",
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "cascet": "./dist/cli.js"
+  },
+  "main": "./dist/cli.js",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@cascet/client": "workspace:*",
+    "@cascet/core": "workspace:*",
+    "@cascet/gateway": "workspace:*"
+  }
+}

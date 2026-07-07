@@ -1,0 +1,28 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# builds
+dist/
+.next/
+out/
+target/
+*.wasm
+
+# env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+keys/
+
+# data
+*.sqlite
+*.sqlite-journal
+.cascet/
+
+# misc
+.DS_Store
+*.log
+coverage/
+.turbo/

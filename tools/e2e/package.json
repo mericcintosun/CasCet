@@ -1,0 +1,23 @@
+{
+  "name": "@cascet/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local end-to-end demo: mock facilitator + two paid gateways + a paying agent, no chain required",
+  "scripts": {
+    "gen-keys": "tsx src/gen-keys.ts",
+    "demo": "tsx src/run-demo.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@cascet/client": "workspace:*",
+    "@cascet/core": "workspace:*",
+    "@cascet/gateway": "workspace:*",
+    "casper-js-sdk": "^5.0.12",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "tsx": "^4.21.0"
+  }
+}

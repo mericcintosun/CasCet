@@ -1,0 +1,18 @@
+{
+  "name": "@cascet/server-portfolio-analyst",
+  "version": "0.1.0",
+  "description": "Paid MCP server that BUYS from other paid servers — CasCet cascading payments flagship",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@cascet/client": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.24.0"
+  }
+}
