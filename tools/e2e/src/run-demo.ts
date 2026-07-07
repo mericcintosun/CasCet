@@ -17,6 +17,10 @@ import { startMockFacilitator } from "./mock-facilitator.js";
 const ROOT = resolve(import.meta.dirname, "../../..");
 const KEYS = resolve(import.meta.dirname, "../keys");
 const FACILITATOR_PORT = 4500;
+// When the dashboard is running (pnpm --filter @cascet/dashboard dev), gateways
+// push live receipt events to it. Override with DASHBOARD_INGEST=... or "".
+const DASHBOARD_INGEST =
+  process.env.DASHBOARD_INGEST ?? "http://localhost:3939/api/ingest";
 
 const pub = (name: string) => readFileSync(resolve(KEYS, `${name}.pub`), "utf8").trim();
 
@@ -39,6 +43,7 @@ const dataConfig: CascetConfig = cascetConfigSchema.parse({
   payTo: pub("seller-data"),
   asset: baseAsset,
   facilitator: { url: `http://localhost:${FACILITATOR_PORT}` },
+  eventsUrl: DASHBOARD_INGEST || undefined,
   pricing: {
     tools: {
       get_cspr_market_data: { price: "$0.01" },
@@ -63,6 +68,7 @@ const analystConfig: CascetConfig = cascetConfigSchema.parse({
   payTo: pub("seller-analyst"),
   asset: baseAsset,
   facilitator: { url: `http://localhost:${FACILITATOR_PORT}` },
+  eventsUrl: DASHBOARD_INGEST || undefined,
   pricing: { tools: { analyze_portfolio: { price: "$0.10" } } },
   port: 4403,
 });
@@ -114,6 +120,9 @@ for (const child of children) {
 if (!rootReceipt) throw new Error("E2E FAIL: no settled root receipt on analyst gateway");
 if (children.length < 3) throw new Error(`E2E FAIL: expected ≥3 cascade children, got ${children.length}`);
 console.log(`\n✅ E2E PASS — ${children.length} downstream payments correctly linked to root ${rootReceipt.id}\n`);
+
+// Let fire-and-forget dashboard event pushes flush before we tear down.
+await new Promise(resolveDelay => setTimeout(resolveDelay, 800));
 
 await analystGateway.close();
 await dataGateway.close();
