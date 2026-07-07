@@ -7,7 +7,7 @@ export function CinematicIntro() {
     <ScrollVideo
       src="/cinematic-cascet.mp4"
       poster="/hero.png"
-      heightVh={300}
+      heightVh={450}
       // Crop ~16% off the bottom (anchored to the top) to hide any generator watermark
       // baked into the lower edge of the source clip.
       videoClassName="absolute left-0 top-0 h-[120%] w-full object-cover object-top"
