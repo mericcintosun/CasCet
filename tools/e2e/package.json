@@ -7,7 +7,8 @@
   "scripts": {
     "gen-keys": "tsx src/gen-keys.ts",
     "demo": "tsx src/run-demo.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "demo-real": "tsx src/run-real.ts"
   },
   "dependencies": {
     "@cascet/client": "workspace:*",
