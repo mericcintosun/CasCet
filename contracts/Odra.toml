@@ -3,3 +3,6 @@ fqn = "receipt_registry::ReceiptRegistry"
 
 [[contracts]]
 fqn = "revenue_split::RevenueSplit"
+
+[[contracts]]
+fqn = "demo_token::DemoToken"

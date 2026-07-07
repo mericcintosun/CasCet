@@ -143,16 +143,28 @@ Network: **Casper Testnet** (`casper:casper-test`), CEP-18 payment token, `caspe
 
 ### Live on Casper Testnet
 
-`ReceiptRegistry` is deployed and exercised on testnet:
+All three contracts are deployed and exercised on testnet:
 
-| | |
+| Contract | Package hash |
 | --- | --- |
-| Contract package | `hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97` |
-| Deploy tx | [`632a0d75…`](https://testnet.cspr.live/transaction/632a0d756c51c18ec0804b8bec338772691dca5a981835777c6512687afe1866) |
-| Anchored receipt (`record`) | [`0f796802…`](https://testnet.cspr.live/transaction/0f79680230269c43b31528d282dc094d1f5fea000087332f6193e29361b16e4d) |
-| Deployer account | [`01dd710d…`](https://testnet.cspr.live/account/01dd710d5083920b20c706a92d742c7bf9162d09c96fa373bd0a67b0bf51d3f183) |
+| ReceiptRegistry | `hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97` |
+| RevenueSplit | `hash-fa21efb406a8151d15a393bc366e51192a9ea15fd7fe23faffc54f021b32883c` |
+| DemoToken (CEP-18, WCSPR) | `hash-b3e9908b6cdbf5c565b686938994e3ac8e6749f41bcbe83615604321a0965d49` |
 
-Reading it back on-chain (`count → 1`, receipt fields intact) confirms the anchor round-trips.
+Deployer / operator account: [`01dd710d…`](https://testnet.cspr.live/account/01dd710d5083920b20c706a92d742c7bf9162d09c96fa373bd0a67b0bf51d3f183)
+
+**ReceiptRegistry — receipts anchored live by the running gateway.** A full cascade
+(1 root + 4 downstream payments) was anchored end-to-end; on-chain `count` went
+`2 → 7` and each child's `parent_id` links back to its root, so the payment graph
+reconstructs purely from chain data. ([deploy](https://testnet.cspr.live/transaction/632a0d756c51c18ec0804b8bec338772691dca5a981835777c6512687afe1866) ·
+[an anchored receipt](https://testnet.cspr.live/transaction/0f79680230269c43b31528d282dc094d1f5fea000087332f6193e29361b16e4d))
+
+**RevenueSplit — a real 60/40 split, on-chain.** Funded with 1000 WCSPR; the
+contract computed `releasable` of 600 / 400, and releasing paid the buildathon
+account exactly **400 WCSPR** (its 40%), zeroing its releasable balance.
+([fund](https://testnet.cspr.live/transaction/b7c7bbf54f4dbe9375d536c50264b399191f362ce051e3a8ea2f08f86512390d) ·
+[release 40%](https://testnet.cspr.live/transaction/462b1dafa7968ad238f671fd44e6fb3e12a9ce5e9994f1a79330c1adc15a710c) ·
+[release 60%](https://testnet.cspr.live/transaction/6fc0195ddfb9d6cd8a80eab240cf6d0f4a76c89afcea45679c0f883de9b87e3c))
 
 ---
 

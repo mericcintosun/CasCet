@@ -5,13 +5,13 @@ version = "0.1.0"
 
 [dependencies]
 odra = { version = "2.8.2", features = [], default-features = false }
+# CEP-18 reference token: deployed alongside RevenueSplit as the demo payment
+# token, and used in tests to exercise real token transfers. RevenueSplit's own
+# wasm still talks to CEP-18 via a lean self-declared external interface.
+odra-modules = { version = "2.8.2", default-features = false }
 
 [dev-dependencies]
 odra-test = { version = "2.8.2", features = [], default-features = false }
-# Real CEP-18 implementation, used only to exercise RevenueSplit token transfers
-# in the mock test env. Production RevenueSplit wasm talks to CEP-18 via a lean
-# self-declared external interface, so this stays out of the deployed contract.
-odra-modules = { version = "2.8.2", default-features = false }
 
 [build-dependencies]
 odra-build = { version = "2.8.2", features = [], default-features = false }

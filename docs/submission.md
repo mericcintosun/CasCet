@@ -27,14 +27,17 @@ AI agents reach the world through MCP servers, but almost all of them are free �
 4. **The cascade on-chain (1:30–2:05).** Cut to the dashboard: revenue ticks up live, receipts stream in, the **payment graph** branches (agent → analyst → data server) and the newest chain highlights. Click a settlement link → cspr.live testnet deploy. "Every hop, real, on Casper — instant finality, so the chain never stalls."
 5. **On-chain layer + close (2:05–2:30).** Show `cargo odra test` (8/8) and the deployed ReceiptRegistry / RevenueSplit on cspr.live. "Receipts anchored, revenue split by contract. CasCet: the payment layer for the MCP economy, first on Casper." End on repo + socials.
 
-## Testnet artifacts
+## Testnet artifacts (all live)
 
-- Deployer account: [`01dd710d…`](https://testnet.cspr.live/account/01dd710d5083920b20c706a92d742c7bf9162d09c96fa373bd0a67b0bf51d3f183)
-- **ReceiptRegistry** package: `hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97`
-- Deploy tx: [`632a0d75…`](https://testnet.cspr.live/transaction/632a0d756c51c18ec0804b8bec338772691dca5a981835777c6512687afe1866)
-- On-chain `record` (anchored receipt): [`0f796802…`](https://testnet.cspr.live/transaction/0f79680230269c43b31528d282dc094d1f5fea000087332f6193e29361b16e4d)
-- Verified on-chain: `count → 1`, receipt reads back with intact fields.
-- RevenueSplit: unit-tested (8/8); testnet deploy pending final round.
+- Deployer / operator: [`01dd710d…`](https://testnet.cspr.live/account/01dd710d5083920b20c706a92d742c7bf9162d09c96fa373bd0a67b0bf51d3f183)
+- **ReceiptRegistry**: `hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97`
+- **RevenueSplit**: `hash-fa21efb406a8151d15a393bc366e51192a9ea15fd7fe23faffc54f021b32883c`
+- **DemoToken (CEP-18)**: `hash-b3e9908b6cdbf5c565b686938994e3ac8e6749f41bcbe83615604321a0965d49`
+
+Verified on-chain:
+- Gateway anchored a full cascade (1 root + 4 children); `count` 2→7, child `parent_id` links back to root.
+- RevenueSplit funded 1000 WCSPR → releasable 600/400 → released 400 WCSPR to the buildathon account (its 40%), releasable then 0.
+- Key txs: [anchor](https://testnet.cspr.live/transaction/0f79680230269c43b31528d282dc094d1f5fea000087332f6193e29361b16e4d) · [fund-split](https://testnet.cspr.live/transaction/b7c7bbf54f4dbe9375d536c50264b399191f362ce051e3a8ea2f08f86512390d) · [release 40%](https://testnet.cspr.live/transaction/462b1dafa7968ad238f671fd44e6fb3e12a9ce5e9994f1a79330c1adc15a710c)
 
 ## Long-term launch plans (judging criterion)
 
