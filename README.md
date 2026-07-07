@@ -226,7 +226,7 @@ Two Odra contracts (Rust), unit-tested against a real CEP-18 in Odra's mock VM (
 - **`RevenueSplit`** — an OpenZeppelin-style PaymentSplitter for CEP-18. A gateway can set its `payTo` to this contract so a server's earnings split between payees by fixed weights, pull-based, enforced on-chain.
 - **`CascadeController`** — the budget-bounded cascade primitive: one deposit caps a whole call tree (enforced on-chain), with recursive revenue attribution up the tree.
 - **`PaymentChannel`** — prepaid channels for high-frequency traffic: deposit once, authorize usage off-chain with signed vouchers, redeem/reclaim on-chain. Vouchers verified in-contract via Casper `verify_signature`.
-- **`DemoToken` / `Cep18X402`** — CEP-18 payment tokens; the latter implements `transfer_with_authorization` so the hosted facilitator can settle real x402 payments.
+- **`DemoToken`** — CasCet's own CEP-18 payment token (a WCSPR-style wrapper). **`Cep18X402`** is *not* ours: it's the reference `transfer_with_authorization` (EIP-3009) token from [make-software/casper-x402](https://github.com/make-software/casper-x402), deployed to testnet so the hosted facilitator can settle real x402 payments (see [`contracts/external/`](contracts/external/) and [`NOTICE`](NOTICE)).
 
 ```bash
 cd contracts
@@ -247,7 +247,7 @@ All three contracts are deployed and exercised on testnet:
 | ReceiptRegistry | `hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97` |
 | RevenueSplit | `hash-fa21efb406a8151d15a393bc366e51192a9ea15fd7fe23faffc54f021b32883c` |
 | DemoToken (CEP-18, WCSPR) | `hash-b3e9908b6cdbf5c565b686938994e3ac8e6749f41bcbe83615604321a0965d49` |
-| Cep18X402 (payment token, `transfer_with_authorization`) | `hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3` |
+| Cep18X402 (payment token, `transfer_with_authorization`) — *third-party: [make-software/casper-x402](https://github.com/make-software/casper-x402) reference token, deployed for interop* | `hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3` |
 | PaymentChannel | `hash-53930d3982a5bea717ec919096cef407b71a1ce9022b241c1d94f19ca770ccb0` |
 | ReceiptRegistry (upgradable) | `hash-764ed7190b69dafbc94a0148a07be85227f268a85424e7186be66cdb711b8222` |
 | CascadeController | `hash-624134336d1f63ce539ebef9c226e6c463f70a8e85b593bbc5d370520d797980` |
@@ -301,4 +301,4 @@ TypeScript (Node 20, pnpm workspaces), Next.js 15 + shadcn/ui, `@make-software/c
 
 ## License
 
-Apache-2.0. Built for the Casper Agentic Buildathon 2026.
+[Apache-2.0](LICENSE). Built for the Casper Agentic Buildathon 2026. All CasCet code is original work created for this event; third-party components used for interop are listed in [`NOTICE`](NOTICE).

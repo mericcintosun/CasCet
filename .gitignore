@@ -31,3 +31,4 @@ contracts/target/
 
 # ts build cache
 *.tsbuildinfo
+.vercel

@@ -1,0 +1,32 @@
+CasCet
+Copyright 2026 Meriç Cintosun
+
+This product includes software developed for the Casper Agentic Buildathon 2026.
+All CasCet source code (the gateway, paying client, CLI, autonomous agent,
+dashboard, and the Odra contracts ReceiptRegistry, RevenueSplit, DemoToken,
+CascadeController and PaymentChannel) is original work created for this event
+and licensed under the Apache License, Version 2.0.
+
+--------------------------------------------------------------------------------
+Third-party components used, unmodified, for interoperability
+--------------------------------------------------------------------------------
+
+The following are NOT authored by CasCet. They are official / ecosystem
+components that CasCet builds on and are subject to their own licenses:
+
+- Cep18X402 payment token (`contracts/external/Cep18X402.wasm`)
+  Reference CEP-18 token with `transfer_with_authorization` (EIP-3009) from
+  make-software/casper-x402 — https://github.com/make-software/casper-x402
+  Deployed to Casper Testnet only so the hosted CSPR.cloud facilitator can
+  settle real x402 payments; CasCet did not author this contract.
+
+- @make-software/casper-x402 and @x402/* — x402 middleware / client libraries.
+
+- @modelcontextprotocol/sdk and @modelcontextprotocol/server-everything
+  (used in examples/wrap-third-party to demonstrate wrapping a third-party MCP
+  server) — Model Context Protocol, Anthropic.
+
+- Odra framework and odra-modules (CEP-18 base) — https://odra.dev
+
+- The hosted x402 facilitator at x402-facilitator.cspr.cloud (Casper / CSPR.cloud)
+  is an external service CasCet calls; it is not part of this repository.
