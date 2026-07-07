@@ -3,10 +3,14 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const smoothstep = (x: number) => x * x * (3 - 2 * x);
+
 /**
- * A scroll-scrubbed cinematic section: the video is pinned full-screen and its playhead is driven
- * by scroll position over a tall (`heightVh`) container, while `captions` cross-fade across the
- * scroll. Degrades gracefully to the poster image if the video is missing or can't scrub.
+ * A scroll-scrubbed cinematic section. The video is pinned full-screen and its playhead follows
+ * scroll — but smoothed: a persistent rAF loop eases the playhead toward the scroll target and
+ * drives caption opacity by writing styles directly (no per-frame React re-render), so scrubbing
+ * stays buttery even with coarse scroll events. Degrades to the poster if the video can't scrub.
  */
 export function ScrollVideo({
   src,
@@ -23,96 +27,121 @@ export function ScrollVideo({
 }) {
   const sectionRef = React.useRef<HTMLDivElement>(null);
   const videoRef = React.useRef<HTMLVideoElement>(null);
-  const [progress, setProgress] = React.useState(0);
-  const rafRef = React.useRef<number | null>(null);
+  const capRefs = React.useRef<(HTMLDivElement | null)[]>([]);
+  const hintRef = React.useRef<HTMLDivElement>(null);
+  const target = React.useRef(0);
+  const current = React.useRef(0);
 
   React.useEffect(() => {
-    const video = videoRef.current;
-    if (video) {
-      video.pause();
-      // Ensure the first frame is decoded so scrubbing has something to show.
-      video.currentTime = 0.001;
+    const v = videoRef.current;
+    if (v) {
+      v.pause();
+      const decodeFirst = () => {
+        try {
+          v.currentTime = 0.01;
+        } catch {
+          /* ignore */
+        }
+      };
+      if (v.readyState >= 1) decodeFirst();
+      else v.addEventListener("loadedmetadata", decodeFirst, { once: true });
     }
 
-    const update = () => {
-      rafRef.current = null;
+    const n = captions.length;
+    let raf = 0;
+
+    const measure = () => {
       const el = sectionRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      const total = el.offsetHeight - window.innerHeight;
-      const p = total > 0 ? Math.min(1, Math.max(0, -rect.top / total)) : 0;
-      setProgress(p);
-      const v = videoRef.current;
-      if (v && v.duration && Number.isFinite(v.duration)) {
-        const t = p * v.duration;
-        if (Math.abs(v.currentTime - t) > 0.03) v.currentTime = t;
+      const scrollable = el.offsetHeight - window.innerHeight;
+      target.current = scrollable > 0 ? clamp(-rect.top / scrollable, 0, 1) : 0;
+    };
+
+    const loop = () => {
+      // ease the playhead toward the scroll target
+      current.current += (target.current - current.current) * 0.085;
+      const p = current.current;
+
+      const vid = videoRef.current;
+      if (vid && vid.duration && Number.isFinite(vid.duration)) {
+        const t = p * (vid.duration - 0.05);
+        // only seek on a meaningful delta — repeated tiny seeks stutter
+        if (Math.abs(vid.currentTime - t) > 0.015) {
+          try {
+            vid.currentTime = t;
+          } catch {
+            /* seeking not ready */
+          }
+        }
       }
+
+      for (let i = 0; i < n; i++) {
+        const el = capRefs.current[i];
+        if (!el) continue;
+        // distribute across the full scroll: first caption crisp at the top, last at the bottom
+        const center = n > 1 ? i / (n - 1) : 0.5;
+        const band = n > 1 ? 0.62 / (n - 1) : 1;
+        const o = clamp(1 - Math.abs(p - center) / band, 0, 1);
+        el.style.opacity = String(smoothstep(o));
+        el.style.transform = `translateY(${(p - center) * -34}px)`;
+      }
+
+      if (hintRef.current) hintRef.current.style.opacity = p < 0.05 ? "0.7" : "0";
+
+      raf = requestAnimationFrame(loop);
     };
 
-    const onScroll = () => {
-      if (rafRef.current == null) rafRef.current = requestAnimationFrame(update);
-    };
-
-    update();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
+    measure();
+    window.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure);
+    raf = requestAnimationFrame(loop);
     return () => {
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
     };
-  }, []);
-
-  const n = captions.length;
+  }, [captions.length]);
 
   return (
     <section ref={sectionRef} className="relative" style={{ height: `${heightVh}vh` }}>
       <div className="sticky top-0 flex h-screen items-center justify-center overflow-hidden bg-[hsl(228_16%_4%)]">
-        {/* poster underlay — visible before the video decodes or if it never loads */}
-        <div
-          className="absolute inset-0 bg-cover bg-center opacity-70"
-          style={{ backgroundImage: `url(${poster})` }}
-          aria-hidden
-        />
+        {/* poster underlay — shown until the video decodes / if it never loads */}
+        <div className="absolute inset-0 bg-cover bg-center opacity-70" style={{ backgroundImage: `url(${poster})` }} aria-hidden />
         <video
           ref={videoRef}
           muted
           playsInline
           preload="auto"
           poster={poster}
-          className={cn("absolute inset-0 h-full w-full object-cover opacity-90", videoClassName)}
+          className={cn("absolute inset-0 h-full w-full object-cover", videoClassName)}
           aria-hidden
         >
           <source src={src} type="video/mp4" />
         </video>
 
         {/* legibility scrims */}
-        <div className="absolute inset-0 bg-gradient-to-b from-background/60 via-background/30 to-background" />
+        <div className="absolute inset-0 bg-gradient-to-b from-background/55 via-background/25 to-background" />
         <div className="grain absolute inset-0" />
 
-        {/* pinned captions */}
-        <div className="relative mx-auto max-w-3xl px-6 text-center">
-          {captions.map((c, i) => {
-            const center = (i + 0.5) / n;
-            const dist = Math.abs(progress - center);
-            const opacity = Math.max(0, 1 - dist / (0.5 / n));
-            const y = (progress - center) * -40;
-            return (
-              <div
-                key={i}
-                className="absolute inset-x-0 top-1/2 -translate-y-1/2"
-                style={{ opacity, transform: `translateY(calc(-50% + ${y}px))`, pointerEvents: opacity > 0.5 ? "auto" : "none" }}
-              >
-                {c}
-              </div>
-            );
-          })}
-        </div>
+        {/* pinned captions — full-width stage so lines don't collapse per-word */}
+        {captions.map((c, i) => (
+          <div
+            key={i}
+            ref={el => {
+              capRefs.current[i] = el;
+            }}
+            className="absolute inset-0 flex items-center justify-center px-6 will-change-[opacity,transform]"
+            style={{ opacity: 0 }}
+          >
+            <div className="w-full max-w-4xl text-center">{c}</div>
+          </div>
+        ))}
 
-        {/* scroll hint */}
         <div
-          className="absolute bottom-8 left-1/2 -translate-x-1/2 font-mono text-[11px] uppercase tracking-[0.25em] text-muted-foreground transition-opacity"
-          style={{ opacity: progress < 0.06 ? 0.7 : 0 }}
+          ref={hintRef}
+          className="absolute bottom-8 left-1/2 -translate-x-1/2 font-mono text-[11px] uppercase tracking-[0.25em] text-muted-foreground"
+          style={{ opacity: 0.7 }}
         >
           scroll ↓
         </div>
