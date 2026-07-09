@@ -3,3 +3,7 @@ packages:
   - "servers/*"
   - "apps/*"
   - "tools/*"
+
+# Security override: force patched postcss (GHSA-qx2v-qp2m-jg93) across the tree.
+overrides:
+  postcss@<8.5.10: ">=8.5.10"

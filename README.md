@@ -154,6 +154,11 @@ This is not a portable pattern dressed in Casper branding — it leans on things
 
 ## Quickstart
 
+> Reviewers: [`docs/testing-playbook.md`](docs/testing-playbook.md) is a concise,
+> step-by-step guide to verify everything works, and
+> [`docs/buidl-page.md`](docs/buidl-page.md) lists every contract package hash and
+> sample Testnet transaction with descriptions.
+
 Requirements: Node ≥ 20, pnpm, Rust + [`cargo-odra`](https://odra.dev) (for contracts).
 
 ```bash

@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # JavaScript / TypeScript workspace (pnpm monorepo)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      js-dependencies:
+        patterns:
+          - "*"
+
+  # GitHub Actions used by the workflows below
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Rust / Odra smart contracts
+  - package-ecosystem: "cargo"
+    directory: "/contracts"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

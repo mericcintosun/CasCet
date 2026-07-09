@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a problem with CasCet
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. For security-sensitive issues, please use the
+        Security tab instead of this form.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: When I run `cascet connect`, ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands or actions that trigger the bug.
+      placeholder: |
+        1. pnpm install
+        2. pnpm --filter @cascet/e2e demo
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - gateway (cascet wrap)
+        - client (cascet connect)
+        - agent
+        - cli
+        - dashboard
+        - contracts
+        - docs / other
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node version, pnpm version, and (if relevant) Rust/cargo-odra version.
+      placeholder: macOS 15, Node 20.11, pnpm 10.20.0
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant output. Redact any keys or secrets.
+      render: shell
+    validations:
+      required: false
