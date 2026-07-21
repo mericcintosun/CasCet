@@ -29,7 +29,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
           cache: pnpm
 
       - name: Install
@@ -38,25 +37,24 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Authenticate to npm
-        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > "$HOME/.npmrc"
+      - name: Authenticate to npm (trim + verify)
+        run: |
+          TOKEN="$(printf '%s' "${NPM_TOKEN}" | tr -d '[:space:]')"
+          printf '//registry.npmjs.org/:_authToken=%s\nregistry=https://registry.npmjs.org/\n' "$TOKEN" > "$HOME/.npmrc"
+          echo "trimmed token length: ${#TOKEN} (a classic npm token is ~40 chars)"
+          if who="$(npm whoami 2>&1)"; then
+            echo "authenticated as: $who"
+            echo "--- org membership (cascet) ---"
+            npm org ls cascet 2>&1 | head -20 || true
+          else
+            echo "::error::npm auth failed ($who). The NPM_TOKEN secret is not a valid npm token — regenerate a Classic > Automation token on npmjs.com and re-add it as NPM_TOKEN (paste into the *Secret* field, no spaces/newlines)."
+            exit 1
+          fi
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: npm identity (diagnostic)
-        run: |
-          echo "whoami: $(npm whoami 2>&1 || echo FAILED)"
-          echo "--- org ls cascet ---"
-          npm org ls cascet 2>&1 | head -20 || true
-          echo "--- access list packages ---"
-          npm access list packages 2>&1 | head -20 || true
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
       - name: Publish (topological order, skips private + already-published)
         run: pnpm -r publish --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Clean up credentials
         if: always()
