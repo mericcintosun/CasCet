@@ -1,14 +1,15 @@
 "use client";
 
 import * as React from "react";
-import { Anchor, Coins, GitBranch, Users, ExternalLink, Boxes } from "lucide-react";
+import { Anchor, Coins, GitBranch, Users, ExternalLink, Boxes, Radio } from "lucide-react";
+import type { PaymentReceipt } from "@cascet/core";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { SiteHeader } from "@/components/site-header";
-import { useLiveState } from "@/lib/use-live-state";
 import { computeEconomy, CONTRACTS, CSPR_LIVE_CONTRACT } from "@/lib/economy";
-import { formatTokens } from "@/lib/utils";
+import { CSPR_LIVE_TX } from "@/lib/casper/constants";
+import { formatTokens, shortHex } from "@/lib/utils";
 
 const CONTRACT_ROWS = [
   { key: "receiptRegistry", label: "ReceiptRegistry", hash: CONTRACTS.receiptRegistry, note: "anchors every paid call + cascade link" },
@@ -17,8 +18,30 @@ const CONTRACT_ROWS = [
 ];
 
 export default function ExplorerPage() {
-  const { state, connected } = useLiveState();
-  const economy = React.useMemo(() => computeEconomy(state.receipts), [state.receipts]);
+  const [receipts, setReceipts] = React.useState<PaymentReceipt[]>([]);
+  const [loaded, setLoaded] = React.useState(false);
+
+  React.useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetch("/api/onchain")
+        .then((r) => r.json())
+        .then((d) => {
+          if (alive) {
+            setReceipts(d.receipts ?? []);
+            setLoaded(true);
+          }
+        })
+        .catch(() => alive && setLoaded(true));
+    load();
+    const id = setInterval(load, 30_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  const economy = React.useMemo(() => computeEconomy(receipts), [receipts]);
 
   const tiles = [
     { label: "Total revenue", icon: Coins, value: formatTokens(economy.totalRevenueRaw, 9, economy.assetSymbol) },
@@ -29,13 +52,18 @@ export default function ExplorerPage() {
 
   return (
     <div className="min-h-screen">
-      <SiteHeader connected={connected} />
+      <SiteHeader />
       <main className="mx-auto max-w-6xl space-y-6 px-6 py-8">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">x402 economy explorer</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight">x402 economy explorer</h1>
+            <Badge variant="success" className="gap-1">
+              <Radio className="h-3 w-3" /> on-chain
+            </Badge>
+          </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            The machine-to-machine economy running through CasCet on Casper, every payment settled over
-            x402 and anchored on-chain in the ReceiptRegistry.
+            The machine-to-machine economy running through CasCet, reconstructed live from the payments
+            anchored on-chain in the ReceiptRegistry — not an off-chain cache.
           </p>
         </div>
 
@@ -63,7 +91,7 @@ export default function ExplorerPage() {
             <CardDescription>Live on Casper Testnet. The canonical state behind this explorer.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
-            {CONTRACT_ROWS.map(c => (
+            {CONTRACT_ROWS.map((c) => (
               <div key={c.key} className="flex items-center justify-between rounded-lg border px-3 py-2">
                 <div className="min-w-0">
                   <div className="text-sm font-medium">{c.label}</div>
@@ -90,7 +118,9 @@ export default function ExplorerPage() {
             </CardHeader>
             <CardContent className="px-0">
               {economy.servers.length === 0 ? (
-                <div className="p-6 text-center text-sm text-muted-foreground">No revenue yet.</div>
+                <div className="p-6 text-center text-sm text-muted-foreground">
+                  {loaded ? "No anchored receipts yet." : "Reading the ReceiptRegistry…"}
+                </div>
               ) : (
                 <Table>
                   <TableHeader>
@@ -102,7 +132,7 @@ export default function ExplorerPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {economy.servers.map(s => (
+                    {economy.servers.map((s) => (
                       <TableRow key={s.server}>
                         <TableCell className="font-medium">{s.server}</TableCell>
                         <TableCell className="tabular-nums">{formatTokens(s.revenueRaw, 9, economy.assetSymbol)}</TableCell>
@@ -123,7 +153,9 @@ export default function ExplorerPage() {
             </CardHeader>
             <CardContent className="px-0">
               {economy.tools.length === 0 ? (
-                <div className="p-6 text-center text-sm text-muted-foreground">No tool sales yet.</div>
+                <div className="p-6 text-center text-sm text-muted-foreground">
+                  {loaded ? "No tool sales yet." : "Reading the ReceiptRegistry…"}
+                </div>
               ) : (
                 <Table>
                   <TableHeader>
@@ -135,7 +167,7 @@ export default function ExplorerPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {economy.tools.map(t => (
+                    {economy.tools.map((t) => (
                       <TableRow key={t.key}>
                         <TableCell className="font-medium">{t.tool}</TableCell>
                         <TableCell className="text-muted-foreground">{t.server}</TableCell>
@@ -150,8 +182,64 @@ export default function ExplorerPage() {
           </Card>
         </div>
 
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Anchored receipts</CardTitle>
+            <CardDescription>
+              Each row is a settled tool call recorded on-chain. Cascaded calls link back to their root payment.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="px-0">
+            {receipts.length === 0 ? (
+              <div className="p-6 text-center text-sm text-muted-foreground">
+                {loaded ? "No receipts anchored yet." : "Reading the ReceiptRegistry…"}
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Tool</TableHead>
+                    <TableHead>Server</TableHead>
+                    <TableHead>Amount</TableHead>
+                    <TableHead>Payer</TableHead>
+                    <TableHead>Cascade</TableHead>
+                    <TableHead>Anchor tx</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {receipts.slice(0, 15).map((r) => (
+                    <TableRow key={r.id}>
+                      <TableCell className="font-medium">{r.tool}</TableCell>
+                      <TableCell className="text-muted-foreground">{r.server}</TableCell>
+                      <TableCell className="tabular-nums">{formatTokens(r.amountRaw, 9, r.assetSymbol)}</TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">{shortHex(r.payer, 8, 4)}</TableCell>
+                      <TableCell>
+                        {r.parentId ? <Badge variant="secondary">child</Badge> : <Badge variant="outline">root</Badge>}
+                      </TableCell>
+                      <TableCell>
+                        {r.anchoredTxHash ? (
+                          <a
+                            href={`${CSPR_LIVE_TX}${r.anchoredTxHash}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 font-mono text-xs text-primary hover:underline"
+                          >
+                            {r.anchoredTxHash.slice(0, 8)}… <ExternalLink className="h-3 w-3" />
+                          </a>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+
         <p className="text-center text-xs text-muted-foreground">
-          Canonical counts live on-chain in the{" "}
+          Reconstructed from the{" "}
           <a
             href={`${CSPR_LIVE_CONTRACT}${CONTRACTS.receiptRegistry}`}
             target="_blank"
@@ -160,7 +248,7 @@ export default function ExplorerPage() {
           >
             ReceiptRegistry
           </a>
-          . This view aggregates receipts anchored there.
+          &apos;s <code className="text-xs">record</code> transactions — the payment graph is verifiable purely from chain data.
         </p>
       </main>
     </div>
