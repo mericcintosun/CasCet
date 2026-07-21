@@ -5,21 +5,20 @@ criterion). Create the accounts with the handles below, paste the copy, wire the
 final URLs into `apps/dashboard/app/page.tsx` (the `SOCIALS` object) and the
 README badges.
 
-## Proposed handles
+## Handles (live)
 
-Pick the first that's free; keep the handle identical across platforms for brand
-consistency.
-
-| Platform | Handle (1st choice) | Fallbacks | URL to wire in |
+| Platform | Handle | Status | URL |
 |---|---|---|---|
-| X (Twitter) | `@cascet_xyz` | `@cascet_dev`, `@getcascet`, `@cascetHQ` | `https://x.com/<handle>` |
-| Telegram | `t.me/cascet` | `t.me/cascet_xyz`, `t.me/cascetHQ` | channel or group invite |
-| Discord | `discord.gg/cascet` | any invite code | permanent invite link |
-| GitHub | `mericcintosun/CasCet` | — | already live |
+| X (Twitter) | `@cascet_xyz` | live | `https://x.com/cascet_xyz` |
+| Discord | server "CasCet" | live | `https://discord.gg/fcjevk47k` |
+| GitHub | `mericcintosun/CasCet` | live | `https://github.com/mericcintosun/CasCet` |
+| Telegram | — | not planned | — |
 
-> After creating them, replace the placeholders in `SOCIALS` (site footer + CTA
-> already render them) and the README. The site currently points at the 1st-choice
-> handles above.
+> X, Discord and GitHub are wired into `SOCIALS` in
+> `apps/dashboard/app/page.tsx` (site footer + CTA), the README badges, and this
+> kit. Telegram is not planned. To configure the Discord server (channels,
+> welcome message, announcements) via a Discord MCP server, see
+> [docs/discord-mcp-handoff.md](discord-mcp-handoff.md).
 
 ## Brand basics (already in `apps/dashboard/public/`)
 
@@ -72,7 +71,9 @@ Try it 👉 <site url>
 - "watch an AI agent price paid tools, buy only what it needs, and pay per call under a budget:" + the agent demo clip.
 - "the cascade playground is live — drag the sliders, watch recursive attribution flow up the tree:" + link.
 
-## Telegram (channel/group)
+## Telegram (not planned)
+
+> Kept for reference only — CasCet is not launching a Telegram channel.
 
 **Name:** CasCet
 **Description:**

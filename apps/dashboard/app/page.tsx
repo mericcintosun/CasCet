@@ -23,14 +23,13 @@ import { Steps } from "@/components/landing/steps";
 import { GetStarted } from "@/components/landing/get-started";
 import { Reveal } from "@/components/landing/reveal";
 import { CascadeFlow } from "@/components/landing/cascade-flow";
-import { XIcon, TelegramIcon, DiscordIcon } from "@/components/social-icons";
+import { XIcon, DiscordIcon } from "@/components/social-icons";
 import { cn } from "@/lib/utils";
 
 const GH = "https://github.com/mericcintosun/CasCet";
 const SOCIALS = {
   x: "https://x.com/cascet_xyz",
-  telegram: "https://t.me/cascet",
-  discord: "https://discord.gg/cascet",
+  discord: "https://discord.gg/fcjevk47k",
   github: GH,
 };
 const CONTRACT = (hash: string) => `https://testnet.cspr.live/contract-package/${hash}`;
@@ -581,7 +580,6 @@ function FinalCta() {
             <span className="mr-1 font-mono text-xs text-muted-foreground">Follow the build</span>
             {[
               { href: SOCIALS.x, label: "X", Icon: XIcon },
-              { href: SOCIALS.telegram, label: "Telegram", Icon: TelegramIcon },
               { href: SOCIALS.discord, label: "Discord", Icon: DiscordIcon },
             ].map(s => (
               <Link
@@ -605,7 +603,6 @@ function FinalCta() {
 function Footer() {
   const socials = [
     { href: SOCIALS.x, label: "X", Icon: XIcon },
-    { href: SOCIALS.telegram, label: "Telegram", Icon: TelegramIcon },
     { href: SOCIALS.discord, label: "Discord", Icon: DiscordIcon },
     { href: SOCIALS.github, label: "GitHub", Icon: Github },
   ];

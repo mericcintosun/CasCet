@@ -8,9 +8,7 @@ Casper Agentic Buildathon 2026 · Casper Innovation Track
 
 [Architecture](#architecture) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [Contracts](#on-chain-layer) · [Roadmap](#roadmap)
 
-[**Live site**](https://cascet.vercel.app) · [X](https://x.com/cascet_xyz) · [Telegram](https://t.me/cascet) · [Discord](https://discord.gg/cascet) · [GitHub](https://github.com/mericcintosun/CasCet)
-
-<sub>Social handles are the launch-kit defaults (see [docs/launch-kit.md](docs/launch-kit.md)); swap for the final URLs once the accounts are live.</sub>
+[**Live site**](https://cascet.vercel.app) · [X](https://x.com/cascet_xyz) · [Discord](https://discord.gg/fcjevk47k) · [GitHub](https://github.com/mericcintosun/CasCet)
 
 </div>
 
@@ -298,7 +296,7 @@ This is a real project, not a hackathon throwaway — there's a live [roadmap se
 - **Q4 2026 — mainnet & monetization:** mainnet launch; **a protocol take-rate on settled volume** (the business model); per-second / streaming price schemes for high-frequency agent traffic; stable JS/Rust/Python SDKs and a public metrics API.
 - **2027 — the agent-economy layer:** an agent-facing pricing-discovery API and a Bazaar marketplace of paid MCP tools; on-chain reputation for tools and agents; cross-chain settlement — CasCet as default rails for machine-to-machine commerce.
 
-**Socials & launch:** X / Telegram / Discord / GitHub linked above; copy-paste launch content (bio, pinned thread, channel descriptions) is in [docs/launch-kit.md](docs/launch-kit.md).
+**Socials & launch:** X / Discord / GitHub linked above; copy-paste launch content (bio, pinned thread, channel descriptions) is in [docs/launch-kit.md](docs/launch-kit.md).
 
 ## Tech
 
