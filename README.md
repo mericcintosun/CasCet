@@ -225,7 +225,7 @@ npx cascet connect http://localhost:4402/mcp
 
 ## On-chain layer
 
-Two Odra contracts (Rust), unit-tested against a real CEP-18 in Odra's mock VM (`cargo odra test`, 8/8 green):
+Five Odra contracts (Rust), unit-tested against a real CEP-18 in Odra's mock VM (`cargo odra test`, 13/13 green):
 
 - **`ReceiptRegistry`** — anchors settled tool-call receipts on-chain, each carrying its cascade `parent_id`. Makes two things verifiable without trusting the gateway: that a call was paid, and how payments compose. Permissioned recorders, duplicate protection, events.
 - **`RevenueSplit`** — an OpenZeppelin-style PaymentSplitter for CEP-18. A gateway can set its `payTo` to this contract so a server's earnings split between payees by fixed weights, pull-based, enforced on-chain.

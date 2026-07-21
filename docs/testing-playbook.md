@@ -97,7 +97,7 @@ cd contracts
 cargo odra test
 ```
 
-Expected: the Odra unit tests pass (8/8) in the mock VM against a real CEP-18.
+Expected: the Odra unit tests pass (13/13) in the mock VM against a real CEP-18.
 
 ## Verify the on-chain artifacts directly
 

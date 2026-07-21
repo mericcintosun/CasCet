@@ -40,6 +40,7 @@ const CONTRACTS = [
   { name: "ReceiptRegistry", note: "on-chain settled-call receipts with cascade parent links", hash: "bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97" },
   { name: "PaymentChannel", note: "prepaid channels, off-chain signed vouchers", hash: "53930d3982a5bea717ec919096cef407b71a1ce9022b241c1d94f19ca770ccb0" },
   { name: "RevenueSplit", note: "on-chain CEP-18 revenue splitter", hash: "fa21efb406a8151d15a393bc366e51192a9ea15fd7fe23faffc54f021b32883c" },
+  { name: "DemoToken", note: "CasCet CEP-18 payment token (WCSPR-style)", hash: "b3e9908b6cdbf5c565b686938994e3ac8e6749f41bcbe83615604321a0965d49" },
   { name: "Cep18X402", note: "payment token with transfer_with_authorization", hash: "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3" },
   { name: "ReceiptRegistry v2", note: "upgradable; live in-place upgrade, state preserved", hash: "764ed7190b69dafbc94a0148a07be85227f268a85424e7186be66cdb711b8222" },
 ];

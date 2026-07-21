@@ -15,7 +15,7 @@ AI agents reach the world through MCP servers, but almost all of them are free �
 - **Gateway** (`cascet wrap`) — wraps any MCP server, per-tool x402 pricing, charge-only-on-success, receipt store + live event push.
 - **Client** (`cascet connect`) — paying stdio bridge for MCP hosts with per-call/session spend budgets; cascade parent propagation.
 - **Two flagship paid MCP servers** — `casper-defi-data` (live CSPR/RWA/DeFi data) and `portfolio-analyst`, which autonomously buys from the data server (the cascade).
-- **Two Odra contracts** — `ReceiptRegistry` (anchors receipts + cascade links) and `RevenueSplit` (CEP-18 PaymentSplitter). 8/8 unit tests green against a real CEP-18.
+- **Five Odra contracts** — `ReceiptRegistry` (anchors receipts + cascade links), `RevenueSplit` (CEP-18 PaymentSplitter), `CascadeController` (budget-bounded cascade tree), `PaymentChannel` (prepaid voucher channels) and a `DemoToken` CEP-18. 13/13 unit tests green against a real CEP-18.
 - **Live dashboard** — Next.js + shadcn/ui, dark/light/system, real-time revenue, receipts with cspr.live links, and the cascading payment graph.
 - **Local E2E** — one command runs the whole cascade with a mock facilitator; asserts every downstream payment links to the root.
 
@@ -25,7 +25,7 @@ AI agents reach the world through MCP servers, but almost all of them are free �
 2. **Wrap (0:20–0:50).** Terminal: `npx cascet init` → show `cascet.config.json` with per-tool prices → `npx cascet wrap`. "That's a normal MCP server, now paid. No code changes."
 3. **Agent pays (0:50–1:30).** Start the dashboard. Run the demo / point Claude at the analyst via `cascet connect`. Call `analyze_portfolio`. Narrate: "The agent pays 10 cents. But watch — the analysis tool is itself a customer." Show the terminal cost breakdown: analyst buys 4 data tools for 7 cents.
 4. **The cascade on-chain (1:30–2:05).** Cut to the dashboard: revenue ticks up live, receipts stream in, the **payment graph** branches (agent → analyst → data server) and the newest chain highlights. Click a settlement link → cspr.live testnet deploy. "Every hop, real, on Casper — instant finality, so the chain never stalls."
-5. **On-chain layer + close (2:05–2:30).** Show `cargo odra test` (8/8) and the deployed ReceiptRegistry / RevenueSplit on cspr.live. "Receipts anchored, revenue split by contract. CasCet: the payment layer for the MCP economy, first on Casper." End on repo + socials.
+5. **On-chain layer + close (2:05–2:30).** Show `cargo odra test` (13/13) and the deployed ReceiptRegistry / RevenueSplit on cspr.live. "Receipts anchored, revenue split by contract. CasCet: the payment layer for the MCP economy, first on Casper." End on repo + socials.
 
 ## Testnet artifacts (all live)
 
