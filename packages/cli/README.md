@@ -1,4 +1,4 @@
-# cascet
+# @cascet/cli
 
 **Turn any MCP server into a paid service — per-tool [x402](https://www.x402.org)
 micropayments settled on [Casper](https://casper.network), with cascading
@@ -9,10 +9,12 @@ server so agents pay per tool call, or connect any MCP host to paid servers so i
 answers `402` challenges automatically under a spending budget.
 
 ```bash
-npx cascet init          # write a starter cascet.config.json
-npx cascet wrap          # put a paywall in front of your MCP server (no code changes)
-npx cascet connect <url> # stdio bridge: let any MCP host pay for paid servers
+npx @cascet/cli init          # write a starter cascet.config.json
+npx @cascet/cli wrap          # put a paywall in front of your MCP server (no code changes)
+npx @cascet/cli connect <url> # stdio bridge: let any MCP host pay for paid servers
 ```
+
+> Installing globally (`npm i -g @cascet/cli`) exposes the command as `cascet`.
 
 ## Commands
 
@@ -35,7 +37,7 @@ budget.
 ```bash
 CASCET_KEY_PATH=./agent.pem \
 CASCET_MAX_SESSION=5000000000 \
-npx cascet connect http://localhost:4402/mcp
+npx @cascet/cli connect http://localhost:4402/mcp
 ```
 
 **`connect` env vars:** `CASCET_KEY_PATH` (PEM private key, required) ·
