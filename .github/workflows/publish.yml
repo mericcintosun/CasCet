@@ -53,8 +53,19 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish (topological order, skips private + already-published)
-        run: pnpm -r publish --access public --no-git-checks
+      - name: Publish new versions only (in dependency order)
+        run: |
+          set -euo pipefail
+          for dir in packages/core packages/client packages/gateway packages/cli; do
+            name=$(node -p "require('./$dir/package.json').name")
+            ver=$(node -p "require('./$dir/package.json').version")
+            if npm view "$name@$ver" version >/dev/null 2>&1; then
+              echo "= $name@$ver already on npm — skipping"
+            else
+              echo "+ publishing $name@$ver"
+              ( cd "$dir" && pnpm publish --access public --no-git-checks )
+            fi
+          done
 
       - name: Clean up credentials
         if: always()
