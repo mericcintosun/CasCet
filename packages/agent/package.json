@@ -13,7 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.110.0",
+    "@anthropic-ai/sdk": "^0.112.4",
     "@cascet/client": "workspace:*",
     "@cascet/core": "workspace:*"
   }
