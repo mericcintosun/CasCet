@@ -1,9 +1,16 @@
-# Discord MCP — handoff for the next agent
+# Discord — server setup (automated) + MCP handoff reference
 
-**Purpose:** hand the CasCet Discord server to the next agent so it can be
-configured (channels, roles, welcome + announcement content) through a **Discord
-MCP server** connected to Claude. Socials are a scored Buildathon criterion, so a
-real, populated server matters — not just an invite link.
+**Purpose:** configure the CasCet Discord server (channels, roles, welcome,
+onboarding, announcements) so it looks professional and populated — socials are a
+scored Buildathon criterion, so a real server matters, not just an invite link.
+
+> **Status — automated.** The full configuration now ships as a one-command,
+> idempotent script in [`tools/discord`](../tools/discord). Create a bot, drop the
+> token + server ID in `tools/discord/.env`, and run
+> `pnpm --filter @cascet/discord-setup setup`. It builds everything below and can
+> be re-run safely. The Discord-MCP path (bottom of this doc) is kept as an
+> alternative; you do not need it — the script gets the same result with no extra
+> moving parts.
 
 ## Current state (already done)
 
@@ -19,27 +26,48 @@ real, populated server matters — not just an invite link.
 - **Live socials:** X `@cascet_xyz` (<https://x.com/cascet_xyz>), Discord (above),
   GitHub `mericcintosun/CasCet`. **Telegram is not planned** — do not add one.
 
-## What the next agent should do
+## The finalized design (what the script builds)
 
-Connect a Discord MCP server and configure the CasCet server. Concretely:
+Run `tools/discord` (see its [README](../tools/discord/README.md)) — it applies
+all of this idempotently. Kept here as the canonical spec so anyone can rebuild it
+by hand if needed.
 
-1. **Create channels** (from `docs/launch-kit.md`): `#announcements`, `#general`,
-   `#dev`, `#showcase`. Set `#announcements` to read-only for @everyone.
-2. **Post the welcome / first announcement** in `#announcements` (copy in
-   `launch-kit.md` → "Discord"):
+**Roles** (top → bottom): **Core Team** (acid-lime, admin, hoisted) · **Contributor**
+(teal, hoisted) · **Builder** (lime, hoisted) · self-assign topic roles **x402** /
+**MCP** / **Casper / Odra** / **DeFi / RWA** (picked in onboarding).
+
+**Channels** (`#announcements`, `#roadmap`, `#welcome`, `#git-feed` are read-only
+for @everyone):
+
+- **INFORMATION** — `#welcome` (rules + links) · `#announcements` (news) · `#roadmap`
+- **COMMUNITY** — `#general` · `#introductions` · `#showcase` · `#off-topic`
+- **BUILD** — `#dev` · `#x402-and-mcp` · `#contracts` · `#support` · `#feedback`
+- **GITHUB** — `#git-feed` (webhook target for commits/PRs/releases)
+- **VOICE** — `Community` · `Pair Programming`
+
+**Content, applied automatically:**
+
+1. **Server icon** from `apps/dashboard/public/logo.png`.
+2. **Pinned welcome + rules** embed in `#welcome`.
+3. **Pinned launch announcement** in `#announcements`:
    > Welcome to CasCet — Stripe for MCP on Casper, with cascading agent-to-agent
    > payments settled on-chain. Repo: github.com/mericcintosun/CasCet · Site:
    > https://cascet.vercel.app. Say hi in #general.
-3. **Set the server description / brand.** Avatar = `apps/dashboard/public/logo.png`,
-   banner = `apps/dashboard/public/og.png`; accent acid-lime `#C6F94E`, teal
-   `#2DE0C0`, near-black `#0B0D12` (see `launch-kit.md` → "Brand basics").
-4. **(Optional) Roles:** a `Builder`/`Contributor` role and a bot/automation role
-   if the MCP integration needs elevated permissions.
-5. **(Optional) Pin** the site URL + one-line pitch in `#general`.
+4. **Pinned roadmap** embed in `#roadmap`; **pitch pin** in `#general`.
+5. **Welcome screen** + **two onboarding prompts** ("What brings you to CasCet?" →
+   Builder/Contributor role; "What are you into?" → topic roles).
+6. **Scheduled event** "CasCet Demo Day" (external, links to the site).
+7. **`#git-feed` webhook** — the script prints the URL; paste it into GitHub →
+   Settings → Webhooks with `/github` appended.
 
-Keep everything consistent with `docs/launch-kit.md` (it holds the canonical copy,
-bio, and pinned-thread text). If the invite link changes, update the three
-wiring locations listed above and re-run `pnpm --filter @cascet/dashboard build`.
+**Brand:** accent acid-lime `#C6F94E`, teal `#2DE0C0`, near-black `#0B0D12`
+(see `launch-kit.md` → "Brand basics"). Banner (`apps/dashboard/public/og.png`)
+needs Level-2 Boosts, so upload it manually once boosted.
+
+Keep everything consistent with `docs/launch-kit.md` (canonical copy, bio, pinned
+text). If the invite link changes, update `apps/dashboard/app/page.tsx`
+(`SOCIALS`), `README.md`, and `docs/launch-kit.md`, then re-run
+`pnpm --filter @cascet/dashboard build`.
 
 ## Connecting a Discord MCP server
 

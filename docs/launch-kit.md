@@ -84,10 +84,20 @@ Try it 👉 <site url>
 
 ## Discord
 
-**Server name:** CasCet
-**Suggested channels:** `#announcements`, `#general`, `#dev`, `#showcase`.
+**Server name:** CasCet · invite `https://discord.gg/fcjevk47k`
+
+The whole server (roles, channels, welcome, onboarding, pinned content, a Demo Day
+event) is built by a one-command script — [`tools/discord`](../tools/discord).
+Create a bot, run `pnpm --filter @cascet/discord-setup setup`. Structure:
+
+- **INFORMATION** (read-only): `#welcome` · `#announcements` · `#roadmap`
+- **COMMUNITY:** `#general` · `#introductions` · `#showcase` · `#off-topic`
+- **BUILD:** `#dev` · `#x402-and-mcp` · `#contracts` · `#support` · `#feedback`
+- **GITHUB:** `#git-feed` (webhook) · **VOICE:** `Community` · `Pair Programming`
+- **Roles:** Core Team · Contributor · Builder · topic roles x402 / MCP / Casper / DeFi-RWA
+
 **Welcome / #announcements first message:**
-> Welcome to CasCet — Stripe for MCP on Casper, with cascading agent-to-agent payments settled on-chain. Repo: github.com/mericcintosun/CasCet · Site: <url>. Say hi in #general.
+> Welcome to CasCet — Stripe for MCP on Casper, with cascading agent-to-agent payments settled on-chain. Repo: github.com/mericcintosun/CasCet · Site: https://cascet.vercel.app. Say hi in #general.
 
 ## Wiring the real URLs (after accounts exist)
 
