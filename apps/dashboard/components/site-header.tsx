@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { Activity } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { ModeToggle } from "@/components/mode-toggle";
+import { WalletConnectButton } from "@/components/wallet-connect-button";
 import { Logo } from "@/components/logo";
 import { cn } from "@/lib/utils";
 
@@ -12,9 +13,10 @@ const NAV = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/explorer", label: "Explorer" },
   { href: "/playground", label: "Playground" },
+  { href: "/withdraw", label: "Withdraw" },
 ];
 
-export function SiteHeader({ connected }: { connected?: boolean }) {
+export function SiteHeader({ connected, showWallet }: { connected?: boolean; showWallet?: boolean }) {
   const pathname = usePathname();
   return (
     <header className="glass sticky top-0 z-20 border-b">
@@ -47,6 +49,7 @@ export function SiteHeader({ connected }: { connected?: boolean }) {
               {connected ? "live" : "connecting…"}
             </Badge>
           )}
+          {showWallet && <WalletConnectButton />}
           <ModeToggle />
         </div>
       </div>
