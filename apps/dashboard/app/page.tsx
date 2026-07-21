@@ -466,6 +466,7 @@ function Roadmap() {
         "CascadeController: budget-bounded cascades + recursive attribution.",
         "Autonomous LLM buyer, live dashboard, cascade playground, and a proposed x402-MCP spec.",
         "CLI + libraries published on npm: npx @cascet/cli.",
+        "Casper Wallet connect + a wallet-signed RevenueSplit withdraw on testnet.",
       ],
     },
     {
@@ -474,7 +475,7 @@ function Roadmap() {
       title: "From primitive to product",
       points: [
         "Hosted CasCet control plane: register a server, get a paid endpoint + dashboard in one step.",
-        "RevenueSplit withdraw UI on real revenue; CSPR.click wallet connect.",
+        "On-chain-backed explorer: a ReceiptRegistry indexer behind the live numbers.",
         "Take the paid-MCP + cascade spec to the x402 / MCP ecosystem.",
       ],
     },
