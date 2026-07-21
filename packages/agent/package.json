@@ -4,6 +4,7 @@
   "description": "Autonomous Claude agent that discovers, pays for, and reasons over paid MCP tools on Casper under a budget",
   "type": "module",
   "license": "Apache-2.0",
+  "private": true,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
