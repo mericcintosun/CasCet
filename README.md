@@ -10,6 +10,8 @@ Casper Agentic Buildathon 2026 · Casper Innovation Track
 
 [**Live site**](https://cascet.vercel.app) · [X](https://x.com/cascet_xyz) · [Discord](https://discord.gg/fcjevk47k) · [GitHub](https://github.com/mericcintosun/CasCet)
 
+[![@cascet/cli](https://img.shields.io/npm/v/%40cascet%2Fcli?label=%40cascet%2Fcli&color=a3e635)](https://www.npmjs.com/package/@cascet/cli) · [![@cascet/gateway](https://img.shields.io/npm/v/%40cascet%2Fgateway?label=%40cascet%2Fgateway&color=2dd4bf)](https://www.npmjs.com/package/@cascet/gateway) · [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 </div>
 
 ---
@@ -188,9 +190,9 @@ pnpm --filter @cascet/e2e demo           # watch revenue + graph update live
 ### Monetize your own MCP server
 
 ```bash
-npx cascet init                          # writes cascet.config.json
+npx @cascet/cli init                          # writes cascet.config.json
 # edit: upstream command, payTo, asset (CEP-18), facilitator API key, per-tool prices
-npx cascet wrap                          # your server is now paid
+npx @cascet/cli wrap                          # your server is now paid
 ```
 
 Point an agent at it:
@@ -198,7 +200,7 @@ Point an agent at it:
 ```bash
 CASCET_KEY_PATH=./agent.pem \
 CASCET_MAX_SESSION=5000000000 \
-npx cascet connect http://localhost:4402/mcp
+npx @cascet/cli connect http://localhost:4402/mcp
 ```
 
 ---
@@ -291,8 +293,8 @@ without migrating data.
 
 This is a real project, not a hackathon throwaway — there's a live [roadmap section on the site](#) and a concrete path to a business.
 
-- **Shipped (Qualification · Jul 2026):** 7 Odra contracts live on testnet; real x402 settlement (no mock); the `CascadeController` primitive (budget tree + recursive attribution); an autonomous LLM buyer; a live dashboard, an interactive cascade playground, and a proposed [x402-MCP spec](docs/x402-mcp-spec.md).
-- **Final round (Jul 13–26):** a hosted CasCet control plane — register a server, get a paid endpoint + dashboard in one step; `npx cascet` published to npm; a RevenueSplit withdraw UI on real revenue; take the paid-MCP + cascade spec to the x402 / MCP ecosystem.
+- **Shipped (Qualification · Jul 2026):** 7 Odra contracts live on testnet; real x402 settlement (no mock); the `CascadeController` primitive (budget tree + recursive attribution); an autonomous LLM buyer; a live dashboard, an interactive cascade playground, a proposed [x402-MCP spec](docs/x402-mcp-spec.md); and the CLI + libraries **published on npm** (`npx @cascet/cli`).
+- **Final round (Jul 13–26):** a hosted CasCet control plane — register a server, get a paid endpoint + dashboard in one step; a RevenueSplit withdraw UI on real revenue; take the paid-MCP + cascade spec to the x402 / MCP ecosystem.
 - **Q4 2026 — mainnet & monetization:** mainnet launch; **a protocol take-rate on settled volume** (the business model); per-second / streaming price schemes for high-frequency agent traffic; stable JS/Rust/Python SDKs and a public metrics API.
 - **2027 — the agent-economy layer:** an agent-facing pricing-discovery API and a Bazaar marketplace of paid MCP tools; on-chain reputation for tools and agents; cross-chain settlement — CasCet as default rails for machine-to-machine commerce.
 

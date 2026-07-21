@@ -26,9 +26,9 @@ const FLOWS: Flow[] = [
         tool code stays untouched.
       </>
     ),
-    code: `npx cascet init          # writes cascet.config.json
+    code: `npx @cascet/cli init          # writes cascet.config.json
 # edit it: payTo (your Casper account), per-tool prices, facilitator
-npx cascet wrap          # your server is now paid`,
+npx @cascet/cli wrap          # your server is now paid`,
     cta: { label: "Watch revenue on the dashboard", href: "/dashboard" },
   },
   {
@@ -43,7 +43,7 @@ npx cascet wrap          # your server is now paid`,
     ),
     code: `CASCET_KEY_PATH=./agent.pem \\
 CASCET_MAX_SESSION=5000000000 \\
-npx cascet connect http://localhost:4402/mcp`,
+npx @cascet/cli connect http://localhost:4402/mcp`,
     cta: { label: "See the primitive in the playground", href: "/playground" },
   },
   {

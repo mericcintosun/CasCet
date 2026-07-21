@@ -465,6 +465,7 @@ function Roadmap() {
         "7 Odra contracts live on testnet; real x402 settlement, no mock.",
         "CascadeController: budget-bounded cascades + recursive attribution.",
         "Autonomous LLM buyer, live dashboard, cascade playground, and a proposed x402-MCP spec.",
+        "CLI + libraries published on npm: npx @cascet/cli.",
       ],
     },
     {
@@ -473,7 +474,7 @@ function Roadmap() {
       title: "From primitive to product",
       points: [
         "Hosted CasCet control plane: register a server, get a paid endpoint + dashboard in one step.",
-        "npx cascet published to npm; RevenueSplit withdraw UI on real revenue.",
+        "RevenueSplit withdraw UI on real revenue; CSPR.click wallet connect.",
         "Take the paid-MCP + cascade spec to the x402 / MCP ecosystem.",
       ],
     },

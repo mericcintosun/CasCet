@@ -108,8 +108,8 @@ them to confirm the deploys and settlements are real on Casper Testnet.
 ## Monetize your own MCP server (the product surface)
 
 ```bash
-npx cascet init          # writes cascet.config.json (set upstream, payTo, prices)
-npx cascet wrap          # your MCP server is now paid, no code changes
+npx @cascet/cli init          # writes cascet.config.json (set upstream, payTo, prices)
+npx @cascet/cli wrap          # your MCP server is now paid, no code changes
 ```
 
 Point an agent at it:
@@ -117,5 +117,5 @@ Point an agent at it:
 ```bash
 CASCET_KEY_PATH=./agent.pem \
 CASCET_MAX_SESSION=5000000000 \
-npx cascet connect http://localhost:4402/mcp
+npx @cascet/cli connect http://localhost:4402/mcp
 ```

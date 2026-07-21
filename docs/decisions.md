@@ -74,7 +74,7 @@ analysis tool buys from the paid data tools underneath.
 
 - **Monorepo:** pnpm workspaces. TypeScript everywhere JS runs; Rust for contracts.
 - **Packages:** `gateway` (seller proxy), `client` (buyer-side signer/wallet),
-  `cli` (`npx cascet wrap`), `servers/casper-defi-data` (flagship paid MCP),
+  `cli` (`npx @cascet/cli wrap`), `servers/casper-defi-data` (flagship paid MCP),
   `apps/dashboard` (Next.js), `contracts/` (Odra: RevenueSplit + ReceiptRegistry).
 - **Payments:** `@make-software/casper-x402` + hosted facilitator
   (`x402-facilitator.cspr.cloud`, testnet) — we build *on* the official rails, we

@@ -32,7 +32,7 @@ cascade playground + x402 explorer · a proposed x402-MCP spec · CI/CodeQL/Depe
 | # | Item | Criteria hit | Effort | Blocker |
 |---|---|---|---|---|
 | W1 | Real Claude agent (flip simulation → live) | agentic AI | low* | $5 API credit (Meriç) |
-| W2 | `npx cascet` published to npm | technical execution + long-term | med | `npm login` (Meriç) |
+| W2 | ✅ **DONE** — `@cascet/{core,client,gateway,cli}` on npm (`npx @cascet/cli`) | technical execution + long-term | med | — |
 | W3 | RevenueSplit withdraw UI + CSPR.click wallet | working contracts + UX | med | — (approved) |
 | W4 | Control-plane wizard (config generator) | real-world + long-term | med | — (approved) |
 | W6 | Demo video refresh | UX / communication | med | W1/W3 done |
@@ -45,9 +45,13 @@ cascade playground + x402 explorer · a proposed x402-MCP spec · CI/CodeQL/Depe
 
 ## Day-by-day
 
-- **Day 1 · Jul 21 (done/in progress):** fixed 3 doc/UI inconsistencies (test count
-  13/13, 7 contracts on landing, socials wired live) + deployed. Start W2 packaging.
-- **Day 2 · Jul 22:** finish W2 (publish + verify `npx cascet@latest`); run + record
+- **Day 1 · Jul 21 (done):** fixed 3 doc/UI inconsistencies (test count 13/13,
+  7 contracts on landing, socials wired live) + deployed. Automated the Discord
+  server (`tools/discord`) and configured it live. Patched a high-sev dependency
+  (brace-expansion). **W2 shipped:** `@cascet/{core,client,gateway,cli}` published
+  to npm via a `Publish to npm` GitHub Actions workflow (NPM_TOKEN secret,
+  2FA-bypass token); `npx @cascet/cli` verified working from the registry.
+- **Day 2 · Jul 22:** finish W2 (publish + verify `npx @cascet/cli@latest`); run + record
   W1 if credit is added.
 - **Day 3 · Jul 23:** W3 — withdraw UI + CSPR.click wallet connect; verify `release`
   on testnet; deploy.

@@ -22,7 +22,7 @@ AI agents reach the world through MCP servers, but almost all of them are free �
 ## Demo video script (~2.5 min)
 
 1. **Hook (0:00–0:20).** "AI agents pay for almost nothing they use. CasCet makes any MCP server a paid service on Casper — and does something no one else has: it settles whole chains of agents paying agents." Show the one-liner + architecture diagram.
-2. **Wrap (0:20–0:50).** Terminal: `npx cascet init` → show `cascet.config.json` with per-tool prices → `npx cascet wrap`. "That's a normal MCP server, now paid. No code changes."
+2. **Wrap (0:20–0:50).** Terminal: `npx @cascet/cli init` → show `cascet.config.json` with per-tool prices → `npx @cascet/cli wrap`. "That's a normal MCP server, now paid. No code changes."
 3. **Agent pays (0:50–1:30).** Start the dashboard. Run the demo / point Claude at the analyst via `cascet connect`. Call `analyze_portfolio`. Narrate: "The agent pays 10 cents. But watch — the analysis tool is itself a customer." Show the terminal cost breakdown: analyst buys 4 data tools for 7 cents.
 4. **The cascade on-chain (1:30–2:05).** Cut to the dashboard: revenue ticks up live, receipts stream in, the **payment graph** branches (agent → analyst → data server) and the newest chain highlights. Click a settlement link → cspr.live testnet deploy. "Every hop, real, on Casper — instant finality, so the chain never stalls."
 5. **On-chain layer + close (2:05–2:30).** Show `cargo odra test` (13/13) and the deployed ReceiptRegistry / RevenueSplit on cspr.live. "Receipts anchored, revenue split by contract. CasCet: the payment layer for the MCP economy, first on Casper." End on repo + socials.
