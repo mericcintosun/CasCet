@@ -10,6 +10,7 @@ import { Logo } from "@/components/logo";
 import { cn } from "@/lib/utils";
 
 const NAV = [
+  { href: "/build", label: "Build" },
   { href: "/dashboard", label: "Dashboard" },
   { href: "/explorer", label: "Explorer" },
   { href: "/playground", label: "Playground" },

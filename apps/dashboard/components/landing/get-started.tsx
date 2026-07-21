@@ -29,7 +29,7 @@ const FLOWS: Flow[] = [
     code: `npx @cascet/cli init          # writes cascet.config.json
 # edit it: payTo (your Casper account), per-tool prices, facilitator
 npx @cascet/cli wrap          # your server is now paid`,
-    cta: { label: "Watch revenue on the dashboard", href: "/dashboard" },
+    cta: { label: "Generate your config", href: "/build" },
   },
   {
     key: "buy",
