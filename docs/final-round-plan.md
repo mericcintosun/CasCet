@@ -36,7 +36,7 @@ cascade playground + x402 explorer · a proposed x402-MCP spec · CI/CodeQL/Depe
 | W3 | ✅ **DONE** — `/withdraw`: Casper Wallet connect + real on-chain `release` (verified live) | working contracts + UX | med | — |
 | W4 | ✅ **DONE** — `/build`: config-generator wizard (live cascet.config.json + commands) | real-world + long-term | med | — |
 | W6 | Demo video refresh | UX / communication | med | W1/W3 done |
-| W7 | On-chain-backed explorer (ReceiptRegistry indexer) | ecosystem impact | med | — (stretch) |
+| W7 | ✅ **DONE** — on-chain-backed explorer: rebuilds the economy from ReceiptRegistry `record` txs via CSPR.cloud (8 receipts, live) | ecosystem impact | med | — |
 | W8 | BUIDL page + submission update, final QA | all | low | continuous |
 
 \* W1 code is proven (`CASCET_AGENT_LIVE=1`); only the credit is missing.
