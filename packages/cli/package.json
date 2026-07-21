@@ -4,14 +4,24 @@
   "description": "CasCet CLI — monetize any MCP server with x402 micropayments on Casper (wrap), or connect any MCP host to paid servers (connect)",
   "type": "module",
   "license": "Apache-2.0",
+  "homepage": "https://cascet.vercel.app",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mericcintosun/CasCet.git",
+    "directory": "packages/cli"
+  },
+  "keywords": ["mcp", "x402", "casper", "micropayments", "ai-agents", "cli", "stripe-for-mcp"],
+  "engines": { "node": ">=20" },
+  "publishConfig": { "access": "public" },
   "bin": {
     "cascet": "./dist/cli.js"
   },
   "main": "./dist/cli.js",
-  "files": ["dist"],
+  "files": ["dist", "README.md"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@cascet/client": "workspace:*",
