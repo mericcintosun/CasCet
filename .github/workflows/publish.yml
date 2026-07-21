@@ -1,0 +1,53 @@
+name: Publish to npm
+
+# Publishes the public packages (@cascet/core, @cascet/client, @cascet/gateway,
+# and the `cascet` CLI) to npm. Private packages (servers, dashboard, e2e, agent,
+# discord-setup) are skipped automatically by pnpm.
+#
+# Auth: a repo secret NPM_TOKEN (npm Automation token — bypasses 2FA).
+# Trigger: the "Run workflow" button (workflow_dispatch) or pushing a v* tag.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.20.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Authenticate to npm
+        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > "$HOME/.npmrc"
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish (topological order, skips private + already-published)
+        run: pnpm -r publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Clean up credentials
+        if: always()
+        run: rm -f "$HOME/.npmrc"
