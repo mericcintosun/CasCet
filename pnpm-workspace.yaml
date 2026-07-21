@@ -4,6 +4,9 @@ packages:
   - "apps/*"
   - "tools/*"
 
-# Security override: force patched postcss (GHSA-qx2v-qp2m-jg93) across the tree.
+# Security overrides: force patched transitive deps across the tree.
+#  - postcss GHSA-qx2v-qp2m-jg93
+#  - brace-expansion GHSA-3jxr-9vmj-r5cp (ReDoS; via casper-js-sdk>glob>minimatch)
 overrides:
   postcss@<8.5.10: ">=8.5.10"
+  brace-expansion@<1.1.16: "1.1.16"
