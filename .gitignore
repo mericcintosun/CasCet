@@ -8,6 +8,8 @@ dist/
 out/
 target/
 *.wasm
+# ...except the third-party reference token NOTICE attributes (needed for interop)
+!contracts/external/*.wasm
 
 # env & secrets
 .env

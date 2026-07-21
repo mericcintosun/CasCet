@@ -19,7 +19,7 @@ Alternates:
 >
 > The part no one else has built: real agent tasks are chains. A portfolio tool needs a price feed, the price feed needs market data, and each one is a paid service. CasCet turns that chain into a budget-bounded payment tree. One deposit caps the whole tree, the contract refuses any step that goes over budget, and a share of every sale flows up to the tool that resold it. The payment graph becomes the revenue graph.
 >
-> And it's already live: 7 Odra contracts on Casper Testnet, real x402 settlement, an autonomous LLM buyer, an interactive playground, and a live dashboard.
+> And it's already live: 5 Odra contracts (7 on-chain deployments) on Casper Testnet, real x402 settlement, an autonomous LLM buyer, a wallet-signed revenue withdraw, an on-chain-backed explorer, an interactive playground, and a live dashboard.
 >
 > 🔗 Live site: https://cascet.vercel.app
 > 💻 Code: https://github.com/mericcintosun/CasCet
@@ -27,7 +27,7 @@ Alternates:
 >
 > Built for the Casper Agentic Buildathon 2026.
 >
-> Follow: X https://x.com/cascet_xyz · Telegram https://t.me/cascet · Discord https://discord.gg/cascet
+> Follow: X https://x.com/cascet_xyz · Discord https://discord.gg/fcjevk47k · GitHub https://github.com/mericcintosun/CasCet
 >
 > #Casper #x402 #AIagents #MCP #DeFi #web3 #agenticAI #micropayments #blockchain
 

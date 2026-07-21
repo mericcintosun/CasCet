@@ -39,11 +39,20 @@ the final-round qualification review. All links point to Casper Testnet
 | 8 | **CascadeController — attribution hop**: revenue attributed up the tree to the reselling tool. | [`eb96a049…`](https://testnet.cspr.live/transaction/eb96a049692b7918a949bb2cd84982980d643e23678f490f8b851b84f0815b68) |
 | 9 | **CascadeController — over-budget step rejected** on-chain (the budget rule enforced). | [`d1df6c89…`](https://testnet.cspr.live/transaction/d1df6c898bbc8edc63fca9018dd4352f40afc6cea45a20666c91dbaf28887572) |
 | 10 | **Upgradable ReceiptRegistry — in-place upgrade**; the package now carries two versions and all anchored state survived. | [`0202cc29…`](https://testnet.cspr.live/transaction/0202cc298c844cb771835612ac028df978c5d8fd0e442b724bdf995c17547e34) |
+| 11 | **RevenueSplit — wallet-signed `release`** (the `/withdraw` UI): a payee pulls their weighted share on-chain. | [`f7cda49c…`](https://testnet.cspr.live/transaction/f7cda49c87e1e2f13a3b8f3bb0a75ef19f57e911bdf6238f529ae43489437c21) |
+
+## Live pages
+
+- App / dashboard: <https://cascet.vercel.app>
+- Build a config (wizard): <https://cascet.vercel.app/build>
+- Withdraw revenue (Casper Wallet): <https://cascet.vercel.app/withdraw>
+- On-chain economy explorer: <https://cascet.vercel.app/explorer>
+- Cascade playground: <https://cascet.vercel.app/playground>
 
 ## Links
 
-- Live app: <https://cascet.vercel.app>
-- Playground: <https://cascet.vercel.app/playground>
 - Code: <https://github.com/mericcintosun/CasCet>
+- npm: <https://www.npmjs.com/package/@cascet/cli> (`npx @cascet/cli`)
+- Socials: X [`@cascet_xyz`](https://x.com/cascet_xyz) · Discord [`discord.gg/fcjevk47k`](https://discord.gg/fcjevk47k)
 - Testing playbook: [`docs/testing-playbook.md`](testing-playbook.md)
 - x402-MCP spec: [`docs/x402-mcp-spec.md`](x402-mcp-spec.md)

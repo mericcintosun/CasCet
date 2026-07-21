@@ -140,15 +140,25 @@ This is not a portable pattern dressed in Casper branding — it leans on things
 
 ### Also built
 
+- **On npm** — `npx @cascet/cli init/wrap/connect`, with `@cascet/core`,
+  `@cascet/client` and `@cascet/gateway` published alongside it (released by a
+  GitHub Actions workflow).
+- **[`/build`](https://cascet.vercel.app/build) — a config-generator wizard.** Fill
+  in your server, payment account and per-tool prices; get a schema-validated
+  `cascet.config.json` (copy/download) plus the exact `npx @cascet/cli` commands.
+- **[`/withdraw`](https://cascet.vercel.app/withdraw) — wallet-signed revenue.**
+  Connect Casper Wallet and pull your weighted share from the `RevenueSplit` with a
+  real on-chain `release`, linked to cspr.live.
+- **[`/explorer`](https://cascet.vercel.app/explorer) — on-chain-backed.** Rebuilds
+  the whole x402 economy (revenue leaderboard, top tools, cascade stats, anchored
+  receipts) straight from the **ReceiptRegistry**'s `record` transactions — not an
+  off-chain cache.
 - **x402 Bazaar discovery** — every gateway serves a Bazaar-compatible catalog at
   `/.well-known/x402.json`, so any x402 agent can *discover* CasCet-monetized MCP
   tools like any paid API.
 - **Wrap any MCP server** — `examples/wrap-third-party` monetizes the unmodified
   official `@modelcontextprotocol/server-everything`; CasCet isn't limited to
   first-party servers.
-- **x402 economy explorer** — `/explorer` aggregates the on-chain-anchored
-  receipts into a revenue leaderboard, top tools, cascade stats and unique
-  paying agents, linking the live contracts to cspr.live.
 
 ---
 
