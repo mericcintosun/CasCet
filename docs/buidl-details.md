@@ -20,11 +20,11 @@ Connect. A bridge lets any MCP host (Claude Code, Claude Desktop, Cursor) call p
 
 Cascade. When a paid tool buys from other paid tools, CasCet composes the payments into a chain, links every hop to its parent on-chain, and enforces revenue splits at the contract level.
 
-See it. A live dashboard shows revenue, receipts with cspr.live settlement links, and the cascading payment graph in real time.
+See it. A live dashboard and an on-chain economy explorer show revenue, receipts with cspr.live settlement links, and the cascading payment graph. Both are rebuilt straight from the on-chain ReceiptRegistry, so the numbers are verifiable from chain data, not an off-chain cache.
 
 ## The primitive: budget-bounded cascades with recursive attribution
 
-CasCet's headline is a machine-to-machine primitive that only makes sense once payments compose into trees. The CascadeController contract turns a cascade into a programmable supply chain.
+CasCet's headline is a machine-to-machine primitive that only makes sense once payments compose into trees. The CascadeController contract turns a cascade into a programmable supply chain. This is not a whitepaper primitive: the full lifecycle ran live on Casper mainnet (see "Live on Casper mainnet" below), every step verifiable on cspr.live.
 
 On-chain budget tree. An agent opens a cascade with one deposit that caps the whole call tree. Every hop is paid from it, and the contract refuses any hop that would exceed the budget. The cap is enforced by construction, not by trusting the gateway. A plain agent wallet only caps per-call spend; this caps the entire tree.
 

@@ -31,7 +31,7 @@ CasCet is the **monetization layer for MCP on Casper** — think *Stripe for MCP
 1. **Wrap** — `cascet wrap` puts a paywall in front of any existing MCP server. Set a price per tool; agents pay per call in CEP-18 over x402; you keep the tool code unchanged.
 2. **Connect** — `cascet connect` is a stdio bridge so any MCP host (Claude Code, Claude Desktop, Cursor) can call paid servers, answering 402 challenges automatically under a spending budget.
 3. **Cascade** — when a paid tool itself buys from other paid tools, CasCet composes the payments into a chain, links every hop to its parent, and enforces revenue splits on-chain.
-4. **See it** — a live dashboard shows revenue, receipts (with cspr.live settlement links) and the cascading payment graph in real time.
+4. **See it** — a live dashboard and on-chain explorer show revenue, receipts (with cspr.live settlement links) and the cascading payment graph, both rebuilt straight from the on-chain `ReceiptRegistry`.
 
 ### The primitive: budget-bounded cascades with recursive attribution
 
@@ -47,12 +47,17 @@ primitive that only makes sense once payments compose into trees. The
   **up** to the parent hop's payee — the composing service earns margin on what
   it resells. The payment graph *is* the revenue-sharing graph.
 
-Verified on testnet end-to-end: open (budget 1000) → root hop pays analyst 100 →
-child hop pays data 30 with 20% attribution (data +24, analyst +6 up the tree) →
-an over-budget hop is **rejected on-chain** (`BudgetExceeded`) → close refunds the
-unspent 870. ([open](https://testnet.cspr.live/transaction/9bea3ea79762d0b8a6fe3e44a593d5943bd03b2ba86dfbfab0043ca018cb28e0) ·
-[attribution hop](https://testnet.cspr.live/transaction/eb96a049692b7918a949bb2cd84982980d643e23678f490f8b851b84f0815b68) ·
-[over-budget rejected](https://testnet.cspr.live/transaction/d1df6c898bbc8edc63fca9018dd4352f40afc6cea45a20666c91dbaf28887572))
+**Proven on Casper mainnet, end-to-end** (not just unit-tested): open (budget 100)
+→ root hop pays the analyst 40 → child hop pays data 20 with 20% attribution (data
++16, analyst +4 up the tree) → an over-budget hop is **rejected on-chain**
+(`BudgetExceeded`, User error 5) → close refunds the unspent 40. After close the
+contract holds zero tokens and the analyst's balance is exactly 44 — the recursive
+split, settled on mainnet.
+([open](https://cspr.live/transaction/03c9b08b50e9999612748853e958d2668583a16ea47ddc996b587de3d3cc4c76) ·
+[root hop](https://cspr.live/transaction/7b293e54fdbd73e3e959c529c4a465b4c6e2c5d12eff965ac89d1593ffe72321) ·
+[attribution hop](https://cspr.live/transaction/999396c44ad6af738000e20928faff4c49978d63571ceaaa8ba9010602d68b9a) ·
+[over-budget rejected](https://cspr.live/transaction/abf672055e5c2fe7c6407a3ebffa1954598583724871dd35b9fe0a08434c1a09) ·
+[close + refund](https://cspr.live/transaction/2c1aa62c6114b436e9214ac1fdfa9efbaf77c1c0a406a893e592bb9a9565d406))
 
 ### The autonomous buyer: an LLM that prices, budgets, and buys tools
 
@@ -121,8 +126,8 @@ This is not a portable pattern dressed in Casper branding — it leans on things
       ▼                                         ▼
 ┌─────────────────────┐              ┌────────────────────────┐        ┌──────────────────────┐
 │ x402 facilitator    │              │ CasCet dashboard       │        │ Odra contracts        │
-│ (cspr.cloud, Casper)│              │ live revenue + graph   │        │ ReceiptRegistry       │
-│ verify + settle     │              │ (Next.js + shadcn/ui)  │        │ RevenueSplit (CEP-18) │
+│ (self-hosted, Casper)│             │ on-chain revenue+graph │        │ ReceiptRegistry       │
+│ verify + settle     │              │ (Next.js + shadcn/ui)  │        │ RevenueSplit · Cascade│
 └─────────────────────┘              └────────────────────────┘        └──────────────────────┘
 ```
 
@@ -138,7 +143,7 @@ This is not a portable pattern dressed in Casper branding — it leans on things
 | `servers/casper-defi-data` | Flagship paid MCP: CSPR market data, RWA prices, DeFi yields (live + labeled fallback) |
 | `servers/portfolio-analyst` | Paid MCP that **buys** from the data server — the cascade in action |
 | `apps/dashboard` | Next.js + shadcn/ui live dashboard + x402 economy explorer (dark/light/system) |
-| `contracts` | Odra 2.8.2: `ReceiptRegistry` + `RevenueSplit` + `DemoToken` (CEP-18), with tests |
+| `contracts` | Odra 2.8.2 (5): `ReceiptRegistry`, `RevenueSplit`, `CascadeController`, `PaymentChannel`, `DemoToken` (CEP-18), with tests |
 | `examples/wrap-third-party` | Wrapping the official `server-everything` MCP server as paid |
 | `tools/e2e` | Local end-to-end demos — real x402 settlement on Casper Testnet |
 
@@ -255,7 +260,33 @@ cargo odra build           # build optimized wasm
 cargo run --bin cascet_contracts_cli -- deploy
 ```
 
-Network: **Casper Testnet** (`casper:casper-test`), CEP-18 payment token, `casper-eip-712` signatures.
+Networks: **Casper mainnet** (`casper:casper`) and **Casper Testnet** (`casper:casper-test`), CEP-18 payment token, `casper-eip-712` signatures.
+
+### Live on Casper mainnet
+
+The full contract set is deployed on **Casper mainnet** (chain `casper`), redeployed with the pre-mainnet security fixes. Open any package at `cspr.live/contract-package/<hash>`.
+
+| Contract | Package hash |
+| --- | --- |
+| Cep18X402 payment token | `8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41` |
+| ReceiptRegistry | `f86bef35062e92d06b8171cf4131fdf557463589aca9112a348e5eb24159eb93` |
+| RevenueSplit | `269afcceb147db41f68f5721df7b3957e5efeefb3bedbb9deba324c3a45d09c5` |
+| CascadeController | `c7e56988214c62dc5eda20b14894a7514f7388560850b6db3094758363a62189` |
+| PaymentChannel | `db2dc42b76f354e7716cafea8619ae6bc85fe50bc3e73979c2360dbba1458c57` |
+| DemoToken (CEP-18) | `3da88daf3f276d915ea4f6734e0d4b3d4781358734c369b95de028a2c094fe74` |
+
+**Real x402 settled on mainnet** (0.5 WCSPR via `transfer_with_authorization`, from both clients):
+[TypeScript](https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1) ·
+[Python](https://cspr.live/transaction/754224da36db9ecaef8399e720fc04fc2bc4605b383c63964788860db25533b7)
+
+**CascadeController — the flagship primitive, proven on mainnet.** A full budget-capped
+cascade ran live against the DemoToken CEP-18 (see the primitive proof above):
+[open](https://cspr.live/transaction/03c9b08b50e9999612748853e958d2668583a16ea47ddc996b587de3d3cc4c76) ·
+[root hop](https://cspr.live/transaction/7b293e54fdbd73e3e959c529c4a465b4c6e2c5d12eff965ac89d1593ffe72321) ·
+[attribution hop](https://cspr.live/transaction/999396c44ad6af738000e20928faff4c49978d63571ceaaa8ba9010602d68b9a) ·
+[over-budget rejected](https://cspr.live/transaction/abf672055e5c2fe7c6407a3ebffa1954598583724871dd35b9fe0a08434c1a09) ·
+[close + refund](https://cspr.live/transaction/2c1aa62c6114b436e9214ac1fdfa9efbaf77c1c0a406a893e592bb9a9565d406).
+Full mainnet + testnet address list: [`docs/onchain.md`](docs/onchain.md).
 
 ### Live on Casper Testnet
 
@@ -307,9 +338,9 @@ without migrating data.
 
 This is a real project, not a hackathon throwaway — there's a live [roadmap section on the site](#) and a concrete path to a business.
 
-- **Shipped (Qualification · Jul 2026):** 7 Odra contracts live on testnet; real x402 settlement (no mock); the `CascadeController` primitive (budget tree + recursive attribution); an autonomous LLM buyer; a live dashboard, an interactive cascade playground, a proposed [x402-MCP spec](docs/x402-mcp-spec.md); and the CLI + libraries **published on npm** (`npx @cascet/cli`).
-- **Final round (Jul 13–26):** a hosted CasCet control plane — register a server, get a paid endpoint + dashboard in one step; a RevenueSplit withdraw UI on real revenue; take the paid-MCP + cascade spec to the x402 / MCP ecosystem.
-- **Q4 2026 — mainnet & monetization:** mainnet launch; **a protocol take-rate on settled volume** (the business model); per-second / streaming price schemes for high-frequency agent traffic; stable JS/Rust/Python SDKs and a public metrics API.
+- **Shipped (Qualification · Jul 2026):** 5 Odra contracts; real x402 settlement (no mock); the `CascadeController` primitive (budget tree + recursive attribution); an autonomous LLM buyer; a live dashboard, an interactive cascade playground, a proposed [x402-MCP spec](docs/x402-mcp-spec.md); and the CLI + libraries **published on npm** (`npx @cascet/cli`).
+- **Shipped (Final round · Jul 2026) — live on Casper mainnet:** the full contract set redeployed to **Casper mainnet** after a pre-mainnet adversarial security audit; real x402 settled from both the **TypeScript and Python** clients; the **`CascadeController` primitive proven on mainnet** (budget cap → attribution up the tree → over-budget revert → refund); an on-chain-backed dashboard + explorer (rebuilt from the ReceiptRegistry); a `/build` config wizard; and a wallet-signed `RevenueSplit` withdraw.
+- **Q4 2026 — monetization:** **a protocol take-rate on settled volume** (the business model); a hosted CasCet control plane (register a server, get a paid endpoint + dashboard in one step); per-second / streaming price schemes for high-frequency agent traffic; a public metrics API.
 - **2027 — the agent-economy layer:** an agent-facing pricing-discovery API and a Bazaar marketplace of paid MCP tools; on-chain reputation for tools and agents; cross-chain settlement — CasCet as default rails for machine-to-machine commerce.
 
 **Socials & launch:** X / Discord / GitHub linked above; copy-paste launch content (bio, pinned thread, channel descriptions) is in [docs/launch-kit.md](docs/launch-kit.md).

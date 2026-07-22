@@ -32,20 +32,20 @@ const SOCIALS = {
   discord: "https://discord.gg/fcjevk47k",
   github: GH,
 };
-const CONTRACT = (hash: string) => `https://testnet.cspr.live/contract-package/${hash}`;
+const CONTRACT = (hash: string) => `https://cspr.live/contract-package/${hash}`;
 
+// Live on Casper MAINNET (chain "casper"). Full testnet set is in docs/onchain.md.
 const CONTRACTS = [
-  { name: "CascadeController", note: "budget-bounded cascade tree + recursive attribution", hash: "624134336d1f63ce539ebef9c226e6c463f70a8e85b593bbc5d370520d797980" },
-  { name: "ReceiptRegistry", note: "on-chain settled-call receipts with cascade parent links", hash: "bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97" },
-  { name: "PaymentChannel", note: "prepaid channels, off-chain signed vouchers", hash: "53930d3982a5bea717ec919096cef407b71a1ce9022b241c1d94f19ca770ccb0" },
-  { name: "RevenueSplit", note: "on-chain CEP-18 revenue splitter", hash: "fa21efb406a8151d15a393bc366e51192a9ea15fd7fe23faffc54f021b32883c" },
-  { name: "DemoToken", note: "CasCet CEP-18 payment token (WCSPR-style)", hash: "b3e9908b6cdbf5c565b686938994e3ac8e6749f41bcbe83615604321a0965d49" },
-  { name: "Cep18X402", note: "payment token with transfer_with_authorization", hash: "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3" },
-  { name: "ReceiptRegistry v2", note: "upgradable; live in-place upgrade, state preserved", hash: "764ed7190b69dafbc94a0148a07be85227f268a85424e7186be66cdb711b8222" },
+  { name: "CascadeController", note: "budget-bounded cascade tree + recursive attribution", hash: "c7e56988214c62dc5eda20b14894a7514f7388560850b6db3094758363a62189" },
+  { name: "ReceiptRegistry", note: "on-chain settled-call receipts with cascade parent links", hash: "f86bef35062e92d06b8171cf4131fdf557463589aca9112a348e5eb24159eb93" },
+  { name: "PaymentChannel", note: "prepaid channels, off-chain signed vouchers", hash: "db2dc42b76f354e7716cafea8619ae6bc85fe50bc3e73979c2360dbba1458c57" },
+  { name: "RevenueSplit", note: "on-chain CEP-18 revenue splitter", hash: "269afcceb147db41f68f5721df7b3957e5efeefb3bedbb9deba324c3a45d09c5" },
+  { name: "DemoToken", note: "CasCet CEP-18 payment token (WCSPR-style)", hash: "3da88daf3f276d915ea4f6734e0d4b3d4781358734c369b95de028a2c094fe74" },
+  { name: "Cep18X402", note: "payment token with transfer_with_authorization", hash: "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41" },
 ];
 
 const STATS = [
-  { k: "7", v: "contracts live on testnet" },
+  { k: "mainnet", v: "live + security-audited" },
   { k: "x402", v: "real settlement, no mock" },
   { k: "N-hop", v: "cascading payments" },
   { k: "1", v: "autonomous LLM buyer" },
@@ -202,9 +202,17 @@ function CascadePrimitive() {
             </Feat>
           </ul>
           <p className="mt-7 rounded-lg border border-border bg-background/60 p-4 font-mono text-xs leading-relaxed text-muted-foreground">
-            <span className="text-success">✓ verified on testnet:</span> open(1000) → root pays analyst 100 → child pays data 30
-            with 20% attribution (data +24, analyst +6 up the tree) → an over-budget hop is{" "}
-            <span className="text-destructive">rejected on-chain</span> (BudgetExceeded) → close refunds the unspent 870.
+            <a
+              href="https://cspr.live/transaction/999396c44ad6af738000e20928faff4c49978d63571ceaaa8ba9010602d68b9a"
+              target="_blank"
+              rel="noreferrer"
+              className="text-success hover:underline"
+            >
+              ✓ proven on Casper mainnet:
+            </a>{" "}
+            open(100) → root pays analyst 40 → child pays data 20 with 20% attribution (data +16, analyst +4 up the tree) →
+            an over-budget hop is <span className="text-destructive">rejected on-chain</span> (BudgetExceeded) → close refunds
+            the unspent 40. Every step is a real transaction on cspr.live.
           </p>
           <Button asChild variant="outline" size="sm" className="mt-6 gap-2">
             <Link href="/playground">
@@ -377,7 +385,7 @@ function AgentSection() {
 /* ── Contracts ─────────────────────────────────────────────────────────── */
 function Contracts() {
   return (
-    <Section id="contracts" eyebrow="On-chain layer" title="Seven contracts, live on Casper Testnet">
+    <Section id="contracts" eyebrow="On-chain layer" title="Six contracts, live on Casper mainnet">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {CONTRACTS.map((c, i) => (
           <Reveal key={c.name} delay={(i % 3) * 70}>
@@ -397,13 +405,21 @@ function Contracts() {
         ))}
       </div>
       <p className="mt-6 text-center font-mono text-xs text-muted-foreground">
-        real settlement tx ·{" "}
+        real x402 settlement on mainnet ·{" "}
         <Link
-          href="https://testnet.cspr.live/transaction/9bc90044ac4053be6bd87fa1a09cec80ea24d509decfe747b001fc1bfc561fc2"
+          href="https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1"
           target="_blank"
           className="text-primary hover:underline"
         >
-          9bc90044…fc561fc2
+          2c66141c…
+        </Link>{" "}
+        · cascade primitive proven on mainnet ·{" "}
+        <Link
+          href="https://cspr.live/transaction/999396c44ad6af738000e20928faff4c49978d63571ceaaa8ba9010602d68b9a"
+          target="_blank"
+          className="text-primary hover:underline"
+        >
+          999396c4…
         </Link>
       </p>
     </Section>
@@ -423,7 +439,7 @@ function Faq() {
     },
     {
       q: "Is this actually on-chain, or a mock?",
-      a: "On-chain. Seven Odra contracts are live on Casper Testnet and real x402 settlement is verified end-to-end through a self-hosted x402 facilitator, with no mock anywhere in the path. Every demo settles real transfer_with_authorization transactions you can open on cspr.live.",
+      a: "On-chain, on Casper mainnet. The full contract set is live on mainnet (and testnet), real x402 settlement is verified end-to-end through a self-hosted x402 facilitator with no mock anywhere in the path, and the CascadeController primitive itself ran a full budget-capped cascade on mainnet: open, root and child hops with attribution up the tree, an over-budget hop rejected on-chain, and a refund on close. Every transaction opens on cspr.live.",
     },
     {
       q: "What does the autonomous agent do?",
@@ -462,31 +478,31 @@ function Roadmap() {
       when: "Qualification · Jul 2026",
       title: "The primitive, proven on-chain",
       points: [
-        "7 Odra contracts live on testnet; real x402 settlement, no mock.",
+        "5 Odra contracts; real x402 settlement, no mock.",
         "CascadeController: budget-bounded cascades + recursive attribution.",
         "Autonomous LLM buyer, live dashboard, cascade playground, and a proposed x402-MCP spec.",
         "CLI + libraries published on npm: npx @cascet/cli.",
-        "Casper Wallet connect + a wallet-signed RevenueSplit withdraw on testnet.",
+      ],
+    },
+    {
+      tag: "shipped",
+      when: "Final round · Jul 2026",
+      title: "Live on Casper mainnet, end-to-end",
+      points: [
+        "Full contract set live on Casper mainnet; real x402 settled from both the TypeScript and Python clients.",
+        "The CascadeController primitive proven on mainnet: budget cap, attribution up the tree, over-budget revert, and refund.",
+        "Pre-mainnet adversarial security review — findings fixed and redeployed.",
+        "On-chain-backed dashboard + explorer (rebuilt from the ReceiptRegistry), a /build config wizard, and a wallet-signed RevenueSplit withdraw.",
       ],
     },
     {
       tag: "next",
-      when: "Final round · Jul 13 to 26",
-      title: "From primitive to product",
-      points: [
-        "Hosted CasCet control plane: register a server, get a paid endpoint + dashboard in one step.",
-        "On-chain-backed explorer: a ReceiptRegistry indexer behind the live numbers.",
-        "Take the paid-MCP + cascade spec to the x402 / MCP ecosystem.",
-      ],
-    },
-    {
-      tag: "planned",
       when: "Q4 2026",
-      title: "Mainnet & monetization",
+      title: "Monetization & control plane",
       points: [
-        "Mainnet launch; a protocol take-rate on settled volume (the business model).",
-        "Per-second / streaming price schemes for high-frequency agent traffic.",
-        "Stable SDKs (JS / Rust / Python) and a public metrics API.",
+        "A protocol take-rate on settled volume: the business model.",
+        "Hosted CasCet control plane: register a server, get a paid endpoint + dashboard in one step.",
+        "Per-second / streaming price schemes and a public metrics API.",
       ],
     },
     {

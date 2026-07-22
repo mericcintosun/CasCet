@@ -26,6 +26,20 @@ Mainnet contract package hashes (open at `cspr.live/contract-package/<hash>`):
 | CascadeController | `c7e56988214c62dc5eda20b14894a7514f7388560850b6db3094758363a62189` |
 | PaymentChannel | `db2dc42b76f354e7716cafea8619ae6bc85fe50bc3e73979c2360dbba1458c57` |
 
+### Cascade primitive, proven on mainnet
+
+The `CascadeController` is not just deployed and unit-tested — a full budget-capped cascade ran live on mainnet against the DemoToken CEP-18 (cascade id 0, 100-token budget), every step verifiable on cspr.live:
+
+| # | Description | Transaction |
+| --- | --- | --- |
+| 1 | **Open** a cascade with a 100-token budget cap. | [`03c9b08b…`](https://cspr.live/transaction/03c9b08b50e9999612748853e958d2668583a16ea47ddc996b587de3d3cc4c76) |
+| 2 | **Root hop** — pay the analyst 40 (no parent). | [`7b293e54…`](https://cspr.live/transaction/7b293e54fdbd73e3e959c529c4a465b4c6e2c5d12eff965ac89d1593ffe72321) |
+| 3 | **Child hop with 20% attribution** — 16 to the data provider, 4 flows up to the analyst. | [`999396c4…`](https://cspr.live/transaction/999396c44ad6af738000e20928faff4c49978d63571ceaaa8ba9010602d68b9a) |
+| 4 | **Over-budget hop rejected** on-chain (`BudgetExceeded`, User error 5). | [`abf67205…`](https://cspr.live/transaction/abf672055e5c2fe7c6407a3ebffa1954598583724871dd35b9fe0a08434c1a09) |
+| 5 | **Close + refund** the unspent 40 to the owner. | [`2c1aa62c…`](https://cspr.live/transaction/2c1aa62c6114b436e9214ac1fdfa9efbaf77c1c0a406a893e592bb9a9565d406) |
+
+After close the controller holds zero tokens and the analyst's balance is exactly 44 (40 + the 4-token attribution) — the recursive revenue split, enforced on Casper mainnet.
+
 ---
 
 ## Deployer / operator account (Casper Testnet)
