@@ -37,7 +37,7 @@ cascade playground + x402 explorer · a proposed x402-MCP spec · CI/CodeQL/Depe
 | W4 | ✅ **DONE** — `/build`: config-generator wizard (live cascet.config.json + commands) | real-world + long-term | med | — |
 | W6 | Demo video refresh | UX / communication | med | W1/W3 done |
 | W7 | ✅ **DONE** — on-chain-backed explorer: rebuilds the economy from ReceiptRegistry `record` txs via CSPR.cloud (8 receipts, live) | ecosystem impact | med | — |
-| W8 | BUIDL page + submission update, final QA | all | low | continuous |
+| W8 | ✅ **DONE** — submission/README/BUIDL refresh + consistency fixes + CI contract-test job + full QA green | all | low | — |
 
 \* W1 code is proven (`CASCET_AGENT_LIVE=1`); only the credit is missing.
 
@@ -69,7 +69,13 @@ Build/test green → commit → push → (if UI/site) deploy → verify live. Co
 changes run `cargo odra test`; frontend runs `typecheck` + `next build`; end-to-end
 flows run `pnpm --filter @cascet/e2e demo`.
 
-## Verification snapshot (Jul 21)
+## Verification snapshot (Jul 22)
 
-`pnpm build` ✓ · `pnpm typecheck` 9/9 ✓ · `cargo odra test` **13/13** ✓ ·
-dashboard prod build 10/10 ✓ · live site https://cascet.vercel.app 200 ✓.
+`pnpm build` ✓ · `pnpm typecheck` ✓ · `cargo odra test` **13/13** ✓ · plain
+`cargo test` **13/13** ✓ · e2e cascade demo **PASS** ✓ · dashboard prod build ✓ ·
+CI green (Build & typecheck + **Contract tests**) ✓ · live pages
+/ /build /withdraw /explorer /playground + /api/onchain (count 8) all 200 ✓.
+
+Shipped this round: W2 (npm), W3 (withdraw), W4 (build wizard), W7 (on-chain
+explorer), W8 (submission/QA). Remaining: W6 (demo video refresh — Meriç records),
+W1 (declined). Site: https://cascet.vercel.app
