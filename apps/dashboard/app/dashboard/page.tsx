@@ -7,10 +7,11 @@ import { SiteHeader } from "@/components/site-header";
 import { StatTiles } from "@/components/stat-tiles";
 import { PaymentGraph } from "@/components/payment-graph";
 import { ReceiptsTable } from "@/components/receipts-table";
-import { useLiveState } from "@/lib/use-live-state";
+import { useOnchainState } from "@/lib/use-onchain-state";
+import { Radio } from "lucide-react";
 
 export default function DashboardPage() {
-  const { state, latestReceiptId, connected } = useLiveState();
+  const { state, latestReceiptId, connected } = useOnchainState();
 
   // Highlight the freshest cascade: edges sharing the latest receipt's root.
   const highlightEdgeIds = React.useMemo(() => {
@@ -30,10 +31,16 @@ export default function DashboardPage() {
 
       <main className="mx-auto max-w-6xl space-y-6 px-6 py-8">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Seller dashboard</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight">Seller dashboard</h1>
+            <Badge variant="success" className="gap-1">
+              <Radio className="h-3 w-3" /> on-chain
+            </Badge>
+          </div>
           <p className="mt-1 text-sm text-muted-foreground">
             Every tool call your MCP servers sell, paid per request over x402 and settled on Casper,
-            including cascades where a paid tool buys from other paid tools.
+            including cascades where a paid tool buys from other paid tools. Reconstructed live from
+            the payments anchored on-chain in the ReceiptRegistry.
           </p>
         </div>
 
