@@ -1,0 +1,26 @@
+last_updated = "2026-07-22T16:36:32Z"
+
+[[contracts]]
+name = "ReceiptRegistry"
+package_name = "ReceiptRegistry"
+package_hash = "hash-f86bef35062e92d06b8171cf4131fdf557463589aca9112a348e5eb24159eb93"
+
+[[contracts]]
+name = "DemoToken"
+package_name = "DemoToken"
+package_hash = "hash-3da88daf3f276d915ea4f6734e0d4b3d4781358734c369b95de028a2c094fe74"
+
+[[contracts]]
+name = "RevenueSplit"
+package_name = "RevenueSplit"
+package_hash = "hash-269afcceb147db41f68f5721df7b3957e5efeefb3bedbb9deba324c3a45d09c5"
+
+[[contracts]]
+name = "CascadeController"
+package_name = "CascadeController"
+package_hash = "hash-c7e56988214c62dc5eda20b14894a7514f7388560850b6db3094758363a62189"
+
+[[contracts]]
+name = "PaymentChannel"
+package_name = "PaymentChannel"
+package_hash = "hash-db2dc42b76f354e7716cafea8619ae6bc85fe50bc3e73979c2360dbba1458c57"

@@ -9,6 +9,7 @@
     "demo": "tsx src/run-demo.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "demo-real": "tsx src/run-real.ts",
+    "demo-real-mainnet": "tsx src/run-real-mainnet.ts",
     "fund-token": "tsx src/fund-token.ts",
     "agent": "tsx src/run-agent-demo.ts",
     "connect-demo": "tsx src/run-connect-demo.ts"

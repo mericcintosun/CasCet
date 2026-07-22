@@ -14,6 +14,7 @@
 use core::str::FromStr;
 
 use cascet_contracts::cascade_controller::CascadeController;
+use cascet_contracts::payment_channel::PaymentChannel;
 use cascet_contracts::receipt_registry::ReceiptRegistry;
 use cascet_contracts::revenue_split::{RevenueSplit, RevenueSplitInitArgs};
 use odra::casper_types::U256;
@@ -70,6 +71,10 @@ impl DeployScript for CascetDeployScript {
             container,
             500_000_000_000,
         )?;
+
+        // Innovation primitives: budget-bounded cascades + prepaid channels.
+        let _cascade = CascadeController::load_or_deploy(env, NoArgs, container, 500_000_000_000)?;
+        let _channel = PaymentChannel::load_or_deploy(env, NoArgs, container, 500_000_000_000)?;
         Ok(())
     }
 }
@@ -246,6 +251,7 @@ pub fn main() {
         .contract::<DemoToken>()
         .contract::<RevenueSplit>()
         .contract::<CascadeController>()
+        .contract::<PaymentChannel>()
         .scenario(AnchorDemoReceipt)
         .scenario(FundSplit)
         .scenario(ReleaseShare)
