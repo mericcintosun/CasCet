@@ -60,6 +60,16 @@ Real x402 settlements on mainnet (0.5 WCSPR via transfer_with_authorization, sta
 - TypeScript client: https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1
 - Python client: https://cspr.live/transaction/754224da36db9ecaef8399e720fc04fc2bc4605b383c63964788860db25533b7
 
+The cascade primitive itself is proven on mainnet, not just deployed. A full cascade lifecycle ran on-chain against the DemoToken CEP-18 (cascade id 0, a 100-token budget), and every step is verifiable on cspr.live:
+
+- open the 100-token budget: https://cspr.live/transaction/03c9b08b50e9999612748853e958d2668583a16ea47ddc996b587de3d3cc4c76
+- charge a root hop, 40 to the analyst: https://cspr.live/transaction/7b293e54fdbd73e3e959c529c4a465b4c6e2c5d12eff965ac89d1593ffe72321
+- charge a child hop, 20 gross with 20% attribution up, so 16 goes to the data provider and 4 flows back to the analyst: https://cspr.live/transaction/999396c44ad6af738000e20928faff4c49978d63571ceaaa8ba9010602d68b9a
+- an over-budget hop reverts BudgetExceeded (User error 5), the cap enforced by construction: https://cspr.live/transaction/abf672055e5c2fe7c6407a3ebffa1954598583724871dd35b9fe0a08434c1a09
+- close and refund the unspent 40 to the owner: https://cspr.live/transaction/2c1aa62c6114b436e9214ac1fdfa9efbaf77c1c0a406a893e592bb9a9565d406
+
+After close the contract holds zero tokens and the analyst's balance is exactly 44 (40 from the root hop plus the 4-token attribution from its child): the recursive revenue split, settled on Casper mainnet.
+
 Everything is also live on testnet. The full address list for both networks is in the repo: https://github.com/mericcintosun/CasCet/blob/main/docs/onchain.md
 
 ## Security

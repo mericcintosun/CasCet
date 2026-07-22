@@ -22,6 +22,28 @@ Real x402 payments settled on mainnet (0.5 WCSPR via `transfer_with_authorizatio
 - TypeScript client: <https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1>
 - Python client: <https://cspr.live/transaction/754224da36db9ecaef8399e720fc04fc2bc4605b383c63964788860db25533b7>
 
+### Cascade primitive, proven on mainnet
+
+The `CascadeController` is not just deployed and unit-tested; its full lifecycle
+ran on Casper mainnet against the DemoToken CEP-18, every step verifiable on
+cspr.live. One cascade (id 0) opened with a 100-token budget, charged a root hop
+and a child hop with 20% recursive attribution up to the parent payee, rejected
+an over-budget hop by construction, and refunded the remainder on close.
+
+| Step | On-chain effect | Transaction |
+| --- | --- | --- |
+| approve | allow `CascadeController` to pull the 100-token budget | [`dee851a6…`](https://cspr.live/transaction/dee851a696116407083d51b185acaf51310b128c9978fce7213a6d16cf762f5f) |
+| open | deposit the 100-token budget, cascade id 0 | [`03c9b08b…`](https://cspr.live/transaction/03c9b08b50e9999612748853e958d2668583a16ea47ddc996b587de3d3cc4c76) |
+| charge root | pay the analyst 40 (hop 1, no parent) | [`7b293e54…`](https://cspr.live/transaction/7b293e54fdbd73e3e959c529c4a465b4c6e2c5d12eff965ac89d1593ffe72321) |
+| charge child | 20 gross: 16 to the data provider, 4 up to the analyst (20% attribution) | [`999396c4…`](https://cspr.live/transaction/999396c44ad6af738000e20928faff4c49978d63571ceaaa8ba9010602d68b9a) |
+| charge (over budget) | 50 would exceed the 100 budget → reverts `BudgetExceeded` (User error 5) | [`abf67205…`](https://cspr.live/transaction/abf672055e5c2fe7c6407a3ebffa1954598583724871dd35b9fe0a08434c1a09) |
+| close | refund the unspent 40 to the owner | [`2c1aa62c…`](https://cspr.live/transaction/2c1aa62c6114b436e9214ac1fdfa9efbaf77c1c0a406a893e592bb9a9565d406) |
+
+After close, the `CascadeController` holds zero tokens (100 in = 40 + 4 + 16 paid
+out + 40 refunded) and the analyst's balance is exactly 44 (40 from the root hop
+plus the 4-token attribution from its child) — the recursive revenue split,
+enforced on-chain rather than by trusting the gateway.
+
 ## Testnet (chain "casper-test")
 
 Open any package at `https://testnet.cspr.live/contract-package/<hash>`.
