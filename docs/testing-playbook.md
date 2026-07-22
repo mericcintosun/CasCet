@@ -56,11 +56,27 @@ priced DeFi/RWA tools, decides which to buy, pays x402 per call under a fixed
 budget, and returns a recommendation citing the purchased data. Ends with
 `AGENT PASS`.
 
-Optional — real Claude reasoning (needs your own Anthropic API credits):
+Optional — real Claude reasoning via the bespoke loop (needs your own Anthropic API credits):
 
 ```bash
 CASCET_AGENT_LIVE=1 pnpm --filter @cascet/e2e agent
 ```
+
+### 3b. Real Claude, live, for FREE — Claude Code via `cascet connect`
+
+If you have the `claude` CLI logged in on a Claude Pro/Max plan (no API key
+needed), this drives a **real** Claude that discovers the priced tools and buys
+them through `cascet connect`, paying each x402 for real:
+
+```bash
+pnpm --filter @cascet/e2e connect-demo
+```
+
+Expected: Claude Code reads the priced DeFi/RWA tools, buys the ones it judges
+worth it (typically market data + gold + treasury + yields), the connect bridge
+pays each 402 under budget, and it prints a grounded allocation citing the numbers
+it paid for. Ends with `CONNECT DEMO PASS — Claude bought N paid tool call(s)`.
+Add `CSPR_CLOUD_TOKEN=…` for real on-chain settlement instead of the mock facilitator.
 
 ### 4. Watch it live in the dashboard
 

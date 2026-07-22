@@ -72,20 +72,32 @@ chooses. This is the LLM-in-the-loop half of CasCet: agentic AI spending real
 money on real DeFi/RWA data, under budget, settled on Casper.
 
 ```bash
-pnpm --filter @cascet/e2e agent                       # simulated reasoning, mock facilitator (free)
-CASCET_AGENT_LIVE=1 pnpm --filter @cascet/e2e agent    # real Claude (needs API credits)
-CSPR_CLOUD_TOKEN=… CASCET_AGENT_LIVE=1 pnpm … agent    # real Claude + real on-chain settlement
+pnpm --filter @cascet/e2e agent                       # bespoke loop, labeled simulated reasoning (free)
+CASCET_AGENT_LIVE=1 pnpm --filter @cascet/e2e agent    # bespoke loop, real Claude (needs API credits)
 ```
 
-> **On the simulation (full disclosure).** No paid Anthropic API key was bought
-> for this hackathon build, so the demo **defaults to a clearly-labeled offline
-> simulation** of the reasoning — behind a prominent banner that says so. Only the
-> two model decisions (which tools to buy, and the final wording) are scripted;
-> the recommendation is still grounded in the **real data the agent purchased**,
-> and tool discovery, x402 pricing, per-call payment, budget enforcement, cascade
-> receipts and settlement are all **real and unchanged**. The reasoning backend is
-> a one-line swap (`Brain`) — `CASCET_AGENT_LIVE=1` runs the exact same loop with
-> real Claude the moment credits are available.
+> **Real Claude, live, for free — via `cascet connect`.** You don't need to buy an
+> API key to see a real LLM buy paid tools. Point **Claude Code** (on a Claude
+> Pro/Max plan) at the paid gateway through `cascet connect`, and Claude discovers
+> the priced tools, decides what's worth buying, and calls them — every 402 paid by
+> the connect bridge under a budget. The reasoning runs on the Agent-SDK credit
+> included with the plan (no pay-as-you-go API spend); the x402 payments are real.
+> One command:
+>
+> ```bash
+> pnpm --filter @cascet/e2e connect-demo                  # real Claude (Max plan) + mock facilitator, free
+> CSPR_CLOUD_TOKEN=… pnpm --filter @cascet/e2e connect-demo # real Claude + real on-chain settlement
+> ```
+
+> **On the bespoke agent's simulation (full disclosure).** The bundled
+> `@cascet/agent` loop **defaults to a clearly-labeled offline simulation** of the
+> reasoning (no paid API key was bought for it) — behind a prominent banner. Only
+> its two model decisions are scripted; the recommendation is still grounded in the
+> **real data the agent purchased**, and tool discovery, x402 pricing, per-call
+> payment, budget enforcement, cascade receipts and settlement are all **real**.
+> The reasoning backend is a one-line swap (`Brain`); `CASCET_AGENT_LIVE=1` runs the
+> same loop with real Claude. (For a fully-live free run today, use the
+> `connect-demo` above.)
 
 The wire convention it relies on — per-tool price advertisement, x402
 settlement, and cascade attribution — is written up as a reusable standard

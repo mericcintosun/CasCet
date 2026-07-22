@@ -9,7 +9,8 @@
     "demo": "tsx src/run-demo.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "demo-real": "tsx src/run-real.ts",
-    "agent": "tsx src/run-agent-demo.ts"
+    "agent": "tsx src/run-agent-demo.ts",
+    "connect-demo": "tsx src/run-connect-demo.ts"
   },
   "dependencies": {
     "@cascet/agent": "workspace:*",

@@ -31,7 +31,7 @@ cascade playground + x402 explorer · a proposed x402-MCP spec · CI/CodeQL/Depe
 
 | # | Item | Criteria hit | Effort | Blocker |
 |---|---|---|---|---|
-| W1 | Real Claude agent (flip simulation → live) | agentic AI | low* | $5 API credit (Meriç) |
+| W1 | ✅ **DONE (free)** — real Claude live via Claude Code + `cascet connect` (`connect-demo`); no API purchase, real x402 | agentic AI | low | — |
 | W2 | ✅ **DONE** — `@cascet/{core,client,gateway,cli}` on npm (`npx @cascet/cli`) | technical execution + long-term | med | — |
 | W3 | ✅ **DONE** — `/withdraw`: Casper Wallet connect + real on-chain `release` (verified live) | working contracts + UX | med | — |
 | W4 | ✅ **DONE** — `/build`: config-generator wizard (live cascet.config.json + commands) | real-world + long-term | med | — |
