@@ -7,9 +7,12 @@ exact payment payload the CasCet gateway and facilitator expect. The digest is
 (`@casper-ecosystem/casper-eip-712` + `@make-software/casper-x402`), verified by
 a cross-check, so the same authorization settles on-chain.
 
-**Proven on-chain:** a Python-signed authorization settled on Casper testnet via
-`transfer_with_authorization`:
-<https://testnet.cspr.live/transaction/04e54a95979152f653bcab15bd999fc7ef897e783f9cafd095ebad06353b6c76>
+**Proven on-chain:** a Python-signed authorization settled via
+`transfer_with_authorization` on both networks:
+- Mainnet: <https://cspr.live/transaction/754224da36db9ecaef8399e720fc04fc2bc4605b383c63964788860db25533b7>
+- Testnet: <https://testnet.cspr.live/transaction/04e54a95979152f653bcab15bd999fc7ef897e783f9cafd095ebad06353b6c76>
+
+Run it against mainnet with `CASCET_NET=mainnet` (see below).
 
 ## Install
 

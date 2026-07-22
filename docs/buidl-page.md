@@ -10,9 +10,10 @@ testnet section carries the full contract set with sample transactions.
 
 ## Live on Casper mainnet
 
-First real x402 payment settled on mainnet (0.5 WCSPR moved via `transfer_with_authorization`, status Success):
+Real x402 payments settled on mainnet (0.5 WCSPR moved via `transfer_with_authorization`, status Success), from both the TypeScript and the Python client:
 
-<https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1>
+- TypeScript client: <https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1>
+- Python client: <https://cspr.live/transaction/754224da36db9ecaef8399e720fc04fc2bc4605b383c63964788860db25533b7>
 
 Mainnet contract package hashes (open at `cspr.live/contract-package/<hash>`):
 
