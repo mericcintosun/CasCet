@@ -9,11 +9,12 @@ packages:
 #  - brace-expansion GHSA-3jxr-9vmj-r5cp (ReDoS; via casper-js-sdk>glob>minimatch)
 #  - fast-uri GHSA-v2hh-gcrm-f6hx / CVE-2026-16221 (host confusion; via @modelcontextprotocol/sdk>ajv)
 #  - sharp GHSA-f88m-g3jw-g9cj (libvips CVEs; via next image optimization)
-#  - @hono/node-server GHSA-frvp-7c67-39w9 (serve-static path traversal; via @modelcontextprotocol/sdk,
-#    unused on our path — we serve over Express, never the SDK's streamableHttp server)
+#  - @hono/node-server GHSA-frvp-7c67-39w9 (serve-static path traversal) + GHSA-9mqv-5hh9-4cgg
+#    (WebSocket-handshake memory-leak DoS, fixed in 2.0.10); via @modelcontextprotocol/sdk,
+#    unused on our path — we serve over Express, never the SDK's streamableHttp server
 overrides:
   postcss@<8.5.10: ">=8.5.10"
   brace-expansion@<1.1.16: "1.1.16"
   fast-uri@<3.1.4: "3.1.4"
   sharp@<0.35.0: ">=0.35.0"
-  "@hono/node-server@<2.0.5": "2.0.5"
+  "@hono/node-server@<2.0.10": "2.0.10"
