@@ -34,3 +34,13 @@ contracts/target/
 # ts build cache
 *.tsbuildinfo
 .vercel
+
+# Large media (demo + pitch are published on YouTube; keep them out of git).
+# Root-anchored so app assets under apps/*/public are unaffected.
+/*.mp4
+/*.mov
+/*.webm
+/*.opus
+/*.mp3
+/*.wav
+/*.m4a
