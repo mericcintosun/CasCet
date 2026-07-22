@@ -232,7 +232,7 @@ function CascadePrimitive() {
 /* ── Features (editorial hover list, no boxes) ─────────────────────────── */
 function Features() {
   const feats = [
-    { icon: ShieldCheck, t: "Real x402 settlement, no mock", d: <>Agents pay from an on-chain balance of a real <span className="font-mono text-foreground">transfer_with_authorization</span> CEP-18 token; the hosted CSPR.cloud facilitator verifies and settles it; receipts anchor on-chain. Every hop is a real Casper transaction.</> },
+    { icon: ShieldCheck, t: "Real x402 settlement, no mock", d: <>Agents pay from an on-chain balance of a real <span className="font-mono text-foreground">transfer_with_authorization</span> CEP-18 token; a self-hosted x402 facilitator verifies and settles it; receipts anchor on-chain. Every hop is a real Casper transaction.</> },
     { icon: Receipt, t: "Receipts, on-chain", d: <>Every settled call is anchored with its cascade parent id, so the whole payment graph reconstructs from chain data alone, no central coordinator.</> },
     { icon: Lock, t: "Upgradable contracts", d: <>The ReceiptRegistry was upgraded v1.1 to v1.2 in-place on Casper, and all anchored state survived the upgrade.</> },
     { icon: Coins, t: "Revenue splits", d: <>Point a server&apos;s payTo at the RevenueSplit contract and earnings split between co-authors on-chain, pull-based.</> },
@@ -345,10 +345,10 @@ function AgentSection() {
                 </li>
               ))}
             </ol>
-            <p className="mt-6 rounded-lg border border-warning/25 bg-warning/5 p-3 text-xs leading-relaxed text-muted-foreground">
-              <span className="font-medium text-warning">Full disclosure:</span> the shipped demo runs a clearly-labeled offline
-              simulation of the reasoning (no paid API key), but tool discovery, x402 pricing, payments, budget enforcement and
-              settlement are all real, and one flag swaps in live Claude.
+            <p className="mt-6 rounded-lg border border-border bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
+              <span className="font-medium text-foreground">How it runs:</span> the free live demo drives real Claude on your
+              Max/Pro plan via <span className="font-mono text-foreground">cascet connect</span> (no paid API key), and tool
+              discovery, x402 pricing, payments, budget enforcement and settlement are all real on-chain.
             </p>
           </div>
         </Reveal>
@@ -423,11 +423,11 @@ function Faq() {
     },
     {
       q: "Is this actually on-chain, or a mock?",
-      a: "On-chain. Seven Odra contracts are live on Casper Testnet and real x402 settlement is verified end-to-end with the hosted CSPR.cloud facilitator, with no mock in the payment path. The bundled mock facilitator exists only for chain-free local dev.",
+      a: "On-chain. Seven Odra contracts are live on Casper Testnet and real x402 settlement is verified end-to-end through a self-hosted x402 facilitator, with no mock anywhere in the path. Every demo settles real transfer_with_authorization transactions you can open on cspr.live.",
     },
     {
       q: "What does the autonomous agent do?",
-      a: "Claude reads the paid tools' prices, decides which to buy for a DeFi/RWA goal, pays x402 per call under a fixed budget, and cites the purchased data in a recommendation. The shipped demo labels its reasoning as a simulation (no paid API key) while keeping all payments real.",
+      a: "Claude reads the paid tools' prices, decides which to buy for a DeFi/RWA goal, pays x402 per call under a fixed budget, and cites the purchased data in a recommendation. The free live demo runs real Claude on your Max/Pro plan via cascet connect, and every purchase settles real on-chain.",
     },
     {
       q: "Why Casper?",

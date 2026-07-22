@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { cascetConfigSchema, type CascetConfig } from "@cascet/core";
 import { startGateway } from "@cascet/gateway";
-import { startMockFacilitator } from "./mock-facilitator.js";
+import { startRealFacilitator } from "./real-facilitator.js";
 
 /**
- * FREE live-agent demo — real Claude, no API purchase.
+ * FREE live-agent demo — real Claude, REAL on-chain settlement, no mock.
  *
  *   Claude Code (`claude -p`, on your Claude Max plan)
  *        │  connects to the paid MCP tools through `cascet connect`
@@ -14,15 +14,17 @@ import { startMockFacilitator } from "./mock-facilitator.js";
  *   CasCet gateway (:4402) — priced DeFi/RWA tools over x402
  *        │  every tools/call returns 402; the connect bridge signs + pays it
  *        ▼
- *   settled on Casper (mock facilitator offline, real with CSPR_CLOUD_TOKEN)
+ *   self-hosted facilitator settles transfer_with_authorization on Casper Testnet
  *
  * The LLM reasoning runs on the Claude Agent SDK / `claude -p` credit included
  * with a Claude Max plan (no pay-as-you-go API spend), while the x402 payments,
- * budget enforcement and receipts are real — exactly the `cascet connect` flow
- * the README pitches for Claude Code / Cursor / Claude Desktop.
+ * budget enforcement, receipts AND settlement are all real on Casper. The
+ * facilitator is self-hosted (fee-sponsored by the CasCet deployer key): the
+ * hosted CSPR.cloud facilitator sends the settle arg as `value` while the token
+ * expects `amount`, so every settle there reverts `User error: 64658` (Odra
+ * MissingArg). The self-hosted one sends `amount` and settles correctly.
  *
  * Run:  pnpm --filter @cascet/e2e connect-demo
- *   real settlement:  CSPR_CLOUD_TOKEN=<token> pnpm --filter @cascet/e2e connect-demo
  * Requires the `claude` CLI logged in (Max/Pro). No ANTHROPIC_API_KEY needed.
  */
 
@@ -31,14 +33,12 @@ const KEYS = resolve(import.meta.dirname, "../keys");
 const SCRATCH = resolve(import.meta.dirname, "../.cascet");
 const CLI = resolve(ROOT, "packages/cli/dist/cli.js");
 const FACILITATOR_PORT = 4500;
+const NODE_URL = "https://node.testnet.casper.network/rpc";
 const GATEWAY_MCP = "http://localhost:4402/mcp";
 
-const CSPR_CLOUD_TOKEN = process.env.CSPR_CLOUD_TOKEN;
-const REAL = Boolean(CSPR_CLOUD_TOKEN);
-
-const readPub = (name: string) => readFileSync(resolve(KEYS, `${name}.pub`), "utf8").trim();
-
+// Real x402 payment token deployed by CasCet (transfer_with_authorization).
 const X402_TOKEN = "hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
+// payTo MUST be a serialized account-hash Key ("00" + 32-byte account hash).
 const SELLER_DATA_ACCOUNT_HASH = "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36";
 
 const pricing = {
@@ -49,35 +49,23 @@ const pricing = {
   },
 };
 
-const dataConfig: CascetConfig = cascetConfigSchema.parse(
-  REAL
-    ? {
-        name: "casper-defi-data",
-        upstream: { type: "stdio", command: "node", args: [resolve(ROOT, "servers/casper-defi-data/dist/index.js")] },
-        network: "casper:casper-test",
-        payTo: SELLER_DATA_ACCOUNT_HASH,
-        asset: { packageHash: X402_TOKEN, name: "CasCet X402 Token", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 50 },
-        facilitator: { url: "https://x402-facilitator.cspr.cloud", apiKey: CSPR_CLOUD_TOKEN },
-        anchoring: {
-          contractPackageHash: "hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97",
-          keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
-          keyAlgo: "ed25519",
-          nodeUrl: "https://node.testnet.casper.network/rpc",
-          chainName: "casper-test",
-        },
-        pricing,
-        port: 4402,
-      }
-    : {
-        name: "casper-defi-data",
-        upstream: { type: "stdio", command: "node", args: [resolve(ROOT, "servers/casper-defi-data/dist/index.js")] },
-        payTo: readPub("seller-data"),
-        asset: { packageHash: "0000000000000000000000000000000000000000000000000000000000000000", name: "Demo Wrapped CSPR", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 50 },
-        facilitator: { url: `http://localhost:${FACILITATOR_PORT}` },
-        pricing,
-        port: 4402,
-      },
-);
+const dataConfig: CascetConfig = cascetConfigSchema.parse({
+  name: "casper-defi-data",
+  upstream: { type: "stdio", command: "node", args: [resolve(ROOT, "servers/casper-defi-data/dist/index.js")] },
+  network: "casper:casper-test",
+  payTo: SELLER_DATA_ACCOUNT_HASH,
+  asset: { packageHash: X402_TOKEN, name: "CasCet X402 Token", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 50 },
+  facilitator: { url: `http://localhost:${FACILITATOR_PORT}` },
+  anchoring: {
+    contractPackageHash: "hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97",
+    keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
+    keyAlgo: "ed25519",
+    nodeUrl: NODE_URL,
+    chainName: "casper-test",
+  },
+  pricing,
+  port: 4402,
+});
 
 function banner(): void {
   const rule = "═".repeat(74);
@@ -86,7 +74,8 @@ function banner(): void {
   console.log("");
   console.log(" Claude Code (`claude -p`, on your Max plan) drives the run; it discovers");
   console.log(" the priced MCP tools, decides what to buy, and calls them. Each 402 is");
-  console.log(` paid by the connect bridge under a fixed budget. Settlement: ${REAL ? "REAL on-chain" : "mock (offline)"}.`);
+  console.log(" paid by the connect bridge under a fixed budget. Settlement: REAL on-chain");
+  console.log(" (self-hosted facilitator, fee-sponsored by the CasCet deployer key).");
   console.log(`${rule}\n`);
 }
 
@@ -101,7 +90,15 @@ async function main(): Promise<void> {
   } catch {
     /* no prior store */
   }
-  const facilitator = REAL ? undefined : startMockFacilitator(FACILITATOR_PORT);
+
+  // Self-hosted facilitator: fee-sponsored by the deployer key (funded with CSPR).
+  const facilitator = await startRealFacilitator({
+    port: FACILITATOR_PORT,
+    network: "casper:casper-test",
+    keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
+    keyAlgo: "ed25519",
+    rpcUrl: NODE_URL,
+  });
   const gateway = await startGateway(dataConfig);
 
   // Point Claude Code at the paid tools through the paying `cascet connect` bridge.
@@ -177,14 +174,16 @@ async function main(): Promise<void> {
     console.log("❌ no settled receipts — Claude did not buy any paid tools this run.");
   } else {
     for (const r of settled) {
-      const link = REAL && r.txHash ? `  https://testnet.cspr.live/transaction/${r.txHash}` : "";
+      const link = r.txHash ? `  https://testnet.cspr.live/transaction/${r.txHash}` : "";
       console.log(`💸 ${r.tool.padEnd(22)} ${r.amountRaw} raw units  [${r.status}]${link}`);
     }
-    console.log(`\n✅ CONNECT DEMO PASS — Claude bought ${settled.length} paid tool call(s) via cascet connect${REAL ? " (real on-chain settlement)" : " (mock facilitator)"}.`);
+    console.log(`\n✅ CONNECT DEMO PASS — Claude bought ${settled.length} paid tool call(s) via cascet connect (real on-chain settlement).`);
   }
 
+  // Let anchoring submissions flush before teardown.
+  await new Promise((r) => setTimeout(r, 12_000));
   await gateway.close();
-  facilitator?.close?.();
+  facilitator.close();
   process.exit(settled.length > 0 && code === 0 ? 0 : 1);
 }
 

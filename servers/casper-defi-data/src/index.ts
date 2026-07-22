@@ -11,6 +11,7 @@ import { z } from "zod";
  */
 
 const COINGECKO = "https://api.coingecko.com/api/v3";
+const CSPR_CLOUD = process.env.CSPR_CLOUD_URL ?? "https://api.testnet.cspr.cloud";
 
 const server = new McpServer({ name: "casper-defi-data", version: "0.1.0" });
 
@@ -65,16 +66,77 @@ server.registerTool(
     description: "Current yield opportunities on Casper: native staking, liquid staking and DEX LP estimates.",
     inputSchema: {},
   },
-  async () =>
-    jsonResult({
+  async () => {
+    const s = await casperStakingApy();
+    if (!s.live) {
+      return jsonResult({
+        yields: [
+          { venue: "Native staking (validator delegation)", apyPct: 11.2, risk: "low", liquid: false },
+          { venue: "Liquid staking (stCSPR, ~10% commission)", apyPct: 10.1, risk: "low-medium", liquid: true },
+        ],
+        source: "snapshot(2026-07-07)",
+        method: "APY = annual_staking_rewards_issuance × total_supply ÷ total_active_stake; liquid = native × (1 − 0.10)",
+      });
+    }
+    const liquid = Number((s.nativeApy * 0.9).toFixed(1));
+    return jsonResult({
+      network: {
+        totalStakedCspr: Math.round(s.totalStakedCspr),
+        activeValidators: s.activeValidators,
+        eraId: s.eraId,
+        totalSupplyCspr: Math.round(s.totalSupply),
+      },
       yields: [
-        { venue: "Native staking (validator delegation)", apyPct: 10.8, risk: "low", liquid: false },
-        { venue: "Liquid staking (stCSPR)", apyPct: 9.9, risk: "low-medium", liquid: true },
-        { venue: "CSPR.trade LP CSPR/WCSPR", apyPct: 14.2, risk: "medium", liquid: true },
+        { venue: "Native staking (validator delegation)", apyPct: Number(s.nativeApy.toFixed(1)), risk: "low", liquid: false },
+        { venue: "Liquid staking (stCSPR, ~10% commission)", apyPct: liquid, risk: "low-medium", liquid: true },
       ],
-      source: "curated(2026-07-07): cspr.live validator averages + CSPR.trade pool stats",
-    }),
+      source: "cspr.cloud(live): /supply + /auction-metrics",
+      method: "APY = annual_staking_rewards_issuance × total_supply ÷ total_active_stake; liquid = native × (1 − 0.10)",
+    });
+  },
 );
+
+/**
+ * Compute the real Casper native-staking APY from live cspr.cloud data:
+ * annual staking-reward issuance (fraction of total supply) × total supply,
+ * divided by the total CSPR currently bonded. Needs CSPR_CLOUD_TOKEN in the
+ * environment (the CasCet gateway forwards it to this upstream); degrades to a
+ * clearly-labeled snapshot when the token is absent or the API is unreachable.
+ */
+async function casperStakingApy(): Promise<
+  | { live: false }
+  | { live: true; nativeApy: number; totalStakedCspr: number; totalSupply: number; activeValidators: number; eraId: number }
+> {
+  const token = process.env.CSPR_CLOUD_TOKEN;
+  if (!token) return { live: false };
+  try {
+    const headers = { Authorization: token };
+    const opts = { headers, signal: AbortSignal.timeout(4000) } as const;
+    const [supplyRes, auctionRes] = await Promise.all([
+      fetch(`${CSPR_CLOUD}/supply`, opts),
+      fetch(`${CSPR_CLOUD}/auction-metrics`, opts),
+    ]);
+    if (!supplyRes.ok || !auctionRes.ok) throw new Error("http");
+    const supply = ((await supplyRes.json()) as { data: { total: number; annual_staking_rewards_issuance: number } }).data;
+    const auction = ((await auctionRes.json()) as {
+      data: { total_active_era_stake: string; active_validator_number: number; current_era_id: number };
+    }).data;
+    const totalSupply = Number(supply.total);
+    const totalStakedCspr = Number(BigInt(auction.total_active_era_stake)) / 1e9;
+    if (!totalSupply || !totalStakedCspr) throw new Error("empty");
+    const nativeApy = (supply.annual_staking_rewards_issuance * totalSupply * 100) / totalStakedCspr;
+    return {
+      live: true,
+      nativeApy,
+      totalStakedCspr,
+      totalSupply,
+      activeValidators: auction.active_validator_number,
+      eraId: auction.current_era_id,
+    };
+  } catch {
+    return { live: false };
+  }
+}
 
 async function coingeckoSimple(
   id: string,

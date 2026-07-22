@@ -76,9 +76,12 @@ analysis tool buys from the paid data tools underneath.
 - **Packages:** `gateway` (seller proxy), `client` (buyer-side signer/wallet),
   `cli` (`npx @cascet/cli wrap`), `servers/casper-defi-data` (flagship paid MCP),
   `apps/dashboard` (Next.js), `contracts/` (Odra: RevenueSplit + ReceiptRegistry).
-- **Payments:** `@make-software/casper-x402` + hosted facilitator
-  (`x402-facilitator.cspr.cloud`, testnet) — we build *on* the official rails, we
-  don't reimplement verification/settlement.
+- **Payments:** `@make-software/casper-x402` — we **self-host** the facilitator
+  from that package (fee-sponsored by the CasCet deployer key) rather than the
+  hosted `x402-facilitator.cspr.cloud`, because the hosted one sends the CEP-18
+  settle arg as `value` while the make-software token expects `amount`, so every
+  settle there reverts `User error: 64658` (Odra `MissingArg`). We still build
+  *on* the official rails, we don't reimplement verification/settlement.
 - **Network:** Casper Testnet (`casper:casper-test`), CEP-18 payment token,
   casper-eip-712 typed-data signatures.
 - **Originality rule:** buildathon requires all code newly written for the event —

@@ -32,10 +32,11 @@ pnpm build
 
 Expected: all workspace packages build with no errors.
 
-### 2. Run the full cascade end-to-end (no chain, mock facilitator)
+### 2. Run the full cascade end-to-end (real on-chain settlement on Casper Testnet)
 
 ```bash
 pnpm --filter @cascet/e2e gen-keys
+pnpm --filter @cascet/e2e fund-token <analyst-account-hash> 300   # fund the analyst wallet once
 pnpm --filter @cascet/e2e demo
 ```
 
@@ -47,20 +48,14 @@ reconstructed payment tree.
 ### 3. Run the autonomous buyer
 
 ```bash
-pnpm --filter @cascet/e2e agent
+ANTHROPIC_API_KEY=<your-key> pnpm --filter @cascet/e2e agent
 ```
 
-Expected: a disclosure banner (reasoning runs as a clearly-labeled offline
-simulation because no paid API key is bundled), then the agent reads the three
-priced DeFi/RWA tools, decides which to buy, pays x402 per call under a fixed
-budget, and returns a recommendation citing the purchased data. Ends with
-`AGENT PASS`.
-
-Optional — real Claude reasoning via the bespoke loop (needs your own Anthropic API credits):
-
-```bash
-CASCET_AGENT_LIVE=1 pnpm --filter @cascet/e2e agent
-```
+Expected: real Claude (via the Anthropic API) reads the three priced DeFi/RWA
+tools, decides which to buy, pays x402 per call under a fixed budget, and returns
+a recommendation citing the purchased data. Ends with `AGENT PASS`. Without
+`ANTHROPIC_API_KEY` the script prints a message pointing you to the free
+`connect-demo` below.
 
 ### 3b. Real Claude, live, for FREE — Claude Code via `cascet connect`
 
@@ -76,7 +71,7 @@ Expected: Claude Code reads the priced DeFi/RWA tools, buys the ones it judges
 worth it (typically market data + gold + treasury + yields), the connect bridge
 pays each 402 under budget, and it prints a grounded allocation citing the numbers
 it paid for. Ends with `CONNECT DEMO PASS — Claude bought N paid tool call(s)`.
-Add `CSPR_CLOUD_TOKEN=…` for real on-chain settlement instead of the mock facilitator.
+Settlement is real on-chain either way; add `CSPR_CLOUD_TOKEN=…` only to make `get_defi_yields` compute a live staking APY instead of its labeled snapshot.
 
 ### 4. Watch it live in the dashboard
 
@@ -95,16 +90,17 @@ pnpm --filter @cascet/e2e demo
 Expected: revenue ticks up, receipts stream in, and the payment graph branches
 (agent to analyst to data server) in real time.
 
-### 5. Real on-chain settlement (optional, needs a CSPR.cloud token)
+### 5. Real single-hop settlement
 
 ```bash
-CSPR_CLOUD_TOKEN=<your-token> pnpm --filter @cascet/e2e demo-real
+pnpm --filter @cascet/e2e demo-real
 ```
 
-Expected: no mock. The agent pays from its on-chain balance of a real
-`transfer_with_authorization` CEP-18 token; the hosted CSPR.cloud facilitator
-verifies and settles; the receipt is anchored on-chain. The script prints a
-`testnet.cspr.live` transaction link you can open.
+Expected: the agent pays from its on-chain balance of a real
+`transfer_with_authorization` CEP-18 token; a self-hosted x402 facilitator
+(fee-sponsored by the CasCet deployer key) verifies and settles; the receipt is
+anchored on-chain. The script prints a `testnet.cspr.live` transaction link you
+can open — e.g. `0218ff4c…`.
 
 ### 6. Smart contract tests
 

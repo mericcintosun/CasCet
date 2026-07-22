@@ -3,27 +3,37 @@ import { resolve } from "node:path";
 import { cascetConfigSchema, type CascetConfig } from "@cascet/core";
 import { startGateway } from "@cascet/gateway";
 import { createPayingFetch, PaidMcpHttpClient } from "@cascet/client";
+import { startRealFacilitator } from "./real-facilitator.js";
 
 /**
  * REAL x402 settlement on Casper Testnet — no mock facilitator.
  *
  * Uses:
- *  - the hosted CSPR.cloud facilitator (needs CSPR_CLOUD_TOKEN),
+ *  - a SELF-HOSTED x402 facilitator (src/real-facilitator.ts), fee-sponsored by
+ *    the CasCet deployer key. The hosted CSPR.cloud facilitator sends the
+ *    settle arg as `value` while the token expects `amount`, so every settle
+ *    there reverts `User error: 64658` (Odra MissingArg) — the self-hosted
+ *    facilitator sends `amount` and settles correctly.
  *  - the real CEP-18 x402 token deployed by CasCet (supports
  *    transfer_with_authorization), package hash below,
  *  - the demo agent, which already holds a balance of that token on-chain.
  *
- * Run: CSPR_CLOUD_TOKEN=<token> pnpm --filter @cascet/e2e demo-real
+ * Run: pnpm --filter @cascet/e2e demo-real
  */
 
 const ROOT = resolve(import.meta.dirname, "../../..");
 const KEYS = resolve(import.meta.dirname, "../keys");
+const FACILITATOR_PORT = 4501;
+const NODE_URL = "https://node.testnet.casper.network/rpc";
 
-const CSPR_CLOUD_TOKEN = process.env.CSPR_CLOUD_TOKEN;
-if (!CSPR_CLOUD_TOKEN) {
-  console.error("❌ CSPR_CLOUD_TOKEN env var required (get one at https://console.cspr.cloud).");
-  process.exit(1);
-}
+// Self-hosted facilitator: fee-sponsored by the deployer key (funded with CSPR).
+const facilitator = await startRealFacilitator({
+  port: FACILITATOR_PORT,
+  network: "casper:casper-test",
+  keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
+  keyAlgo: "ed25519",
+  rpcUrl: NODE_URL,
+});
 
 // Real x402 payment token deployed by CasCet (transfer_with_authorization).
 const X402_TOKEN = "hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
@@ -42,7 +52,7 @@ const dataConfig: CascetConfig = cascetConfigSchema.parse({
   network: "casper:casper-test",
   payTo: SELLER_DATA_ACCOUNT_HASH,
   asset: { packageHash: X402_TOKEN, name: "CasCet X402 Token", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 50 },
-  facilitator: { url: "https://x402-facilitator.cspr.cloud", apiKey: CSPR_CLOUD_TOKEN },
+  facilitator: { url: facilitator.url },
   anchoring: {
     contractPackageHash: "hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97",
     keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
@@ -80,4 +90,5 @@ console.log(`\n✅ REAL x402 settlement succeeded on Casper Testnet\n`);
 
 await new Promise(r => setTimeout(r, 12_000)); // let anchoring submit
 await gateway.close();
+facilitator.close();
 process.exit(0);

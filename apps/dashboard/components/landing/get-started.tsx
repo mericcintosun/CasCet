@@ -52,13 +52,12 @@ npx @cascet/cli connect http://localhost:4402/mcp`,
     icon: Eye,
     blurb: (
       <>
-        Just want to see it run? The whole cascade works locally with no chain (mock facilitator), including the autonomous agent.
+        Just want to see it run? Everything settles for real on Casper Testnet — the whole cascade and the autonomous agent — no mock in the path.
       </>
     ),
     code: `pnpm install && pnpm build
-pnpm --filter @cascet/e2e gen-keys
-pnpm --filter @cascet/e2e demo     # a cascade: agent pays a tool that pays 3 more
-pnpm --filter @cascet/e2e agent    # an LLM prices tools and buys under budget`,
+pnpm --filter @cascet/e2e connect-demo  # real Claude (Max plan) buys tools, settles on-chain — free
+pnpm --filter @cascet/e2e demo          # cascade: agent pays a tool that pays 3 more, every hop on-chain`,
     cta: { label: "Open the live economy explorer", href: "/explorer" },
   },
 ];

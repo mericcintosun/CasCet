@@ -224,6 +224,12 @@ importers:
       '@cascet/gateway':
         specifier: workspace:*
         version: link:../../packages/gateway
+      '@make-software/casper-x402':
+        specifier: ^1.0.0
+        version: 1.0.0
+      '@x402/core':
+        specifier: 2.15.0
+        version: 2.15.0
       casper-js-sdk:
         specifier: ^5.0.12
         version: 5.0.12

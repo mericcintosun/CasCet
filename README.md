@@ -72,8 +72,8 @@ chooses. This is the LLM-in-the-loop half of CasCet: agentic AI spending real
 money on real DeFi/RWA data, under budget, settled on Casper.
 
 ```bash
-pnpm --filter @cascet/e2e agent                       # bespoke loop, labeled simulated reasoning (free)
-CASCET_AGENT_LIVE=1 pnpm --filter @cascet/e2e agent    # bespoke loop, real Claude (needs API credits)
+ANTHROPIC_API_KEY=… pnpm --filter @cascet/e2e agent   # bespoke loop, real Claude via the Anthropic API
+# No API key? Use the free connect-demo below — real Claude on your Max/Pro plan.
 ```
 
 > **Real Claude, live, for free — via `cascet connect`.** You don't need to buy an
@@ -85,19 +85,9 @@ CASCET_AGENT_LIVE=1 pnpm --filter @cascet/e2e agent    # bespoke loop, real Clau
 > One command:
 >
 > ```bash
-> pnpm --filter @cascet/e2e connect-demo                  # real Claude (Max plan) + mock facilitator, free
-> CSPR_CLOUD_TOKEN=… pnpm --filter @cascet/e2e connect-demo # real Claude + real on-chain settlement
+> pnpm --filter @cascet/e2e connect-demo                   # real Claude (Max plan) + REAL on-chain settlement, free
+> CSPR_CLOUD_TOKEN=… pnpm --filter @cascet/e2e connect-demo # also makes get_defi_yields query live staking APY
 > ```
-
-> **On the bespoke agent's simulation (full disclosure).** The bundled
-> `@cascet/agent` loop **defaults to a clearly-labeled offline simulation** of the
-> reasoning (no paid API key was bought for it) — behind a prominent banner. Only
-> its two model decisions are scripted; the recommendation is still grounded in the
-> **real data the agent purchased**, and tool discovery, x402 pricing, per-call
-> payment, budget enforcement, cascade receipts and settlement are all **real**.
-> The reasoning backend is a one-line swap (`Brain`); `CASCET_AGENT_LIVE=1` runs the
-> same loop with real Claude. (For a fully-live free run today, use the
-> `connect-demo` above.)
 
 The wire convention it relies on — per-tool price advertisement, x402
 settlement, and cascade attribution — is written up as a reusable standard
@@ -148,7 +138,7 @@ This is not a portable pattern dressed in Casper branding — it leans on things
 | `apps/dashboard` | Next.js + shadcn/ui live dashboard + x402 economy explorer (dark/light/system) |
 | `contracts` | Odra 2.8.2: `ReceiptRegistry` + `RevenueSplit` + `DemoToken` (CEP-18), with tests |
 | `examples/wrap-third-party` | Wrapping the official `server-everything` MCP server as paid |
-| `tools/e2e` | Local end-to-end demo + mock facilitator (no chain needed) |
+| `tools/e2e` | Local end-to-end demos — real x402 settlement on Casper Testnet |
 
 ### Also built
 
@@ -187,8 +177,9 @@ Requirements: Node ≥ 20, pnpm, Rust + [`cargo-odra`](https://odra.dev) (for co
 pnpm install
 pnpm build
 
-# Run the full cascade demo locally (no chain, mock facilitator):
+# Run the full cascade demo (real on-chain settlement on Casper Testnet, both hops):
 pnpm --filter @cascet/e2e gen-keys
+pnpm --filter @cascet/e2e fund-token <analyst-account-hash> 300   # fund the analyst wallet once
 pnpm --filter @cascet/e2e demo
 ```
 
@@ -196,11 +187,11 @@ You'll see an agent pay `$0.10` for `analyze_portfolio`, which autonomously spen
 
 ```bash
 # Autonomous agent: it prices the paid tools and decides what to buy.
-pnpm --filter @cascet/e2e agent                     # free — labeled simulated reasoning
-CASCET_AGENT_LIVE=1 pnpm --filter @cascet/e2e agent # real Claude (needs API credits)
+ANTHROPIC_API_KEY=… pnpm --filter @cascet/e2e agent # real Claude via the Anthropic API
+pnpm --filter @cascet/e2e connect-demo              # free — real Claude on your Max/Pro plan, no API key
 ```
 
-The agent reads the three priced DeFi/RWA tools, buys the ones it judges necessary for the goal, pays x402 per call under a fixed budget, and returns a recommendation citing the data it purchased. (Reasoning defaults to a clearly-labeled offline simulation — see the note under [The autonomous buyer](#the-autonomous-buyer-an-llm-that-prices-budgets-and-buys-tools).)
+The agent reads the three priced DeFi/RWA tools, buys the ones it judges necessary for the goal, pays x402 per call under a fixed budget, and returns a recommendation citing the data it purchased. (No API key? The free `connect-demo` runs real Claude on your Max/Pro plan — see [The autonomous buyer](#the-autonomous-buyer-an-llm-that-prices-budgets-and-buys-tools).)
 
 ### With the live dashboard
 
@@ -229,15 +220,14 @@ npx @cascet/cli connect http://localhost:4402/mcp
 
 ## How it works
 
-**The x402 flow, per tool call.** MCP speaks JSON-RPC over one HTTP endpoint, so the gateway maps each priced tool to a synthetic x402 route. On `tools/call`, the gateway returns `402 Payment Required` with the price; the agent's wallet signs a CEP-18 `transfer_with_authorization` (EIP-712) and retries; the gateway runs the tool, and **only settles payment if the tool succeeds** (a failed call is never charged). Settlement uses the hosted Casper facilitator — CasCet builds *on* the official rails, it does not reimplement verification.
+**The x402 flow, per tool call.** MCP speaks JSON-RPC over one HTTP endpoint, so the gateway maps each priced tool to a synthetic x402 route. On `tools/call`, the gateway returns `402 Payment Required` with the price; the agent's wallet signs a CEP-18 `transfer_with_authorization` (EIP-712) and retries; the gateway runs the tool, and **only settles payment if the tool succeeds** (a failed call is never charged). Settlement uses a self-hosted x402 facilitator built on the official `@make-software/casper-x402` package — CasCet builds *on* the official rails, it does not reimplement verification.
 
-> **Real settlement, verified.** `pnpm --filter @cascet/e2e demo-real` (with a
-> CSPR.cloud token) runs the flow with **no mock**: the agent pays from its
-> on-chain balance of a real `transfer_with_authorization` CEP-18 token, the
-> hosted CSPR.cloud facilitator verifies and settles it, and the receipt is
-> anchored on-chain — e.g. settlement tx
-> [`9bc90044…`](https://testnet.cspr.live/transaction/9bc90044ac4053be6bd87fa1a09cec80ea24d509decfe747b001fc1bfc561fc2).
-> The bundled mock facilitator (`tools/e2e`) exists only for chain-free local dev.
+> **Real settlement, verified.** `pnpm --filter @cascet/e2e demo-real` settles a
+> real `transfer_with_authorization` on-chain: the agent pays from its on-chain
+> balance of a real CEP-18 token, a self-hosted x402 facilitator (fee-sponsored by
+> the CasCet deployer key) verifies and settles it, and the receipt is anchored
+> on-chain — e.g. settlement tx
+> [`0218ff4c…`](https://testnet.cspr.live/transaction/0218ff4c8d726a610a7a02168cd24941d4db07a9ca787c2fa6f89f21ac159ce7).
 
 **Cascading payments.** When the gateway settles a call it mints a `paymentId` and passes it to the upstream tool via `_meta`. If that tool buys from other paid tools, its paying client forwards the id as `X-CASCET-PARENT-ID`, so each downstream receipt records its parent. The full chain reconstructs from receipts alone — no central coordinator — and renders as a payment graph.
 
@@ -253,7 +243,7 @@ Five Odra contracts (Rust), unit-tested against a real CEP-18 in Odra's mock VM 
 - **`RevenueSplit`** — an OpenZeppelin-style PaymentSplitter for CEP-18. A gateway can set its `payTo` to this contract so a server's earnings split between payees by fixed weights, pull-based, enforced on-chain.
 - **`CascadeController`** — the budget-bounded cascade primitive: one deposit caps a whole call tree (enforced on-chain), with recursive revenue attribution up the tree.
 - **`PaymentChannel`** — prepaid channels for high-frequency traffic: deposit once, authorize usage off-chain with signed vouchers, redeem/reclaim on-chain. Vouchers verified in-contract via Casper `verify_signature`.
-- **`DemoToken`** — CasCet's own CEP-18 payment token (a WCSPR-style wrapper). **`Cep18X402`** is *not* ours: it's the reference `transfer_with_authorization` (EIP-3009) token from [make-software/casper-x402](https://github.com/make-software/casper-x402), deployed to testnet so the hosted facilitator can settle real x402 payments (see [`contracts/external/`](contracts/external/) and [`NOTICE`](NOTICE)).
+- **`DemoToken`** — CasCet's own CEP-18 payment token (a WCSPR-style wrapper). **`Cep18X402`** is *not* ours: it's the reference `transfer_with_authorization` (EIP-3009) token from [make-software/casper-x402](https://github.com/make-software/casper-x402), deployed to testnet so a facilitator can settle real x402 payments (see [`contracts/external/`](contracts/external/) and [`NOTICE`](NOTICE)).
 
 ```bash
 cd contracts

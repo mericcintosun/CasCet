@@ -16,11 +16,11 @@ AI agents reach the world through MCP servers, but almost all of them are free �
 - **Gateway** (`@cascet/cli wrap`) — wraps any MCP server, per-tool x402 pricing, charge-only-on-success, receipt store + on-chain anchoring + live event push.
 - **Client** (`@cascet/cli connect`) — paying stdio bridge for MCP hosts with per-call/session spend budgets; cascade parent propagation.
 - **Two flagship paid MCP servers** — `casper-defi-data` (live CSPR/RWA/DeFi data) and `portfolio-analyst`, which autonomously buys from the data server (the cascade).
-- **Autonomous LLM buyer** (`@cascet/agent`) — Claude prices the paid tools, decides what to buy for a DeFi/RWA goal, and pays x402 per call under a fixed budget (ships as a clearly-labeled offline simulation; one flag runs live Claude).
+- **Autonomous LLM buyer** (`@cascet/agent`) — Claude prices the paid tools, decides what to buy for a DeFi/RWA goal, and pays x402 per call under a fixed budget (real Claude — via the Anthropic API, or free via `cascet connect` on a Claude Max/Pro plan).
 - **Five Odra contracts** (13/13 tests) — `ReceiptRegistry` (anchors receipts + cascade links, upgradable), `RevenueSplit` (CEP-18 PaymentSplitter), `CascadeController` (budget-bounded cascade tree), `PaymentChannel` (prepaid voucher channels) and a `DemoToken` CEP-18. **Seven on-chain deployments** (the five + an upgraded ReceiptRegistry + the third-party Cep18X402 settlement token).
 - **Live dashboard + pages** (Next.js 15 + shadcn/ui, dark/light/system): `/dashboard` (real-time revenue, receipts, cascading payment graph), **`/build`** (a config-generator wizard — fill a form → validated `cascet.config.json` + commands), **`/withdraw`** (Casper Wallet connect + a real on-chain `release` from the RevenueSplit), **`/explorer`** (on-chain-backed — rebuilds the economy from the ReceiptRegistry), and `/playground` (interactive cascade budget calculator).
-- **Real x402 settlement (no mock)** — the hosted CSPR.cloud facilitator verifies + settles a real CEP-18 `transfer_with_authorization`; receipts anchored on-chain.
-- **Local E2E** — one command runs the whole cascade with a mock facilitator; asserts every downstream payment links to the root.
+- **Real x402 settlement** — a self-hosted x402 facilitator verifies + settles a real CEP-18 `transfer_with_authorization`; receipts anchored on-chain.
+- **Local E2E** — one command runs the whole cascade with real on-chain settlement on both hops; asserts every downstream payment links to the root.
 - **x402-MCP spec** — the price-advertisement + settlement + cascade-attribution convention written up as a reusable proposal (`docs/x402-mcp-spec.md`).
 
 ## Demo video script (~1:50)
@@ -42,7 +42,7 @@ AI agents reach the world through MCP servers, but almost all of them are free �
 
 Verified on-chain:
 - Gateway anchored a full cascade (1 root + 4 children); `count` 2→7, child `parent_id` links back to root.
-- Real x402 settlement (no mock): [`9bc90044…`](https://testnet.cspr.live/transaction/9bc90044ac4053be6bd87fa1a09cec80ea24d509decfe747b001fc1bfc561fc2)
+- Real x402 settlement: [`0218ff4c…`](https://testnet.cspr.live/transaction/0218ff4c8d726a610a7a02168cd24941d4db07a9ca787c2fa6f89f21ac159ce7)
 - RevenueSplit `release` (the `/withdraw` flow): [`f7cda49c…`](https://testnet.cspr.live/transaction/f7cda49c87e1e2f13a3b8f3bb0a75ef19f57e911bdf6238f529ae43489437c21)
 - CascadeController over-budget hop rejected on-chain: [`d1df6c89…`](https://testnet.cspr.live/transaction/d1df6c898bbc8edc63fca9018dd4352f40afc6cea45a20666c91dbaf28887572)
 

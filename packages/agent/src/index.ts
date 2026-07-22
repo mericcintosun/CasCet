@@ -9,4 +9,3 @@ export {
   type Brain,
   type BrainResponse,
 } from "./agent.js";
-export { createMockBrain } from "./mock-brain.js";

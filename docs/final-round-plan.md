@@ -8,7 +8,7 @@ bottom of each workstream.
 
 7 contracts live on Casper Testnet · real x402 settlement (no mock) · the
 `CascadeController` primitive (budget tree + recursive attribution) · an autonomous
-LLM buyer (`@cascet/agent`, simulated reasoning by default) · live dashboard +
+LLM buyer (`@cascet/agent`, real Claude via the Anthropic API — or free via `cascet connect`) · live dashboard +
 cascade playground + x402 explorer · a proposed x402-MCP spec · CI/CodeQL/Dependabot
 + community-health files · live socials (X + Discord).
 
@@ -39,7 +39,7 @@ cascade playground + x402 explorer · a proposed x402-MCP spec · CI/CodeQL/Depe
 | W7 | ✅ **DONE** — on-chain-backed explorer: rebuilds the economy from ReceiptRegistry `record` txs via CSPR.cloud (8 receipts, live) | ecosystem impact | med | — |
 | W8 | ✅ **DONE** — submission/README/BUIDL refresh + consistency fixes + CI contract-test job + full QA green | all | low | — |
 
-\* W1 code is proven (`CASCET_AGENT_LIVE=1`); only the credit is missing.
+\* W1 code is proven — real Claude runs via `ANTHROPIC_API_KEY` (Anthropic API), or free via `cascet connect` on a Max/Pro plan.
 
 (W5 = Discord is Meriç's, tracked in `docs/discord-mcp-handoff.md` + `tools/discord`.)
 

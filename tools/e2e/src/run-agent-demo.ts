@@ -1,64 +1,48 @@
-import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { cascetConfigSchema, type CascetConfig } from "@cascet/core";
 import { startGateway } from "@cascet/gateway";
 import { createPayingFetch } from "@cascet/client";
-import { runAgent, createMockBrain, type AgentEvent } from "@cascet/agent";
-import { startMockFacilitator } from "./mock-facilitator.js";
+import { runAgent, type AgentEvent } from "@cascet/agent";
+import { startRealFacilitator } from "./real-facilitator.js";
 
 /**
- * Autonomous agent demo: Claude buys paid DeFi/RWA data on its own.
+ * Autonomous agent demo (programmatic SDK variant): real Claude buys paid
+ * DeFi/RWA data on its own, and every purchase settles for real on-chain.
  *
  *   Claude (Opus 4.8) ──discovers 3 priced tools──▶ casper-defi-data gateway (:4402)
  *        │ decides which to buy for the goal, pays x402 per call under a fixed budget
  *        ▼
  *   synthesizes a DeFi/RWA recommendation grounded in the data it purchased
  *
- * Offline by default (mock facilitator). Set CSPR_CLOUD_TOKEN for REAL on-chain settlement.
+ * Reasoning runs on the real Anthropic API (needs ANTHROPIC_API_KEY, or an
+ * `ant auth login` profile). Settlement is REAL on Casper Testnet via a
+ * self-hosted facilitator (fee-sponsored by the CasCet deployer key).
  *
- * Run:  pnpm --filter @cascet/e2e agent
- *   real:  CSPR_CLOUD_TOKEN=<token> pnpm --filter @cascet/e2e agent
- * Needs ANTHROPIC_API_KEY (or an `ant auth login` profile) for the Claude calls.
+ * No API key? Use the FREE live-agent path instead — it drives real Claude on
+ * your Max/Pro plan and settles on-chain the same way:
+ *   pnpm --filter @cascet/e2e connect-demo
+ *
+ * Run:  ANTHROPIC_API_KEY=<key> pnpm --filter @cascet/e2e agent
  */
 
 const ROOT = resolve(import.meta.dirname, "../../..");
 const KEYS = resolve(import.meta.dirname, "../keys");
 const FACILITATOR_PORT = 4500;
+const NODE_URL = "https://node.testnet.casper.network/rpc";
 const GATEWAY_MCP = "http://localhost:4402/mcp";
 
-// Reasoning backend: live Claude (needs API credits) vs a labeled offline simulation.
-// Default is the simulation so the demo runs for free; the payments stay real either way.
-const LIVE = process.env.CASCET_AGENT_LIVE === "1";
-
-// Settlement backend: mock facilitator (offline) vs real CSPR.cloud on-chain settlement.
-const CSPR_CLOUD_TOKEN = process.env.CSPR_CLOUD_TOKEN;
-const REAL = Boolean(CSPR_CLOUD_TOKEN);
-
-function banner(): void {
-  // Rule-only frame (no right border) so emoji/unicode widths can't misalign it.
-  const rule = "═".repeat(74);
-  const rows = [
-    " ⚠  SIMULATED AGENT REASONING — no Anthropic API key purchased",
-    "",
-    " For this hackathon build no paid API key was bought, so the LLM's tool",
-    " decisions and final wording are SCRIPTED offline.",
-    "",
-    " Everything else is REAL and unchanged: tool discovery, x402 pricing, per-",
-    " call payments, budget enforcement, cascade receipts, and settlement — and",
-    " the recommendation is grounded in the real data the agent paid for.",
-    "",
-    " Run it live with real Claude:  CASCET_AGENT_LIVE=1 <same command>",
-  ];
-  console.log(`\n${rule}`);
-  for (const r of rows) console.log(r);
-  console.log(`${rule}\n`);
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error(
+    "❌ ANTHROPIC_API_KEY not set. This programmatic demo drives real Claude via the Anthropic API.\n" +
+      "   For a FREE real run (Claude on your Max/Pro plan + real on-chain settlement), use:\n" +
+      "     pnpm --filter @cascet/e2e connect-demo",
+  );
+  process.exit(1);
 }
-
-const pub = (name: string) => readFileSync(resolve(KEYS, `${name}.pub`), "utf8").trim();
 
 // Real x402 payment token deployed by CasCet (transfer_with_authorization).
 const X402_TOKEN = "hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
-// payTo for real settlement MUST be a serialized account-hash Key ("00" + 32-byte hash).
+// payTo MUST be a serialized account-hash Key ("00" + 32-byte account hash).
 const SELLER_DATA_ACCOUNT_HASH = "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36";
 
 const pricing = {
@@ -69,41 +53,36 @@ const pricing = {
   },
 };
 
-const dataConfig: CascetConfig = cascetConfigSchema.parse(
-  REAL
-    ? {
-        name: "casper-defi-data",
-        upstream: { type: "stdio", command: "node", args: [resolve(ROOT, "servers/casper-defi-data/dist/index.js")] },
-        network: "casper:casper-test",
-        payTo: SELLER_DATA_ACCOUNT_HASH,
-        asset: { packageHash: X402_TOKEN, name: "CasCet X402 Token", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 50 },
-        facilitator: { url: "https://x402-facilitator.cspr.cloud", apiKey: CSPR_CLOUD_TOKEN },
-        anchoring: {
-          contractPackageHash: "hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97",
-          keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
-          keyAlgo: "ed25519",
-          nodeUrl: "https://node.testnet.casper.network/rpc",
-          chainName: "casper-test",
-        },
-        pricing,
-        port: 4402,
-      }
-    : {
-        name: "casper-defi-data",
-        upstream: { type: "stdio", command: "node", args: [resolve(ROOT, "servers/casper-defi-data/dist/index.js")] },
-        payTo: pub("seller-data"),
-        asset: { packageHash: "0000000000000000000000000000000000000000000000000000000000000000", name: "Demo Wrapped CSPR", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 50 },
-        facilitator: { url: `http://localhost:${FACILITATOR_PORT}` },
-        pricing,
-        port: 4402,
-      },
-);
+const dataConfig: CascetConfig = cascetConfigSchema.parse({
+  name: "casper-defi-data",
+  upstream: { type: "stdio", command: "node", args: [resolve(ROOT, "servers/casper-defi-data/dist/index.js")] },
+  network: "casper:casper-test",
+  payTo: SELLER_DATA_ACCOUNT_HASH,
+  asset: { packageHash: X402_TOKEN, name: "CasCet X402 Token", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 50 },
+  facilitator: { url: `http://localhost:${FACILITATOR_PORT}` },
+  anchoring: {
+    contractPackageHash: "hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97",
+    keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
+    keyAlgo: "ed25519",
+    nodeUrl: NODE_URL,
+    chainName: "casper-test",
+  },
+  pricing,
+  port: 4402,
+});
 
-const facilitator = REAL ? undefined : startMockFacilitator(FACILITATOR_PORT);
+// Self-hosted facilitator: fee-sponsored by the deployer key (funded with CSPR).
+const facilitator = await startRealFacilitator({
+  port: FACILITATOR_PORT,
+  network: "casper:casper-test",
+  keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
+  keyAlgo: "ed25519",
+  rpcUrl: NODE_URL,
+});
 const gateway = await startGateway(dataConfig);
 
-// Fixed budget the agent must live within. $0.50 worth of the payment token
-// (tokensPerUsd 50, 9 decimals) — enough for a sensible subset, not a blank cheque.
+// Fixed budget the agent must live within. 25 tokens ($0.50 at tokensPerUsd 50)
+// — enough for a sensible subset, not a blank cheque.
 const maxSessionRaw = (BigInt("25") * 10n ** 9n).toString();
 
 const paying = await createPayingFetch({
@@ -118,9 +97,7 @@ const goal =
   "liquid staking (stCSPR) or into tokenized real-world assets like gold or US treasuries? " +
   "Back your recommendation with current market data, on-chain yields, and RWA prices.";
 
-if (!LIVE) banner();
-
-console.log(`──────── autonomous agent · reasoning: ${LIVE ? "LIVE Claude (Opus 4.8)" : "SIMULATED"} · settlement: ${REAL ? "REAL on-chain" : "mock facilitator"} ────────`);
+console.log(`──────── autonomous agent · reasoning: LIVE Claude (Opus 4.8) · settlement: REAL on-chain ────────`);
 console.log(`goal: ${goal}\n`);
 
 const onEvent = (e: AgentEvent) => {
@@ -147,14 +124,13 @@ const result = await runAgent({
   gatewayMcpUrl: GATEWAY_MCP,
   paying,
   onEvent,
-  brain: LIVE ? undefined : createMockBrain(),
 });
 
 const paidOk = result.toolCalls.filter(c => c.ok);
 const runPaymentIds = new Set(paidOk.map(c => c.paymentId).filter(Boolean));
 
 console.log("\n──────── settlement summary (this run) ────────");
-console.log(`reasoning: ${result.brain.live ? "LIVE Claude" : "SIMULATED"} (${result.brain.name})`);
+console.log(`reasoning: LIVE Claude (${result.brain.name})`);
 console.log(`paid tool calls: ${paidOk.length} (${paidOk.map(c => c.tool).join(", ")})`);
 console.log(`total authorized: ${result.spentRaw} raw token units (budget ${maxSessionRaw})`);
 
@@ -163,28 +139,20 @@ const receipts = ((await (await fetch("http://localhost:4402/receipts")).json())
   receipts: Array<{ id: string; tool: string; status: string; txHash?: string }>;
 }).receipts;
 const settled = receipts.filter(r => r.status === "settled" && runPaymentIds.has(r.id));
-console.log(`settled this run: ${settled.length}${REAL ? " (real on-chain)" : " (mock facilitator — no on-chain tx)"}`);
-// Only real settlement produces resolvable cspr.live transactions; mock tx hashes are synthetic.
-if (REAL) {
-  for (const r of settled) {
-    if (r.txHash) console.log(`  ${r.tool} → https://testnet.cspr.live/transaction/${r.txHash}`);
-  }
+console.log(`settled this run: ${settled.length} (real on-chain)`);
+for (const r of settled) {
+  if (r.txHash) console.log(`  ${r.tool} → https://testnet.cspr.live/transaction/${r.txHash}`);
 }
 
 if (paidOk.length === 0) {
   throw new Error("AGENT FAIL: the agent bought no tools — it should have purchased data to answer the goal.");
 }
 console.log(
-  `\n✅ AGENT PASS — the agent autonomously bought ${paidOk.length} paid DeFi/RWA tool call(s) and synthesized a recommendation.`,
+  `\n✅ AGENT PASS — the agent autonomously bought ${paidOk.length} paid DeFi/RWA tool call(s), settled each on-chain, and synthesized a recommendation.`,
 );
-if (!result.brain.live) {
-  console.log(
-    "   (reasoning SIMULATED — no API key purchased; payments/settlement above are real. CASCET_AGENT_LIVE=1 for real Claude.)",
-  );
-}
 console.log("");
 
-await new Promise(r => setTimeout(r, REAL ? 12_000 : 500));
+await new Promise(r => setTimeout(r, 12_000)); // let anchoring submit
 await gateway.close();
-facilitator?.close();
+facilitator.close();
 process.exit(0);
