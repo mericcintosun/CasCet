@@ -11,6 +11,7 @@
     "demo-real": "tsx src/run-real.ts",
     "demo-real-mainnet": "tsx src/run-real-mainnet.ts",
     "fund-token": "tsx src/fund-token.ts",
+    "facilitator": "tsx src/run-facilitator.ts",
     "agent": "tsx src/run-agent-demo.ts",
     "connect-demo": "tsx src/run-connect-demo.ts"
   },
