@@ -19,6 +19,18 @@ export interface PayingFetchOptions {
     maxSessionRaw?: string;
   };
   /**
+   * If set, refuse to pay any server whose 402 `payTo` is not on this list.
+   * Without it the client signs whatever recipient the (possibly hostile or
+   * MITM'd) server dictates — so pin the sellers you actually intend to pay.
+   */
+  allowedPayTo?: string[];
+  /**
+   * If set, refuse to pay in any asset (CEP-18 package hash) not on this list.
+   * Prevents a malicious 402 from swapping in a more valuable token that also
+   * supports transfer_with_authorization and draining it under the raw cap.
+   */
+  allowedAssets?: string[];
+  /**
    * Cascade parent: payment id of the inbound call this agent is serving.
    * Forwarded as X-CASCET-PARENT-ID so downstream receipts join the chain.
    */
@@ -39,25 +51,41 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
     opts.keyAlgorithm === "secp256k1" ? KeyAlgorithm.SECP256K1 : KeyAlgorithm.ED25519;
   const signer = await createClientCasperSigner(opts.privateKeyPath, algorithm);
 
-  let sessionSpent = 0n;
+  const norm = (s: string | undefined): string =>
+    (s ?? "").toLowerCase().replace(/^hash-/, "").replace(/^0x/, "");
+  const allowPayTo = opts.allowedPayTo?.map(norm);
+  const allowAssets = opts.allowedAssets?.map(norm);
+
+  // Track spend PER ASSET so a swapped-in asset can't ride under one raw cap.
+  const sessionSpent = new Map<string, bigint>();
 
   const client = new x402Client()
     .register("casper:*", new ExactCasperScheme(signer))
     .onBeforePaymentCreation(async ctx => {
-      const amount = BigInt(ctx.selectedRequirements.amount);
+      const req = ctx.selectedRequirements;
+      // Refuse to sign a payment to an unexpected recipient or in an unexpected asset.
+      if (allowPayTo && !allowPayTo.includes(norm(req.payTo))) {
+        return { abort: true as const, reason: `payTo ${req.payTo} is not allowlisted` };
+      }
+      if (allowAssets && !allowAssets.includes(norm(req.asset))) {
+        return { abort: true as const, reason: `asset ${req.asset} is not allowlisted` };
+      }
+      const asset = norm(req.asset);
+      const amount = BigInt(req.amount);
       const maxPerCall = opts.budget?.maxPerCallRaw ? BigInt(opts.budget.maxPerCallRaw) : undefined;
       const maxSession = opts.budget?.maxSessionRaw ? BigInt(opts.budget.maxSessionRaw) : undefined;
+      const spentForAsset = sessionSpent.get(asset) ?? 0n;
       if (maxPerCall !== undefined && amount > maxPerCall) {
         return { abort: true as const, reason: `price ${amount} exceeds per-call budget ${maxPerCall}` };
       }
-      if (maxSession !== undefined && sessionSpent + amount > maxSession) {
-        return { abort: true as const, reason: `price ${amount} would exceed session budget ${maxSession}` };
+      if (maxSession !== undefined && spentForAsset + amount > maxSession) {
+        return { abort: true as const, reason: `price ${amount} would exceed session budget ${maxSession} for asset ${asset}` };
       }
-      sessionSpent += amount;
+      sessionSpent.set(asset, spentForAsset + amount);
       opts.onPayment?.({
         amountRaw: amount.toString(),
-        payTo: ctx.selectedRequirements.payTo,
-        network: ctx.selectedRequirements.network,
+        payTo: req.payTo,
+        network: req.network,
       });
     });
 
@@ -73,6 +101,10 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
 
   return {
     fetch: wrapFetchWithPayment(baseFetch, client),
-    spentRaw: () => sessionSpent.toString(),
+    spentRaw: () => {
+      let total = 0n;
+      for (const v of sessionSpent.values()) total += v;
+      return total.toString();
+    },
   };
 }

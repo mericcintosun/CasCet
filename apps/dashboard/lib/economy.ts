@@ -1,4 +1,5 @@
 import type { PaymentReceipt } from "@cascet/core";
+import { toBigIntSafe } from "./utils";
 
 /** Deployed CasCet contracts on Casper Testnet (canonical on-chain state). */
 export const CONTRACTS = {
@@ -48,7 +49,7 @@ export function computeEconomy(receipts: PaymentReceipt[]): EconomyStats {
   const allPayers = new Set<string>();
 
   for (const r of settled) {
-    const amount = BigInt(r.amountRaw || "0");
+    const amount = toBigIntSafe(r.amountRaw);
     allPayers.add(r.payer);
 
     const s = serverMap.get(r.server) ?? { revenue: 0n, calls: 0, payers: new Set(), tools: new Set() };
@@ -80,7 +81,7 @@ export function computeEconomy(receipts: PaymentReceipt[]): EconomyStats {
   const maxDepth = settled.reduce((m, r) => Math.max(m, depthOf(r)), 0);
 
   return {
-    totalRevenueRaw: settled.reduce((sum, r) => sum + BigInt(r.amountRaw || "0"), 0n),
+    totalRevenueRaw: settled.reduce((sum, r) => sum + toBigIntSafe(r.amountRaw), 0n),
     settledCalls: settled.length,
     anchoredCount: settled.filter(r => r.anchoredTxHash).length,
     uniquePayers: allPayers.size,

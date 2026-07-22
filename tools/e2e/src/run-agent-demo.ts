@@ -78,6 +78,8 @@ const facilitator = await startRealFacilitator({
   keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
   keyAlgo: "ed25519",
   rpcUrl: NODE_URL,
+  allowedPayTo: [SELLER_DATA_ACCOUNT_HASH],
+  allowedAssets: [X402_TOKEN],
 });
 const gateway = await startGateway(dataConfig);
 
@@ -88,6 +90,8 @@ const maxSessionRaw = (BigInt("25") * 10n ** 9n).toString();
 const paying = await createPayingFetch({
   privateKeyPath: resolve(KEYS, "agent.pem"),
   budget: { maxSessionRaw },
+  allowedPayTo: [SELLER_DATA_ACCOUNT_HASH],
+  allowedAssets: [X402_TOKEN],
   onPayment: info => console.log(`   💸 x402: authorizing ${info.amountRaw} raw token units → ${info.payTo.slice(0, 12)}…`),
 });
 

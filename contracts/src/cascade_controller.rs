@@ -152,34 +152,44 @@ impl CascadeController {
             self.env().revert(Error::BudgetExceeded);
         }
 
-        // Recursive attribution: redirect a share of this hop's gross to the
-        // payee of its parent hop (the service that composed it).
-        let to_parent = if parent == 0 {
-            U256::zero()
+        // Recursive attribution: a share of this hop's gross is redirected UP to
+        // the payee of its parent hop (the service that composed it). Compute it
+        // here but do NOT move funds yet — all state must be committed before any
+        // external token transfer (checks-effects-interactions), so even a token
+        // with a reentrant `transfer` cannot re-enter `charge` against a stale
+        // `spent` and push total payouts past the budget.
+        let (to_parent, parent_payee) = if parent == 0 {
+            (U256::zero(), None)
         } else {
             let parent_hop = self
                 .hops
                 .get(&(cascade_id, parent))
                 .unwrap_or_revert_with(&self.env(), Error::UnknownParent);
             let cut = gross * U256::from(attribution_bps) / U256::from(BPS_DENOMINATOR);
-            if !cut.is_zero() {
-                CascadeTokenContractRef::new(self.env(), cascade.token).transfer(parent_hop.payee, cut);
-            }
-            cut
+            (cut, Some(parent_hop.payee))
         };
         let net = gross - to_parent;
-        if !net.is_zero() {
-            CascadeTokenContractRef::new(self.env(), cascade.token).transfer(payee, net);
-        }
 
+        // EFFECTS: commit the hop and the increased spend first.
         let hop_id = cascade.next_hop;
         cascade.next_hop += 1;
         cascade.spent += gross;
+        let token = cascade.token;
         self.cascades.set(&cascade_id, cascade);
         self.hops.set(
             &(cascade_id, hop_id),
             Hop { payee, parent, gross, net_to_payee: net, to_parent },
         );
+
+        // INTERACTIONS: pay out last.
+        if let Some(parent_payee) = parent_payee {
+            if !to_parent.is_zero() {
+                CascadeTokenContractRef::new(self.env(), token).transfer(parent_payee, to_parent);
+            }
+        }
+        if !net.is_zero() {
+            CascadeTokenContractRef::new(self.env(), token).transfer(payee, net);
+        }
         self.env().emit_event(HopCharged { cascade_id, hop_id, parent, payee, gross, to_parent });
         hop_id
     }

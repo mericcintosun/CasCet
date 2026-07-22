@@ -94,6 +94,14 @@ impl ReceiptRegistry {
         self.recorders.set(&recorder, false);
     }
 
+    /// Transfer ownership to a new account (e.g. to rotate a compromised or lost
+    /// operator key). The new owner also becomes an authorized recorder.
+    pub fn transfer_ownership(&mut self, new_owner: Address) {
+        self.assert_owner();
+        self.owner.set(new_owner);
+        self.recorders.set(&new_owner, true);
+    }
+
     /// Anchor a settled payment receipt. Rejects duplicate payment ids.
     #[allow(clippy::too_many_arguments)]
     pub fn record(

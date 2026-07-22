@@ -3,7 +3,7 @@
 import * as React from "react";
 import { Coins, Receipt, GitBranch, Server } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { formatTokens } from "@/lib/utils";
+import { formatTokens, toBigIntSafe } from "@/lib/utils";
 import type { DashboardState } from "@/lib/use-live-state";
 
 const TILES = [
@@ -15,7 +15,7 @@ const TILES = [
 
 export function StatTiles({ state }: { state: DashboardState }) {
   const settled = state.receipts.filter(r => r.status === "settled");
-  const revenueRaw = settled.reduce((sum, r) => sum + BigInt(r.amountRaw || "0"), 0n);
+  const revenueRaw = settled.reduce((sum, r) => sum + toBigIntSafe(r.amountRaw), 0n);
   const cascaded = settled.filter(r => r.parentId).length;
   const online = state.servers.filter(s => s.online).length;
   const symbol = settled[0]?.assetSymbol ?? "WCSPR";

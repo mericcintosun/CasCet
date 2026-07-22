@@ -47,6 +47,20 @@ function hexToBytes(hex: string): Uint8Array {
 /** Attach a wallet signature to a prepared tx and submit it; resolves with the tx hash. */
 export async function submitSigned(txJson: unknown, signatureHex: string, publicKeyHex: string): Promise<string> {
   const tx = Transaction.fromJSON(txJson);
+
+  // Defence-in-depth: /submit must only relay the RevenueSplit `release` we
+  // prepared, never an arbitrary transaction a caller pastes in. The wallet
+  // only pays gas (release is permissionless), so this is not fund-loss today,
+  // but it keeps the trust boundary correct if the design ever changes.
+  const entryPoint = tx.entryPoint?.customEntryPoint;
+  if (entryPoint !== "release") {
+    throw new Error(`refusing to relay: unexpected entry point "${entryPoint ?? "?"}"`);
+  }
+  const pkg = REVENUE_SPLIT_PACKAGE.replace(/^hash-/, "").toLowerCase();
+  if (!JSON.stringify(txJson).toLowerCase().includes(pkg)) {
+    throw new Error("refusing to relay: transaction does not target the RevenueSplit contract");
+  }
+
   const pub = PublicKey.fromHex(publicKeyHex);
   tx.setSignature(hexToBytes(signatureHex), pub);
   const res = await rpc().putTransaction(tx);

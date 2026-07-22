@@ -73,6 +73,8 @@ pub enum Error {
     NotSender = 7,
     /// The channel has not expired yet.
     NotExpired = 8,
+    /// duration_ms is below the minimum or would overflow the block time.
+    InvalidDuration = 9,
 }
 
 #[odra::module(events = [ChannelOpened, VoucherRedeemed, ChannelClosed], errors = Error)]
@@ -104,6 +106,17 @@ impl PaymentChannel {
         if Address::from(sender_public_key.clone()) != sender {
             self.env().revert(Error::SenderKeyMismatch);
         }
+        // Reject zero/dust durations and any duration that would overflow u64 and
+        // wrap `expiration` into the past — that would make the channel instantly
+        // closable and let the sender rug a payee that already rendered service.
+        if duration_ms < MIN_CHANNEL_DURATION_MS {
+            self.env().revert(Error::InvalidDuration);
+        }
+        let expiration = self
+            .env()
+            .get_block_time()
+            .checked_add(duration_ms)
+            .unwrap_or_revert_with(&self.env(), Error::InvalidDuration);
         ChannelTokenContractRef::new(self.env(), token).transfer_from(sender, self.env().self_address(), deposit);
 
         let id = self.next_id.get_or_default();
@@ -114,7 +127,7 @@ impl PaymentChannel {
             token,
             deposit,
             redeemed: U256::zero(),
-            expiration: self.env().get_block_time() + duration_ms,
+            expiration,
             closed: false,
         };
         self.channels.set(&id, channel);
@@ -132,7 +145,8 @@ impl PaymentChannel {
             self.env().revert(Error::ChannelClosed);
         }
         let key = self.sender_keys.get(&channel_id).unwrap_or_revert_with(&self.env(), Error::UnknownChannel);
-        let message = Bytes::from(voucher_message(channel_id, &cumulative));
+        let contract = contract_hash_bytes(&self.env().self_address());
+        let message = Bytes::from(voucher_message(contract, channel_id, &cumulative));
         if !self.env().verify_signature(&message, &signature, &key) {
             self.env().revert(Error::InvalidVoucher);
         }
@@ -198,12 +212,35 @@ impl PaymentChannel {
     }
 }
 
-/// Canonical voucher message: `channel_id` (LE u64 bytes) ++ `cumulative` (U256 bytes).
-/// Signer and contract must build this identically.
-pub fn voucher_message(channel_id: u64, cumulative: &U256) -> Vec<u8> {
-    let mut msg = channel_id.to_le_bytes().to_vec();
+/// Domain-separation tag baked into every voucher so a signature is bound to
+/// this contract module and cannot be reinterpreted by another verifier.
+const VOUCHER_DOMAIN: &[u8] = b"CASCET_PAYMENT_CHANNEL_VOUCHER_V2";
+
+/// Minimum channel duration (ms). Rejects zero/dust windows that would let a
+/// sender `close` and rug a payee before it can redeem.
+pub const MIN_CHANNEL_DURATION_MS: u64 = 1_000;
+
+/// Canonical voucher message:
+/// `DOMAIN || contract package hash (32 bytes) || channel_id (LE u64) || cumulative (U256 bytes)`.
+/// Binding the contract package hash prevents cross-deployment / cross-chain
+/// replay: a testnet voucher can never be redeemed on the mainnet deployment
+/// (or a fork, or a re-created channel that reuses an id), even with a colliding
+/// channel id and a reused sender key. Signer and contract must build this identically.
+pub fn voucher_message(contract: [u8; 32], channel_id: u64, cumulative: &U256) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(VOUCHER_DOMAIN.len() + 32 + 8 + 32);
+    msg.extend_from_slice(VOUCHER_DOMAIN);
+    msg.extend_from_slice(&contract);
+    msg.extend_from_slice(&channel_id.to_le_bytes());
     msg.extend_from_slice(&cumulative.to_bytes().unwrap_or_default());
     msg
+}
+
+/// Extract the 32-byte hash from a contract/account Address.
+fn contract_hash_bytes(addr: &Address) -> [u8; 32] {
+    match addr {
+        Address::Contract(h) => h.value(),
+        Address::Account(h) => h.value(),
+    }
 }
 
 #[cfg(test)]
@@ -249,8 +286,9 @@ mod tests {
         assert_eq!(channel.redeemable(id), U256::from(1_000u64));
 
         // Off-chain: sender signs a voucher for cumulative 400.
+        let contract = contract_hash_bytes(&channel.address());
         let cumulative = U256::from(400u64);
-        let msg = voucher_message(id, &cumulative);
+        let msg = voucher_message(contract, id, &cumulative);
         let sig = crypto::sign(&msg, &secret, &sender_pk);
         let sig_bytes = Bytes::from(sig.to_bytes().unwrap());
 
@@ -262,7 +300,7 @@ mod tests {
 
         // A second, larger voucher pays only the delta.
         let cumulative2 = U256::from(650u64);
-        let sig2 = crypto::sign(&voucher_message(id, &cumulative2), &secret, &sender_pk);
+        let sig2 = crypto::sign(&voucher_message(contract, id, &cumulative2), &secret, &sender_pk);
         channel.redeem(id, cumulative2, Bytes::from(sig2.to_bytes().unwrap()));
         assert_eq!(token.balance_of(&payee), U256::from(650u64));
 
@@ -293,7 +331,8 @@ mod tests {
         let attacker = SecretKey::generate_ed25519().unwrap();
         let attacker_pk = PublicKey::from(&attacker);
         let cumulative = U256::from(400u64);
-        let forged = crypto::sign(&voucher_message(id, &cumulative), &attacker, &attacker_pk);
+        let contract = contract_hash_bytes(&channel.address());
+        let forged = crypto::sign(&voucher_message(contract, id, &cumulative), &attacker, &attacker_pk);
 
         env.set_caller(payee);
         let err = channel.try_redeem(id, cumulative, Bytes::from(forged.to_bytes().unwrap()));

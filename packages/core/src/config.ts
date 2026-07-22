@@ -74,10 +74,28 @@ export type ToolPrice = z.infer<typeof toolPriceSchema>;
 export type AssetConfig = z.infer<typeof assetSchema>;
 export type CascetConfig = z.infer<typeof cascetConfigSchema>;
 
-/** Convert a "$0.001" money string into raw CEP-18 token units per the asset config. */
+/**
+ * Convert a "$0.001" money string into raw CEP-18 token units per the asset
+ * config. Done entirely in integer/BigInt space (both the price and the rate are
+ * treated as exact decimal fractions) — IEEE-754 float math would silently lose
+ * precision for high-decimal tokens and could round a small price to 0.
+ */
 export function usdPriceToTokenUnits(price: string, asset: AssetConfig): bigint {
-  const usd = Number(price.replace(/^\$/, ""));
-  if (!Number.isFinite(usd) || usd < 0) throw new Error(`invalid price: ${price}`);
-  const raw = usd * asset.tokensPerUsd * 10 ** asset.decimals;
-  return BigInt(Math.round(raw));
+  const cleaned = price.replace(/^\$/, "").trim();
+  if (!/^\d+(\.\d+)?$/.test(cleaned)) throw new Error(`invalid price: ${price}`);
+  const rateStr = asset.tokensPerUsd.toString();
+  if (!/^\d+(\.\d+)?$/.test(rateStr)) {
+    throw new Error(`tokensPerUsd not exactly representable: ${asset.tokensPerUsd}`);
+  }
+  const [pInt, pFrac = ""] = cleaned.split(".");
+  const [rInt, rFrac = ""] = rateStr.split(".");
+  const priceNum = BigInt(pInt + pFrac);
+  const rateNum = BigInt(rInt + rFrac);
+  const scale = 10n ** BigInt(pFrac.length + rFrac.length);
+  // raw = price * tokensPerUsd * 10^decimals, exact integer division by the combined scale.
+  const raw = (priceNum * rateNum * 10n ** BigInt(asset.decimals)) / scale;
+  if (raw <= 0n) {
+    throw new Error(`price ${price} rounds to 0 raw units for this asset — raise the price or asset.decimals`);
+  }
+  return raw;
 }

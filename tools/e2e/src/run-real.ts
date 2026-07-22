@@ -26,21 +26,24 @@ const KEYS = resolve(import.meta.dirname, "../keys");
 const FACILITATOR_PORT = 4501;
 const NODE_URL = "https://node.testnet.casper.network/rpc";
 
-// Self-hosted facilitator: fee-sponsored by the deployer key (funded with CSPR).
-const facilitator = await startRealFacilitator({
-  port: FACILITATOR_PORT,
-  network: "casper:casper-test",
-  keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
-  keyAlgo: "ed25519",
-  rpcUrl: NODE_URL,
-});
-
 // Real x402 payment token deployed by CasCet (transfer_with_authorization).
 const X402_TOKEN = "hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
 // payTo MUST be a serialized account-hash Key: "00" (account tag) + 32-byte
 // account hash — NOT a public key. The x402 authorization signs `to` as this
 // 33-byte value and the facilitator settles the transfer to that account hash.
 const SELLER_DATA_ACCOUNT_HASH = "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36";
+
+// Self-hosted facilitator: fee-sponsored by the deployer key (funded with CSPR).
+// Allowlist the one seller + token so it refuses to fee-sponsor any other settle.
+const facilitator = await startRealFacilitator({
+  port: FACILITATOR_PORT,
+  network: "casper:casper-test",
+  keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
+  keyAlgo: "ed25519",
+  rpcUrl: NODE_URL,
+  allowedPayTo: [SELLER_DATA_ACCOUNT_HASH],
+  allowedAssets: [X402_TOKEN],
+});
 
 const dataConfig: CascetConfig = cascetConfigSchema.parse({
   name: "casper-defi-data",
@@ -69,6 +72,8 @@ console.log("\n──────── real x402 payment (buyer holds the token
 
 const paying = await createPayingFetch({
   privateKeyPath: resolve(KEYS, "agent.pem"),
+  allowedPayTo: [SELLER_DATA_ACCOUNT_HASH],
+  allowedAssets: [X402_TOKEN],
   onPayment: info => console.log(`[agent] 💸 authorizing ${info.amountRaw} raw token units → ${info.payTo.slice(0, 12)}…`),
 });
 const client = new PaidMcpHttpClient("http://localhost:4402/mcp", paying.fetch);

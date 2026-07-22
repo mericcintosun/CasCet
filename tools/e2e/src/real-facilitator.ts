@@ -7,26 +7,27 @@ import { createFacilitatorCasperSigner } from "@make-software/casper-x402";
 import casperSdk from "casper-js-sdk";
 
 /**
- * Self-hosted REAL x402 facilitator for Casper Testnet.
+ * Self-hosted REAL x402 facilitator for Casper.
  *
  * Why this exists: the hosted CSPR.cloud facilitator
  * (`https://x402-facilitator.cspr.cloud`) runs an outdated build that sends the
  * CEP-18 settlement runtime arg as `value`, while the make-software reference
- * token's `transfer_with_authorization` entry point expects `amount`. The token
- * calls `get_named_arg("amount")`, finds nothing, and reverts with Odra
- * `ExecutionError::MissingArg` — surfaced on-chain as `User error: 64658`
- * (Odra encodes framework errors as `64536 + discriminant`; MissingArg = 122).
- * That bug breaks every settle the hosted facilitator attempts, for any token.
+ * token's `transfer_with_authorization` entry point expects `amount`, so every
+ * settle there reverts `User error: 64658` (Odra `ExecutionError::MissingArg`).
+ * This facilitator uses `@make-software/casper-x402`, which sends `amount`, and
+ * fee-sponsors each settle deploy from a funded Casper key.
  *
- * This facilitator uses the `@make-software/casper-x402` package we already
- * depend on, whose `buildTransferWithAuthorizationArgs` correctly sends
- * `amount`. It fee-sponsors each settle deploy from a funded Casper key
- * (the CasCet deployer) and talks straight to the public node RPC, so real
- * settlement no longer depends on the broken hosted service.
- *
- * Wire-compatible with `startMockFacilitator`: same `/supported`, `/verify`,
- * `/settle` endpoints and the same response shapes the gateway's
- * `HTTPFacilitatorClient` expects.
+ * SECURITY: the fee-sponsor pays real CSPR gas for every settle it submits —
+ * even reverted deploys burn gas. An open `/settle` is therefore a direct
+ * drain vector (anyone can sign a valid authorization from their own account
+ * and flood it). This server defends in depth:
+ *   - binds to 127.0.0.1 by default (co-located with the gateway; not remotely
+ *     reachable). Set `host: "0.0.0.0"` only with auth + allowlists below.
+ *   - optional bearer-token auth on /verify and /settle (the gateway already
+ *     sends `facilitator.apiKey` as the Authorization header).
+ *   - payTo + asset allowlists: a settle whose payTo/asset is not on the list
+ *     is rejected BEFORE any deploy is submitted, so no gas is spent.
+ *   - a per-minute rate limit and a daily sponsored-gas cap that trips closed.
  */
 export interface RealFacilitatorOptions {
   /** Port to listen on. */
@@ -41,6 +42,18 @@ export interface RealFacilitatorOptions {
   rpcUrl?: string;
   /** Gas budget (motes) per settle deploy. Defaults to 7 CSPR. */
   paymentMotes?: number;
+  /** Interface to bind. Defaults to 127.0.0.1 (not remotely reachable). */
+  host?: string;
+  /** If set, require this exact value in the `Authorization` header on /verify + /settle. */
+  authToken?: string;
+  /** If set, only settle payments whose `payTo` (serialized account-hash Key) is on this list. */
+  allowedPayTo?: string[];
+  /** If set, only settle payments whose asset (CEP-18 package hash) is on this list. */
+  allowedAssets?: string[];
+  /** Max settle requests accepted per rolling minute. Default 60. */
+  maxSettlesPerMinute?: number;
+  /** Daily cap on sponsored gas (motes); the endpoint trips closed past it. Default 500 CSPR. */
+  dailyGasCapMotes?: bigint;
 }
 
 export interface RealFacilitatorHandle {
@@ -51,27 +64,72 @@ export interface RealFacilitatorHandle {
   feePayer: string;
 }
 
+const norm = (s: string | undefined): string =>
+  (s ?? "").toLowerCase().replace(/^hash-/, "").replace(/^0x/, "");
+
 export async function startRealFacilitator(opts: RealFacilitatorOptions): Promise<RealFacilitatorHandle> {
   const network: Network = opts.network ?? ("casper:casper-test" as Network);
   const rpcUrl = opts.rpcUrl ?? "https://node.testnet.casper.network/rpc";
+  const host = opts.host ?? "127.0.0.1";
+  const paymentMotes = opts.paymentMotes ?? 7_000_000_000;
+  const maxPerMin = opts.maxSettlesPerMinute ?? 60;
+  const gasCap = opts.dailyGasCapMotes ?? 500_000_000_000n; // 500 CSPR
+  const allowPayTo = opts.allowedPayTo?.map(norm);
+  const allowAssets = opts.allowedAssets?.map(norm);
+
   const algorithm =
     opts.keyAlgo === "secp256k1" ? casperSdk.KeyAlgorithm.SECP256K1 : casperSdk.KeyAlgorithm.ED25519;
 
   const signer = await createFacilitatorCasperSigner(opts.keyPath, algorithm, rpcUrl);
   const facilitator = new x402Facilitator();
-  facilitator.register(
-    network,
-    new ExactCasperScheme(signer, { limitedPaymentMotes: opts.paymentMotes ?? 7_000_000_000 }),
-  );
+  facilitator.register(network, new ExactCasperScheme(signer, { limitedPaymentMotes: paymentMotes }));
+
+  // --- rate limit + sponsored-gas cap state ---
+  let windowStart = 0;
+  let windowCount = 0;
+  let sponsoredMotes = 0n;
+  const rateOk = (nowMs: number): boolean => {
+    if (nowMs - windowStart >= 60_000) {
+      windowStart = nowMs;
+      windowCount = 0;
+    }
+    windowCount += 1;
+    return windowCount <= maxPerMin;
+  };
 
   const app = express();
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({ limit: "256kb" }));
+
+  // Bearer-token auth for the settlement endpoints (skipped if no token configured).
+  const requireAuth = (req: express.Request, res: express.Response): boolean => {
+    if (!opts.authToken) return true;
+    const got = req.header("authorization") ?? "";
+    if (got !== opts.authToken) {
+      res.status(401).json({ error: "unauthorized" });
+      return false;
+    }
+    return true;
+  };
+
+  // Reject settlements to unknown sellers / tokens BEFORE a deploy is submitted.
+  const allowlistOk = (reqs: PaymentRequirements | undefined, res: express.Response): boolean => {
+    if (allowPayTo && !allowPayTo.includes(norm(reqs?.payTo))) {
+      res.status(403).json({ error: "payTo not allowlisted" });
+      return false;
+    }
+    if (allowAssets && !allowAssets.includes(norm(reqs?.asset))) {
+      res.status(403).json({ error: "asset not allowlisted" });
+      return false;
+    }
+    return true;
+  };
 
   app.get("/supported", (_req, res) => {
     res.json(facilitator.getSupported());
   });
 
   app.post("/verify", async (req, res) => {
+    if (!requireAuth(req, res)) return;
     try {
       const { paymentPayload, paymentRequirements } = req.body as {
         paymentPayload: PaymentPayload;
@@ -80,6 +138,7 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
       if (!paymentPayload || !paymentRequirements) {
         return res.status(400).json({ error: "Missing paymentPayload or paymentRequirements" });
       }
+      if (!allowlistOk(paymentRequirements, res)) return;
       res.json(await facilitator.verify(paymentPayload, paymentRequirements));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -89,6 +148,7 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   });
 
   app.post("/settle", async (req, res) => {
+    if (!requireAuth(req, res)) return;
     try {
       const { paymentPayload, paymentRequirements } = req.body as {
         paymentPayload: PaymentPayload;
@@ -97,6 +157,14 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
       if (!paymentPayload || !paymentRequirements) {
         return res.status(400).json({ error: "Missing paymentPayload or paymentRequirements" });
       }
+      // Defence-in-depth, cheapest checks first (no gas spent on rejection):
+      if (!allowlistOk(paymentRequirements, res)) return;
+      if (!rateOk(Date.now())) return res.status(429).json({ error: "rate limit" });
+      if (sponsoredMotes + BigInt(paymentMotes) > gasCap) {
+        return res.status(503).json({ error: "daily sponsored-gas cap reached" });
+      }
+      sponsoredMotes += BigInt(paymentMotes); // reserve the gas we may burn
+
       const response = await facilitator.settle(paymentPayload, paymentRequirements);
       if (response.success) {
         console.log(`[real-facilitator] ⛓ settled tx=${response.transaction?.slice(0, 12)}…`);
@@ -114,7 +182,7 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
   const server = await new Promise<Server>(resolve => {
-    const s = app.listen(opts.port, () => resolve(s));
+    const s = app.listen(opts.port, host, () => resolve(s));
   });
 
   const supported = facilitator.getSupported() as {
@@ -122,11 +190,14 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   };
   const feePayer = supported.kinds?.find(k => k.network === network)?.extra?.feePayer ?? "unknown";
 
-  console.log(`[real-facilitator] listening on http://localhost:${opts.port} (feePayer=${feePayer.slice(0, 12)}…, net=${network})`);
+  console.log(
+    `[real-facilitator] listening on http://${host}:${opts.port} (feePayer=${feePayer.slice(0, 12)}…, net=${network}` +
+      `, auth=${opts.authToken ? "on" : "off"}, allowlist=${allowPayTo || allowAssets ? "on" : "off"})`,
+  );
 
   return {
     close: () => server.close(),
-    url: `http://localhost:${opts.port}`,
+    url: `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${opts.port}`,
     feePayer,
   };
 }

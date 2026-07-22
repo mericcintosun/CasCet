@@ -98,6 +98,8 @@ async function main(): Promise<void> {
     keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
     keyAlgo: "ed25519",
     rpcUrl: NODE_URL,
+    allowedPayTo: [SELLER_DATA_ACCOUNT_HASH],
+    allowedAssets: [X402_TOKEN],
   });
   const gateway = await startGateway(dataConfig);
 
@@ -115,6 +117,8 @@ async function main(): Promise<void> {
             CASCET_KEY_PATH: resolve(KEYS, "agent.pem"),
             CASCET_KEY_ALGO: "ed25519",
             CASCET_MAX_SESSION: maxSessionRaw,
+            CASCET_ALLOWED_PAYTO: SELLER_DATA_ACCOUNT_HASH,
+            CASCET_ALLOWED_ASSETS: X402_TOKEN,
           },
         },
       },

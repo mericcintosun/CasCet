@@ -34,10 +34,14 @@ export class ReceiptStore {
 /** Fire-and-forget event push to the dashboard ingest endpoint. */
 export function makeEventPusher(eventsUrl?: string): (event: CascetEvent) => void {
   if (!eventsUrl) return () => {};
+  // The dashboard's /ingest requires this bearer token on public deployments.
+  const token = process.env.CASCET_INGEST_TOKEN;
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (token) headers.authorization = `Bearer ${token}`;
   return event => {
     fetch(eventsUrl, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify(event),
     }).catch(() => {
       // dashboard being down must never break payments

@@ -47,6 +47,20 @@ async function connect(url?: string): Promise<void> {
     console.error("❌ CASCET_KEY_PATH env var (PEM private key path) is required");
     process.exit(1);
   }
+  // A remote gateway over plain http:// can be MITM'd to inject a 402 that
+  // redirects your payment to an attacker. Require TLS off-localhost.
+  try {
+    const u = new URL(url);
+    const isLocal = ["localhost", "127.0.0.1", "::1"].includes(u.hostname);
+    if (u.protocol === "http:" && !isLocal) {
+      console.error(`❌ refusing insecure http:// to remote host ${u.hostname} — use https:// (a MITM could redirect your payment).`);
+      process.exit(1);
+    }
+  } catch {
+    console.error(`❌ invalid gateway URL: ${url}`);
+    process.exit(1);
+  }
+  const splitEnv = (v?: string) => v?.split(",").map(s => s.trim()).filter(Boolean);
   const paying = await createPayingFetch({
     privateKeyPath: keyPath,
     keyAlgorithm: process.env.CASCET_KEY_ALGO === "secp256k1" ? "secp256k1" : "ed25519",
@@ -54,6 +68,8 @@ async function connect(url?: string): Promise<void> {
       maxPerCallRaw: process.env.CASCET_MAX_PER_CALL,
       maxSessionRaw: process.env.CASCET_MAX_SESSION,
     },
+    allowedPayTo: splitEnv(process.env.CASCET_ALLOWED_PAYTO),
+    allowedAssets: splitEnv(process.env.CASCET_ALLOWED_ASSETS),
     onPayment: info =>
       console.error(`[cascet] 💸 authorized ${info.amountRaw} raw units → ${info.payTo.slice(0, 10)}…`),
   });
@@ -101,5 +117,7 @@ connect env vars:
   CASCET_KEY_PATH                 PEM private key path (required)
   CASCET_KEY_ALGO                 ed25519 | secp256k1 (default ed25519)
   CASCET_MAX_PER_CALL             per-call budget in raw token units
-  CASCET_MAX_SESSION              session budget in raw token units`);
+  CASCET_MAX_SESSION              session budget in raw token units (per asset)
+  CASCET_ALLOWED_PAYTO            comma-separated payTo allowlist (pin your sellers)
+  CASCET_ALLOWED_ASSETS           comma-separated CEP-18 package-hash allowlist`);
 }

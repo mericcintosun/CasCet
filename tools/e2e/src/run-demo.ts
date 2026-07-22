@@ -95,6 +95,8 @@ const facilitator = await startRealFacilitator({
   keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
   keyAlgo: "ed25519",
   rpcUrl: NODE_URL,
+  allowedPayTo: [SELLER_DATA_ACCOUNT_HASH, SELLER_ANALYST_ACCOUNT_HASH],
+  allowedAssets: [X402_TOKEN],
 });
 const dataGateway = await startGateway(dataConfig);
 const analystGateway = await startGateway(analystConfig);
@@ -103,6 +105,8 @@ console.log("\n──────── agent starts buying (real on-chain settl
 
 const paying = await createPayingFetch({
   privateKeyPath: resolve(KEYS, "agent.pem"),
+  allowedPayTo: [SELLER_ANALYST_ACCOUNT_HASH],
+  allowedAssets: [X402_TOKEN],
   onPayment: info => console.log(`[agent] 💸 paying ${info.amountRaw} raw units`),
 });
 const analyst = new PaidMcpHttpClient("http://localhost:4403/mcp", paying.fetch);

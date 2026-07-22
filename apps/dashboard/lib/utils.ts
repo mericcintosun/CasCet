@@ -5,9 +5,19 @@ export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
 }
 
+/**
+ * Parse raw token units to bigint without ever throwing — a malformed value
+ * (from any data source) degrades to 0n instead of crashing the render.
+ */
+export function toBigIntSafe(raw: string | bigint | undefined | null): bigint {
+  if (typeof raw === "bigint") return raw;
+  if (typeof raw === "string" && /^\d+$/.test(raw)) return BigInt(raw);
+  return 0n;
+}
+
 /** Format raw CEP-18 token units into a human token amount string. */
 export function formatTokens(raw: string | bigint, decimals = 9, symbol = "WCSPR"): string {
-  const value = typeof raw === "bigint" ? raw : BigInt(raw || "0");
+  const value = toBigIntSafe(raw);
   const base = 10n ** BigInt(decimals);
   const whole = value / base;
   const frac = value % base;
