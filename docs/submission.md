@@ -58,4 +58,5 @@ Verified on-chain:
 - GitHub: <https://github.com/mericcintosun/CasCet>
 - Live app: <https://cascet.vercel.app>
 - npm: <https://www.npmjs.com/package/@cascet/cli>
-- Demo video: `cascet-demo.mp4` (repo root) — published to YouTube; link on the BUIDL page (`docs/youtube.md` has the metadata).
+- Demo video (2:43): <https://youtu.be/ZwHakuOdfiw> (`cascet-demo-final.mp4` in the repo; metadata in `docs/youtube.md`)
+- Live on Casper mainnet: first real x402 settle <https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1>

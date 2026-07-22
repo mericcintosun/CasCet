@@ -1,13 +1,33 @@
 # BUIDL page — paste-ready block
 
-Copy the sections below onto the DoraHacks BUIDL page so it carries the contract
-package hashes and sample Testnet transactions with descriptions, as required for
-the final-round qualification review. All links point to Casper Testnet
-(`testnet.cspr.live`).
+Copy the sections below onto the DoraHacks BUIDL page. CasCet is live on both
+Casper mainnet and testnet: the mainnet section below is the headline, and the
+testnet section carries the full contract set with sample transactions.
+
+## Demo video
+
+2:43 demo: <https://youtu.be/ZwHakuOdfiw>
+
+## Live on Casper mainnet
+
+First real x402 payment settled on mainnet (0.5 WCSPR moved via `transfer_with_authorization`, status Success):
+
+<https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1>
+
+Mainnet contract package hashes (open at `cspr.live/contract-package/<hash>`):
+
+| Contract | Package hash |
+| --- | --- |
+| Cep18X402 payment token | `8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41` |
+| ReceiptRegistry | `f86bef35062e92d06b8171cf4131fdf557463589aca9112a348e5eb24159eb93` |
+| DemoToken | `3da88daf3f276d915ea4f6734e0d4b3d4781358734c369b95de028a2c094fe74` |
+| RevenueSplit | `269afcceb147db41f68f5721df7b3957e5efeefb3bedbb9deba324c3a45d09c5` |
+| CascadeController | `c7e56988214c62dc5eda20b14894a7514f7388560850b6db3094758363a62189` |
+| PaymentChannel | `db2dc42b76f354e7716cafea8619ae6bc85fe50bc3e73979c2360dbba1458c57` |
 
 ---
 
-## Deployer / operator account
+## Deployer / operator account (Casper Testnet)
 
 `01dd710d5083920b20c706a92d742c7bf9162d09c96fa373bd0a67b0bf51d3f183`
 

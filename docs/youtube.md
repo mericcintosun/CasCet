@@ -1,58 +1,58 @@
-# CasCet — YouTube demo metadata
+# CasCet — YouTube demo
 
-Paste-ready title, description, tags and chapters for the 1:47 demo video
-(`cascet-demo.mp4`). Swap `<site>` / social links once handles are final.
+**Published:** https://youtu.be/ZwHakuOdfiw (2:43)
 
-## Title (68 chars)
+Metadata for the current demo video: a silent screen capture with voiceover,
+showing CasCet live on Casper mainnet going into the final round of the Casper
+Agentic Buildathon 2026. File: `cascet-demo-final.mp4` (repo root), 1920x1080.
 
-> CasCet: Payments that cascade | x402 micropayments for MCP on Casper
+## Title
+
+> CasCet: x402 Payments for AI Agents, Live on Casper Mainnet
 
 Alternates:
-- CasCet: Stripe for MCP servers on Casper (autonomous x402 payments)
-- CasCet — the money layer for the agent economy, built on Casper
+- Let AI Agents Pay Per Call: CasCet is Live on Casper Mainnet
+- CasCet: Pay-Per-Call Payments for AI Agents, Now on Casper Mainnet
 
 ## Description
 
-> AI agents reach the world through MCP servers, but almost all of them are free, because there's no clean way to charge a machine for a single call.
->
-> CasCet fixes that. It's the monetization layer for MCP on Casper: wrap any MCP server with one command, price each tool, and agents pay per call over x402, settled on Casper in seconds. A second command lets any agent connect and pay under a budget you set.
->
-> The part no one else has built: real agent tasks are chains. A portfolio tool needs a price feed, the price feed needs market data, and each one is a paid service. CasCet turns that chain into a budget-bounded payment tree. One deposit caps the whole tree, the contract refuses any step that goes over budget, and a share of every sale flows up to the tool that resold it. The payment graph becomes the revenue graph.
->
-> And it's already live: 5 Odra contracts (7 on-chain deployments) on Casper Testnet, real x402 settlement, an autonomous LLM buyer, a wallet-signed revenue withdraw, an on-chain-backed explorer, an interactive playground, and a live dashboard.
->
-> 🔗 Live site: https://cascet.vercel.app
-> 💻 Code: https://github.com/mericcintosun/CasCet
-> 📄 x402-MCP spec: https://github.com/mericcintosun/CasCet/blob/main/docs/x402-mcp-spec.md
->
-> Built for the Casper Agentic Buildathon 2026.
->
-> Follow: X https://x.com/cascet_xyz · Discord https://discord.gg/fcjevk47k · GitHub https://github.com/mericcintosun/CasCet
->
-> #Casper #x402 #AIagents #MCP #DeFi #web3 #agenticAI #micropayments #blockchain
+CasCet lets AI agents pay for the tools and APIs they use, one call at a time, on Casper. No subscriptions, no credit card, no human in the loop. An agent reads the price of a tool, decides if it is worth buying, pays for that single call, and stays under a budget you set.
+
+We just shipped it to Casper mainnet. Everything in this video is real: a live Claude agent buying paid tools, real payments settled on chain, and receipts anyone can open and verify. CasCet advanced to the final round of the Casper Agentic Buildathon 2026, and this video is where the project stands going into it.
+
+What you see in the video:
+- Put a price on any tool server with one command
+- A real Claude agent that discovers paid tools and pays per call, under budget
+- On-chain receipts, each linked to its transaction
+- Cascading payments, where a tool can buy from another tool, all capped by one budget
+- Revenue splits paid out on chain between the people who built a tool
+- The first real x402 payment settled on Casper mainnet
+
+Built on Casper with Odra smart contracts, the x402 payment standard, and MCP.
+
+Try it:
+Site: https://cascet.vercel.app
+npm: https://www.npmjs.com/package/@cascet/cli
+Code: https://github.com/mericcintosun/CasCet
+Mainnet payment on CSPR.live: https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1
+
+#Casper #x402 #AIagents #MCP #Odra #web3
 
 ## Chapters (paste into the description to enable chapters)
 
 ```
 0:00 The problem: agents can't pay per call
-0:25 CasCet: Stripe for MCP on Casper
-0:31 Wrap and connect any MCP server
-0:53 The primitive: budget-bounded cascades with recursive attribution
-1:27 Watch the agent price, buy, and pay for real data
-1:40 The money layer for the agent economy
-```
-
-## Tags
-
-```
-CasCet, Casper, Casper Network, x402, MCP, Model Context Protocol, AI agents, agentic AI,
-agentic payments, micropayments, machine to machine, m2m payments, DeFi, RWA, blockchain,
-web3, crypto, autonomous agents, Claude, CEP-18, smart contracts, Odra, buildathon,
-agent economy, pay per call, cascading payments, on-chain payments
+0:26 Put a price on any tool with one command
+0:45 A real Claude agent buys and pays per call
+1:07 On-chain receipts you can verify
+1:25 Cascading payments under one budget
+1:47 Revenue splits paid out on chain
+2:05 Live on Casper mainnet
+2:09 A real x402 payment, settled on mainnet
+2:35 CasCet, the payment layer for agents
 ```
 
 ## Notes
 
-- File: `cascet-demo.mp4` (1:47, 1280×720, burned subtitles, voiceover).
-- Thumbnail: reuse `apps/dashboard/public/og.png` or a hero frame.
-- Set visibility to Public (the Buildathon requires a public demo video).
+- Visibility must be Public (the Buildathon requires a public demo video). Done.
+- Linked from the README header, `docs/submission.md`, and `docs/buidl-page.md`.

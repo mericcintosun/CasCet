@@ -4,11 +4,13 @@
 
 **Turn any MCP server into a paid service — per-tool x402 micropayments with cascading agent-to-agent payment chains, settled instantly on Casper.**
 
-Casper Agentic Buildathon 2026 · Casper Innovation Track
+Casper Agentic Buildathon 2026 · Casper Innovation Track · **finalist**
+
+**Now live on Casper mainnet.** [First real x402 payment settled on mainnet](https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1).
 
 [Architecture](#architecture) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [Contracts](#on-chain-layer) · [Roadmap](#roadmap)
 
-[**Live site**](https://cascet.vercel.app) · [X](https://x.com/cascet_xyz) · [Discord](https://discord.gg/fcjevk47k) · [GitHub](https://github.com/mericcintosun/CasCet)
+[**Watch the demo (2:43)**](https://youtu.be/ZwHakuOdfiw) · [**Live site**](https://cascet.vercel.app) · [X](https://x.com/cascet_xyz) · [Discord](https://discord.gg/fcjevk47k) · [GitHub](https://github.com/mericcintosun/CasCet)
 
 [![@cascet/cli](https://img.shields.io/npm/v/%40cascet%2Fcli?label=%40cascet%2Fcli&color=a3e635)](https://www.npmjs.com/package/@cascet/cli) · [![@cascet/gateway](https://img.shields.io/npm/v/%40cascet%2Fgateway?label=%40cascet%2Fgateway&color=2dd4bf)](https://www.npmjs.com/package/@cascet/gateway) · [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
