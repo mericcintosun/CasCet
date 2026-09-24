@@ -78,10 +78,13 @@ analysis tool buys from the paid data tools underneath.
   `apps/dashboard` (Next.js), `contracts/` (Odra: RevenueSplit + ReceiptRegistry).
 - **Payments:** `@make-software/casper-x402` — we **self-host** the facilitator
   from that package (fee-sponsored by the CasCet deployer key) rather than the
-  hosted `x402-facilitator.cspr.cloud`, because the hosted one sends the CEP-18
-  settle arg as `value` while the make-software token expects `amount`, so every
-  settle there reverts `User error: 64658` (Odra `MissingArg`). We still build
-  *on* the official rails, we don't reimplement verification/settlement.
+  hosted `x402-facilitator.cspr.cloud`. In July 2026 the x402 stack renamed the
+  settle arg `amount` → `value` (CEP-3009, make-software/casper-x402 `3ee705ec`)
+  and the hosted facilitator followed; our token is the earlier reference build
+  that expects `amount` (npm SDK 1.0.0 still sends `amount`), so a hosted settle
+  against it reverts `User error: 64658` (Odra `MissingArg`). We still build *on*
+  the official rails, we don't reimplement verification/settlement. Migrating to
+  `value` + the official Wrapped CSPR is on the roadmap.
 - **Network:** Casper Testnet (`casper:casper-test`), CEP-18 payment token,
   casper-eip-712 typed-data signatures.
 - **Originality rule:** buildathon requires all code newly written for the event —

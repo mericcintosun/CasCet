@@ -278,7 +278,7 @@ The full contract set is deployed on **Casper mainnet** (chain `casper`), redepl
 | PaymentChannel | `db2dc42b76f354e7716cafea8619ae6bc85fe50bc3e73979c2360dbba1458c57` |
 | DemoToken (CEP-18) | `3da88daf3f276d915ea4f6734e0d4b3d4781358734c369b95de028a2c094fe74` |
 
-**Real x402 settled on mainnet** (0.5 WCSPR via `transfer_with_authorization`, from both clients):
+**Real x402 settled on mainnet** (0.5 CasCet X402 Token via `transfer_with_authorization`, from both clients; the token's on-chain symbol is WCSPR, but it is not the official Wrapped CSPR):
 [TypeScript](https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1) ·
 [Python](https://cspr.live/transaction/754224da36db9ecaef8399e720fc04fc2bc4605b383c63964788860db25533b7)
 

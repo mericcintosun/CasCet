@@ -17,9 +17,11 @@ Open any package at `https://cspr.live/contract-package/<hash>`.
 | PaymentChannel | `db2dc42b76f354e7716cafea8619ae6bc85fe50bc3e73979c2360dbba1458c57` |
 | DemoToken (CEP-18) | `3da88daf3f276d915ea4f6734e0d4b3d4781358734c369b95de028a2c094fe74` |
 
-Real x402 payments settled on mainnet (0.5 WCSPR via `transfer_with_authorization`, status Success):
+Real x402 payments settled on mainnet (0.5 CasCet X402 Token via `transfer_with_authorization`, status Success). The token's on-chain symbol is WCSPR, but it is CasCet's own x402 token, not the official Wrapped CSPR. The payer key holds no CSPR; the facilitator's fee-payer covers gas.
 
 - TypeScript client: <https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1>
+  (a paid `get_cspr_market_data` call through the gateway, its receipt anchored in the mainnet
+  ReceiptRegistry by <https://cspr.live/transaction/aacc4977a1d1c7902b20f8f21ff5d931b48106a57a7a3abb5eec00bddfb350e7>)
 - Python client: <https://cspr.live/transaction/754224da36db9ecaef8399e720fc04fc2bc4605b383c63964788860db25533b7>
 
 ### Cascade primitive, proven on mainnet
@@ -59,3 +61,19 @@ Open any package at `https://testnet.cspr.live/contract-package/<hash>`.
 Python-signed x402 settle on testnet (status Success):
 
 - <https://testnet.cspr.live/transaction/04e54a95979152f653bcab15bd999fc7ef897e783f9cafd095ebad06353b6c76>
+
+## Why CasCet runs its own x402 facilitator
+
+In July 2026 the Casper x402 stack renamed the `transfer_with_authorization`
+settle argument from `amount` to `value` to follow CEP-3009
+([make-software/casper-x402 `3ee705ec`](https://github.com/make-software/casper-x402/commit/3ee705ec)),
+and the hosted facilitator (`x402-facilitator.cspr.cloud`) moved with it.
+CasCet's x402 token is the earlier reference build that expects `amount`, and the
+published npm SDK (`@make-software/casper-x402` 1.0.0) still sends `amount`, so
+CasCet settles through its own fee-sponsored facilitator built on that SDK.
+The same hosted fee-payer on the same CasCet testnet token, before and after the rename:
+
+- before, settled: <https://testnet.cspr.live/transaction/2ffeb8c7a9313cb1df7affc1fc50669bf0ea19be9474498e6960273ea470a8b3> (2026-07-07)
+- after, `User error: 64658` (Odra `MissingArg`): <https://testnet.cspr.live/transaction/9fe35eed1042c4600b8c769386511ecbcf75b4a733f8aabf101e372389aa94ec> (2026-07-23)
+
+Migrating to `value` and the official Wrapped CSPR is on the roadmap.

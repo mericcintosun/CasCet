@@ -10,10 +10,10 @@ import { startRealFacilitator } from "./real-facilitator.js";
  *
  * Uses:
  *  - a SELF-HOSTED x402 facilitator (src/real-facilitator.ts), fee-sponsored by
- *    the CasCet deployer key. The hosted CSPR.cloud facilitator sends the
- *    settle arg as `value` while the token expects `amount`, so every settle
- *    there reverts `User error: 64658` (Odra MissingArg) — the self-hosted
- *    facilitator sends `amount` and settles correctly.
+ *    the CasCet deployer key. The hosted CSPR.cloud facilitator now sends the
+ *    CEP-3009 settle arg `value`, while this (earlier reference) token expects
+ *    `amount`, so a hosted settle reverts `User error: 64658` (Odra MissingArg);
+ *    the self-hosted facilitator (npm SDK 1.0.0) sends `amount` and settles.
  *  - the real CEP-18 x402 token deployed by CasCet (supports
  *    transfer_with_authorization), package hash below,
  *  - the demo agent, which already holds a balance of that token on-chain.

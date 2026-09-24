@@ -39,8 +39,9 @@ None of these are committed (`.gitignore` covers `*.pem` + `keys/` — verified)
 
 ## 3. Facilitator operations (mainnet)
 
-The self-hosted facilitator is the only working settlement path (the hosted
-`x402-facilitator.cspr.cloud` reverts every settle — arg `value` vs `amount`).
+The self-hosted facilitator is CasCet's settlement path: the hosted
+`x402-facilitator.cspr.cloud` now sends the CEP-3009 arg `value`, while our
+x402 token (the earlier reference build) expects `amount`.
 When running it against mainnet:
 
 - Set `authToken` (shared secret) and pair it with each gateway's `facilitator.apiKey`.

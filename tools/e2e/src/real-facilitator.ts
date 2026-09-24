@@ -9,12 +9,14 @@ import casperSdk from "casper-js-sdk";
 /**
  * Self-hosted REAL x402 facilitator for Casper.
  *
- * Why this exists: the hosted CSPR.cloud facilitator
- * (`https://x402-facilitator.cspr.cloud`) runs an outdated build that sends the
- * CEP-18 settlement runtime arg as `value`, while the make-software reference
- * token's `transfer_with_authorization` entry point expects `amount`, so every
- * settle there reverts `User error: 64658` (Odra `ExecutionError::MissingArg`).
- * This facilitator uses `@make-software/casper-x402`, which sends `amount`, and
+ * Why this exists: in July 2026 the Casper x402 stack renamed the settle
+ * runtime arg `amount` → `value` (CEP-3009, make-software/casper-x402
+ * `3ee705ec`) and the hosted CSPR.cloud facilitator
+ * (`https://x402-facilitator.cspr.cloud`) followed. CasCet's token is the
+ * earlier reference build whose `transfer_with_authorization` expects `amount`,
+ * so a hosted settle against it reverts `User error: 64658`
+ * (Odra `ExecutionError::MissingArg`). This facilitator uses the published
+ * `@make-software/casper-x402` 1.0.0, which still sends `amount`, and
  * fee-sponsors each settle deploy from a funded Casper key.
  *
  * SECURITY: the fee-sponsor pays real CSPR gas for every settle it submits —

@@ -78,7 +78,7 @@ Everything is also live on testnet. The full address list for both networks is i
 
 Because real value now flows through it, CasCet went through an adversarial security review before mainnet, across the Odra contracts, the payment path, and the dashboard. Findings were fixed and verified. The facilitator refuses to sponsor any payment outside an allowlist, the paying client pins the recipient and asset it will pay, payment-channel vouchers are bound to their contract and chain so they cannot be replayed across deployments, and the fund-moving contracts follow checks-effects-interactions. The contracts have no admin drain and no mint path, and no secrets are committed to the repo. All 13 contract tests pass, and the contracts were redeployed to mainnet with the fixes.
 
-One finding is worth naming, because it is why CasCet self-hosts its facilitator. The public hosted x402 facilitator sends the CEP-18 settle argument under the name "value", while the reference token's entry point expects "amount", so every settlement it attempts reverts on-chain. CasCet runs its own facilitator, fee-sponsored, that sends the correct argument. That is what makes real settlement work end to end.
+One detail explains why CasCet self-hosts its facilitator. In July 2026 the Casper x402 stack renamed the settle argument from "amount" to "value" to follow CEP-3009 (make-software/casper-x402 commit 3ee705ec), and the hosted facilitator moved with it. CasCet's x402 token is the earlier reference build that expects "amount", and the published npm SDK (1.0.0) still sends "amount", so CasCet runs its own fee-sponsored facilitator from that SDK. Migrating to "value" and the official Wrapped CSPR is on the roadmap.
 
 ## SDK on npm
 
