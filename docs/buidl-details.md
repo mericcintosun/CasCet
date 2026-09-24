@@ -18,7 +18,7 @@ Wrap. One command puts a paywall in front of any existing MCP server. Set a pric
 
 Connect. A bridge lets any MCP host (Claude Code, Claude Desktop, Cursor) call paid servers, answering 402 challenges automatically under a spending budget you set.
 
-Cascade. When a paid tool buys from other paid tools, CasCet composes the payments into a chain, links every hop to its parent on-chain, and enforces revenue splits at the contract level.
+Cascade. When a paid tool buys from other paid tools, CasCet composes the payments into a chain, links every hop to its parent on-chain, and anchors every receipt. The CascadeController contract adds an on-chain budget cap and revenue attribution for the whole tree.
 
 See it. A live dashboard and an on-chain economy explorer show revenue, receipts with cspr.live settlement links, and the cascading payment graph. Both are rebuilt straight from the on-chain ReceiptRegistry, so the numbers are verifiable from chain data, not an off-chain cache.
 
@@ -29,6 +29,8 @@ CasCet's headline is a machine-to-machine primitive that only makes sense once p
 On-chain budget tree. An agent opens a cascade with one deposit that caps the whole call tree. Every hop is paid from it, and the contract refuses any hop that would exceed the budget. The cap is enforced by construction, not by trusting the gateway. A plain agent wallet only caps per-call spend; this caps the entire tree.
 
 Recursive attribution. A configurable share of a child hop's earnings flows up to the parent hop's payee, so the service that composed a tool earns a margin on what it resells. The payment graph becomes the revenue-sharing graph.
+
+Status: the CascadeController is a standalone primitive today. It ran on mainnet through the contracts CLI and is not yet wired into the gateway's live payment flow; that integration is the next milestone.
 
 For high-frequency traffic, a PaymentChannel contract lets an agent open a channel with one deposit, authorize thousands of calls off-chain with signed vouchers, and settle with two on-chain writes.
 

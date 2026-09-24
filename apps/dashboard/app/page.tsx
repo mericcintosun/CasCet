@@ -45,7 +45,7 @@ const CONTRACTS = [
 ];
 
 const STATS = [
-  { k: "mainnet", v: "live + security-audited" },
+  { k: "mainnet", v: "live + security-reviewed" },
   { k: "x402", v: "real settlement, no mock" },
   { k: "N-hop", v: "cascading payments" },
   { k: "1", v: "autonomous LLM buyer" },
@@ -212,7 +212,8 @@ function CascadePrimitive() {
             </a>{" "}
             open(100) → root pays analyst 40 → child pays data 20 with 20% attribution (data +16, analyst +4 up the tree) →
             an over-budget hop is <span className="text-destructive">rejected on-chain</span> (BudgetExceeded) → close refunds
-            the unspent 40. Every step is a real transaction on cspr.live.
+            the unspent 40. Every step is a real transaction on cspr.live. Next: wiring the controller into the gateway&apos;s
+            live payment flow.
           </p>
           <Button asChild variant="outline" size="sm" className="mt-6 gap-2">
             <Link href="/playground">

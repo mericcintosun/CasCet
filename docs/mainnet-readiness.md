@@ -1,7 +1,7 @@
 # CasCet — Mainnet Readiness & Security Checklist
 
 Casper **mainnet handles real money**, so this is the gate before deploying. It
-records the pre-mainnet security audit (2026-07-22), the fixes applied, and the
+records the internal pre-mainnet security review (2026-07-22), the fixes applied, and the
 operational steps that are **config/ops, not code** — do them at deploy time.
 
 ## 1. Audit result (what was found + fixed)

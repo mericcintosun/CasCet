@@ -30,7 +30,7 @@ CasCet is the **monetization layer for MCP on Casper** — think *Stripe for MCP
 
 1. **Wrap** — `cascet wrap` puts a paywall in front of any existing MCP server. Set a price per tool; agents pay per call in CEP-18 over x402; you keep the tool code unchanged.
 2. **Connect** — `cascet connect` is a stdio bridge so any MCP host (Claude Code, Claude Desktop, Cursor) can call paid servers, answering 402 challenges automatically under a spending budget.
-3. **Cascade** — when a paid tool itself buys from other paid tools, CasCet composes the payments into a chain, links every hop to its parent, and enforces revenue splits on-chain.
+3. **Cascade** — when a paid tool itself buys from other paid tools, CasCet composes the payments into a chain, links every hop to its parent, and anchors every receipt on-chain. The `CascadeController` contract below adds an on-chain budget cap and revenue attribution for the whole tree.
 4. **See it** — a live dashboard and on-chain explorer show revenue, receipts (with cspr.live settlement links) and the cascading payment graph, both rebuilt straight from the on-chain `ReceiptRegistry`.
 
 ### The primitive: budget-bounded cascades with recursive attribution
@@ -53,6 +53,9 @@ primitive that only makes sense once payments compose into trees. The
 (`BudgetExceeded`, User error 5) → close refunds the unspent 40. After close the
 contract holds zero tokens and the analyst's balance is exactly 44 — the recursive
 split, settled on mainnet.
+(Status: the cascade was run through the contracts CLI. `CascadeController` is not yet
+wired into the gateway's live payment flow, where cascades are linked by parent ids and
+anchored in the `ReceiptRegistry`; wiring it in is the next milestone.)
 ([open](https://cspr.live/transaction/03c9b08b50e9999612748853e958d2668583a16ea47ddc996b587de3d3cc4c76) ·
 [root hop](https://cspr.live/transaction/7b293e54fdbd73e3e959c529c4a465b4c6e2c5d12eff965ac89d1593ffe72321) ·
 [attribution hop](https://cspr.live/transaction/999396c44ad6af738000e20928faff4c49978d63571ceaaa8ba9010602d68b9a) ·
@@ -248,7 +251,7 @@ Five Odra contracts (Rust), unit-tested against a real CEP-18 in Odra's mock VM 
 
 - **`ReceiptRegistry`** — anchors settled tool-call receipts on-chain, each carrying its cascade `parent_id`. Makes two things verifiable without trusting the gateway: that a call was paid, and how payments compose. Permissioned recorders, duplicate protection, events.
 - **`RevenueSplit`** — an OpenZeppelin-style PaymentSplitter for CEP-18. A gateway can set its `payTo` to this contract so a server's earnings split between payees by fixed weights, pull-based, enforced on-chain.
-- **`CascadeController`** — the budget-bounded cascade primitive: one deposit caps a whole call tree (enforced on-chain), with recursive revenue attribution up the tree.
+- **`CascadeController`** — the budget-bounded cascade primitive: one deposit caps a whole call tree (enforced on-chain), with recursive revenue attribution up the tree. A standalone primitive for now: proven on mainnet, not yet called by the gateway.
 - **`PaymentChannel`** — prepaid channels for high-frequency traffic: deposit once, authorize usage off-chain with signed vouchers, redeem/reclaim on-chain. Vouchers verified in-contract via Casper `verify_signature`.
 - **`DemoToken`** — CasCet's own CEP-18 payment token (a WCSPR-style wrapper). **`Cep18X402`** is *not* ours: it's the reference `transfer_with_authorization` (EIP-3009) token from [make-software/casper-x402](https://github.com/make-software/casper-x402), deployed to testnet so a facilitator can settle real x402 payments (see [`contracts/external/`](contracts/external/) and [`NOTICE`](NOTICE)).
 
@@ -339,7 +342,7 @@ without migrating data.
 This is a real project, not a hackathon throwaway — there's a live [roadmap section on the site](#) and a concrete path to a business.
 
 - **Shipped (Qualification · Jul 2026):** 5 Odra contracts; real x402 settlement (no mock); the `CascadeController` primitive (budget tree + recursive attribution); an autonomous LLM buyer; a live dashboard, an interactive cascade playground, a proposed [x402-MCP spec](docs/x402-mcp-spec.md); and the CLI + libraries **published on npm** (`npx @cascet/cli`).
-- **Shipped (Final round · Jul 2026) — live on Casper mainnet:** the full contract set redeployed to **Casper mainnet** after a pre-mainnet adversarial security audit; real x402 settled from both the **TypeScript and Python** clients; the **`CascadeController` primitive proven on mainnet** (budget cap → attribution up the tree → over-budget revert → refund); an on-chain-backed dashboard + explorer (rebuilt from the ReceiptRegistry); a `/build` config wizard; and a wallet-signed `RevenueSplit` withdraw.
+- **Shipped (Final round · Jul 2026) — live on Casper mainnet:** the full contract set redeployed to **Casper mainnet** after a pre-mainnet adversarial security review; real x402 settled from both the **TypeScript and Python** clients; the **`CascadeController` primitive proven on mainnet** (budget cap → attribution up the tree → over-budget revert → refund); an on-chain-backed dashboard + explorer (rebuilt from the ReceiptRegistry); a `/build` config wizard; and a wallet-signed `RevenueSplit` withdraw.
 - **Q4 2026 — monetization:** **a protocol take-rate on settled volume** (the business model); a hosted CasCet control plane (register a server, get a paid endpoint + dashboard in one step); per-second / streaming price schemes for high-frequency agent traffic; a public metrics API.
 - **2027 — the agent-economy layer:** an agent-facing pricing-discovery API and a Bazaar marketplace of paid MCP tools; on-chain reputation for tools and agents; cross-chain settlement — CasCet as default rails for machine-to-machine commerce.
 
