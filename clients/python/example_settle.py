@@ -8,18 +8,24 @@ Testnet (run from the repo root; the script finds its files from any directory):
     pnpm --filter @cascet/e2e facilitator
     clients/python/venv/bin/python clients/python/example_settle.py
 
-Mainnet:
-    CASCET_NET=mainnet pnpm --filter @cascet/e2e facilitator
-    CASCET_NET=mainnet clients/python/venv/bin/python clients/python/example_settle.py
+Mainnet has no defaults: name the payer key and the payee yourself. The repo's
+demo key (tools/e2e/keys/agent.pem) is a throwaway key, and the old demo payee
+was the account of the single hot deployer key. Start the facilitator for
+mainnet as tools/e2e/src/run-facilitator.ts describes, then:
+    CASCET_NET=mainnet CASCET_KEY_PATH=/secure/payer.pem \\
+    CASCET_SELLER_ACCOUNT_HASH=00<seller account hash> CASCET_FACILITATOR_TOKEN=<token> \\
+    clients/python/venv/bin/python clients/python/example_settle.py
 
 Environment:
     CASCET_NET=mainnet           settle on Casper mainnet instead of testnet
-    CASCET_KEY_PATH              payer PEM (default: tools/e2e/keys/agent.pem in this repo)
+    CASCET_KEY_PATH              payer PEM; testnet default: tools/e2e/keys/agent.pem
+                                 in this repo; required on mainnet
     FACILITATOR                  facilitator base URL (default http://127.0.0.1:4501)
     CASCET_FACILITATOR_TOKEN     sent as "Authorization: Bearer <token>" when set
                                  (the facilitator requires it on mainnet)
     CASCET_SELLER_ACCOUNT_HASH   payee account hash (64 hex, 00 + 64 hex or
-                                 account-hash-<hex>); default: the demo seller
+                                 account-hash-<hex>); testnet default: the demo
+                                 seller; required on mainnet
 """
 import os
 import sys
@@ -37,21 +43,30 @@ FACILITATOR = os.environ.get("FACILITATOR", "http://127.0.0.1:4501").rstrip("/")
 if MAINNET:
     NETWORK = "casper:casper"
     TOKEN = "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41"
-    DEFAULT_SELLER = "00b9a38c827771d6bc510dd5f1e24fee61acdd4f97f758f4d68fe1dea13a7a140d"
+    DEFAULT_SELLER = None  # no default payee on mainnet: CASCET_SELLER_ACCOUNT_HASH is required
+    DEFAULT_KEY_PATH = None  # no default payer on mainnet: CASCET_KEY_PATH is required
     EXPLORER = "https://cspr.live/transaction/"
 else:
     NETWORK = "casper:casper-test"
     TOKEN = "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3"
     DEFAULT_SELLER = "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36"
+    DEFAULT_KEY_PATH = REPO_ROOT / "tools" / "e2e" / "keys" / "agent.pem"
     EXPLORER = "https://testnet.cspr.live/transaction/"
 
 AMOUNT = "500000000"  # 0.5 token (9 decimals)
 
 
+def missing_mainnet_settings() -> list:
+    """The variables mainnet needs that are unset (testnet has defaults for both)."""
+    if not MAINNET:
+        return []
+    return [name for name in ("CASCET_KEY_PATH", "CASCET_SELLER_ACCOUNT_HASH") if not os.environ.get(name, "").strip()]
+
+
 def seller_pay_to() -> str:
     value = os.environ.get("CASCET_SELLER_ACCOUNT_HASH", "").strip()
     if not value:
-        return DEFAULT_SELLER
+        return DEFAULT_SELLER  # testnet only: main() stops first on mainnet
     if len(value) == 64:  # a bare account hash
         value = "00" + value
     try:
@@ -64,6 +79,15 @@ def seller_pay_to() -> str:
 
 
 def main() -> int:
+    missing = missing_mainnet_settings()
+    if missing:
+        print(
+            "set CASCET_KEY_PATH and CASCET_SELLER_ACCOUNT_HASH explicitly for mainnet "
+            f"(missing: {', '.join(missing)}). This moves real funds, so there are no mainnet defaults: "
+            "the repo's demo key is a throwaway key and the old demo payee is the hot deployer account.",
+            file=sys.stderr,
+        )
+        return 1
     seller = seller_pay_to()
     # The payment requirements a CasCet gateway would advertise in its 402 (`accepts[0]`).
     requirements = {
@@ -76,10 +100,10 @@ def main() -> int:
         "extra": {"name": "CasCet X402 Token", "symbol": "WCSPR", "version": "1", "decimals": "9"},
     }
 
-    key_path = Path(os.environ.get("CASCET_KEY_PATH") or REPO_ROOT / "tools" / "e2e" / "keys" / "agent.pem")
+    key_path = Path(os.environ.get("CASCET_KEY_PATH", "").strip() or DEFAULT_KEY_PATH)
     if not key_path.is_file():
-        print(f"payer key not found: {key_path}\nset CASCET_KEY_PATH or run `pnpm --filter @cascet/e2e gen-keys`",
-              file=sys.stderr)
+        hint = "" if MAINNET else "\nset CASCET_KEY_PATH or run `pnpm --filter @cascet/e2e gen-keys`"
+        print(f"payer key not found: {key_path}{hint}", file=sys.stderr)
         return 1
     key = CasperKey.from_pem(key_path)
     print(f"[python] network: {NETWORK}")
@@ -99,6 +123,7 @@ def main() -> int:
             json={"paymentPayload": payment_payload, "paymentRequirements": requirements},
             headers=headers,
             timeout=120,  # the facilitator waits for the deploy to execute
+            allow_redirects=False,  # never hand the signed authorization to another origin
         )
     except requests.RequestException as exc:
         print(f"\n❌ facilitator unreachable at {FACILITATOR}: {exc}")

@@ -12,11 +12,14 @@ It reads the same environment variables as `npx @cascet/cli connect`:
 CASCET_NETWORK (comma list, default casper:casper-test), CASCET_ALLOWED_PAYTO
 and CASCET_ALLOWED_ASSETS (required unless CASCET_ALLOW_ANY_SELLER=1),
 CASCET_MAX_PER_CALL and CASCET_MAX_SESSION in raw token units (required unless
-CASCET_ALLOW_UNLIMITED_BUDGET=1). The gateway runs the tool and settles the
-payment through its facilitator; the settlement comes back in PAYMENT-RESPONSE.
+CASCET_ALLOW_UNLIMITED_BUDGET=1) and CASCET_TIMEOUT_MS (deadline per call,
+default 30000). The gateway runs the tool and settles the payment through its
+facilitator; the settlement comes back in PAYMENT-RESPONSE.
 """
 import json
 import sys
+
+import requests
 
 from cascet_x402 import (
     HEADER_CASCET_PAYMENT_ID,
@@ -45,7 +48,7 @@ def main(argv: list) -> int:
 
     try:
         client = PayingClient.from_env(on_payment=on_payment)
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, TypeError) as exc:  # TypeError: an encrypted PEM (no password given)
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2
 
@@ -59,7 +62,18 @@ def main(argv: list) -> int:
         except ProtocolError as exc:
             print(f"the gateway sent an invalid x402 challenge: {exc}", file=sys.stderr)
             return 1
+        except requests.exceptions.Timeout as exc:
+            print(f"gateway at {url} did not answer in time: {exc}", file=sys.stderr)
+            return 1
+        except requests.exceptions.RequestException as exc:
+            print(f"gateway unreachable at {url}: {exc}", file=sys.stderr)
+            return 1
 
+    if response.is_redirect:
+        print(f"the gateway answered with a redirect to {response.headers.get('location')}; CasCet never follows "
+              "redirects (the payment header must not reach another origin). Use the final gateway URL.",
+              file=sys.stderr)
+        return 1
     if response.status_code == 402:
         try:
             reason = parse_payment_required(response).get("error")
@@ -67,7 +81,11 @@ def main(argv: list) -> int:
             reason = None
         print(f"payment rejected by the gateway: {reason or 'no reason given'}", file=sys.stderr)
         return 1
-    settlement = parse_payment_response(response)
+    try:
+        settlement = parse_payment_response(response)
+    except ProtocolError as exc:
+        print(f"invalid PAYMENT-RESPONSE: {exc}", file=sys.stderr)
+        return 1
     if settlement:
         print(f"[python] settled: tx={settlement.get('transaction')} payer={settlement.get('payer')} "
               f"payment-id={response.headers.get(HEADER_CASCET_PAYMENT_ID)}", file=sys.stderr)
