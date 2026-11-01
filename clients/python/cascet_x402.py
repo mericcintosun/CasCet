@@ -7,18 +7,31 @@ payment payload that a CasCet gateway (in the `PAYMENT-SIGNATURE` request
 header) or a facilitator (`/verify`, `/settle`) expects.
 
 The digest, signature and payload match the TypeScript client
-(`@casper-ecosystem/casper-eip-712` + `@make-software/casper-x402` +
-`@x402/core`) byte for byte, and so does the header for the same input JSON
-(numbers written with a fraction or an exponent excepted: Python writes 300.0
-where JavaScript writes 300, which decodes to the same value).
-`tests/eip712_vectors.json` holds vectors produced by those packages and
-`tests/test_vectors.py` checks this module against them.
+(`@casper-ecosystem/casper-eip-712` with `@x402/casper` 2.29 and `@x402/core`
+2.29, and before them `@make-software/casper-x402` 1.0.0 and `@x402/core`
+2.17) byte for byte for the same validity window, and so does the header for
+the same input JSON (numbers written with a fraction or an exponent excepted:
+Python writes 300.0 where JavaScript writes 300, which decodes to the same
+value). `tests/eip712_vectors.json` and `tests/x402_casper_2_29_vectors.json`
+hold vectors produced by those packages and `tests/test_vectors.py` checks
+this module against them.
+
+Both token authorization styles are paid the same way. A "legacy-amount"
+token (CasCet's own x402 token) and a "cep3009-value" token (the official
+Wrapped CSPR and other CEP-3009 tokens) verify the same EIP-712
+`TransferWithAuthorization` message; only the argument name the facilitator
+passes to the token's `transfer_with_authorization` differs. A CasCet gateway
+names the style in each `accepts` entry's `extra.authorizationStyle`; this
+client echoes it in `accepted`, refuses values it does not know, and can
+prefer one style over the other.
 
 Two layers:
 
-* Protocol helpers with no policy: `parse_payment_required` (reads the 402's
-  `PAYMENT-REQUIRED` header), `build_payment_payload` (signs one `accepts`
-  entry and echoes it as `accepted`), `payment_signature_header`.
+* Protocol helpers with no budget: `parse_payment_required` (reads the 402's
+  `PAYMENT-REQUIRED` header), `select_requirement` (picks the `accepts` entry
+  to pay by network, payee and asset allowlists and style preference),
+  `build_payment_payload` (signs one `accepts` entry and echoes it as
+  `accepted`), `payment_signature_header`.
 * `PayingClient`: the same guard rails as the TypeScript `createPayingFetch`
   around a 402 -> sign -> retry flow: network, payTo and asset allowlists,
   strict amount parsing, per-call and per-asset session budgets, a cap on how
