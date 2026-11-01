@@ -6,13 +6,17 @@ way the TypeScript client does: the payment payload goes in the
 `PAYMENT-SIGNATURE` request header, and its `accepted` field repeats the
 payment requirements the 402 advertised.
 
-The digest, signature, payload and header encoding are **byte-for-byte
-identical** to the TypeScript client (`@casper-ecosystem/casper-eip-712`,
-`@make-software/casper-x402`, `@x402/core`). The test vectors in
-[`tests/eip712_vectors.json`](tests/eip712_vectors.json) were produced by those
-packages, and [`tests/test_vectors.py`](tests/test_vectors.py) checks that the
-Python output equals them. The TypeScript facilitator's own `verify()`
-accepted the vector payload.
+The digest, signature and payload are **byte-for-byte identical** to the
+TypeScript client's (`@casper-ecosystem/casper-eip-712`,
+`@make-software/casper-x402`, `@x402/core`). So is the `PAYMENT-SIGNATURE`
+header, for the same input JSON. The one exception is a number written with a
+fraction or an exponent: Python writes `300.0` where JavaScript writes `300`.
+Both decode to the same value, and the gateway compares values. The test
+vectors in [`tests/eip712_vectors.json`](tests/eip712_vectors.json) were
+produced by those packages, and [`tests/test_vectors.py`](tests/test_vectors.py)
+checks that the Python output equals them. When the vectors were generated,
+the TypeScript facilitator's own `verify()` accepted the vector payload (the
+file records the result as `facilitatorVerify`).
 
 **Proven on-chain:** a Python-signed authorization settled via
 `transfer_with_authorization` on both networks:
@@ -64,25 +68,37 @@ Every refusal raises `PaymentAborted` before anything is signed.
 
 | Guard | Setting | Behaviour |
 |---|---|---|
-| Network | `networks` (default `["casper:casper-test"]`) | Only pays on the listed networks. Wildcards like `casper:*` are refused. |
+| Network | `networks` (default `["casper:casper-test"]`) | Only pays on the listed networks. Each entry must be a CAIP-2 id such as `casper:casper`; wildcards like `casper:*` are refused. |
 | Seller and token | `allowed_pay_to`, `allowed_assets` | Only pays these payees in these tokens. If either list is missing, the client logs an `InsecurePaymentConfigWarning`. |
 | payTo format | — | Allowlist entries are account hashes (`00…` or `account-hash-…`), or `hash-…` for a contract-package payee. A public key in the allowlist is rejected, and the error gives the payTo to use instead. With no allowlist, a `01`-tagged payTo is refused. |
 | Amount | — | A string of 1–40 ASCII digits, greater than 0. `-5`, `0x10`, `1e5` and ` 5` are all refused. |
-| Budget | `max_per_call_raw`, `max_session_raw` | Per call, and per asset over the session. Spend is counted when an authorization is signed and is never refunded. |
-| Timeout | `timeout` (default 30 s per request) | Same default as the TS client's `timeoutMs: 30000`. |
-| Transport | `allow_insecure_http` (default `False`) | Refuses to pay over plain `http://` unless the host is loopback. |
-| Validity | — | `validAfter = now − 600`, `validBefore = now + maxTimeoutSeconds`, capped at one hour. |
+| Budget | `max_per_call_raw`, `max_session_raw` | Per call, and per asset over the session, in raw units greater than 0. Spend is counted when an authorization is signed and is never refunded. |
+| Validity | `max_authorization_seconds` (default 900) | `validAfter = now − 600`, `validBefore = now + maxTimeoutSeconds`. An entry without a positive whole `maxTimeoutSeconds`, or with one above the limit, is refused, as in the TS client. |
+| Deadline | `timeout` (default 30 s) | One deadline for the whole call: the first request, the 402, signing, the paid retry and reading the response. Same as the TS client's `timeoutMs: 30000`. A gateway that trickles its headers or its body is cut off at the deadline, and nothing is signed after it. `None` disables it. A paid call that times out may still settle. |
+| Transport | `allow_insecure_http` (default `False`) | Refuses to pay over plain `http://` unless the host is loopback. Never follows redirects: a 3xx comes back to the caller unpaid, so `PAYMENT-SIGNATURE`, the parent id and the request body never reach another origin. |
 | Cascade | `parent_id` | Sent as `x-cascet-parent-id`, so downstream receipts join the chain. |
+| Callback | `on_payment` | Called with `{amount_raw, pay_to, asset, network}` once a payment is signed. If it raises, the client issues a `RuntimeWarning` and still sends the payment. |
+
+Pass `stream=True` to `request()` to read a large body yourself; the deadline
+then ends when the response headers arrive. The exact cut-off of a dripping
+body needs urllib3 2.3 or newer (`requirements-lock.txt` pins 2.8). With an
+older urllib3 the deadline is checked between chunks.
 
 `PayingClient.from_env()` reads the same environment variables as
-`npx @cascet/cli connect`:
+`npx @cascet/cli connect`, and reports an invalid value with the name of its
+variable:
 
 | Variable | Meaning |
 |---|---|
 | `CASCET_KEY_PATH` | Path to the payer's PEM key. |
+| `CASCET_KEY_ALGO` | Optional. Only `ed25519` is supported here; any other value is an error. |
 | `CASCET_NETWORK` | Comma list of networks. Default: `casper:casper-test`. |
-| `CASCET_ALLOWED_PAYTO`, `CASCET_ALLOWED_ASSETS` | Comma lists. Required unless `CASCET_ALLOW_ANY_SELLER=1`. |
-| `CASCET_MAX_PER_CALL`, `CASCET_MAX_SESSION` | Raw token units. Required unless `CASCET_ALLOW_UNLIMITED_BUDGET=1`. |
+| `CASCET_ALLOWED_PAYTO`, `CASCET_ALLOWED_ASSETS` | Comma lists. Required unless `CASCET_ALLOW_ANY_SELLER` is `1`, `true` or `yes`. |
+| `CASCET_MAX_PER_CALL`, `CASCET_MAX_SESSION` | Raw token units, greater than 0. Required unless `CASCET_ALLOW_UNLIMITED_BUDGET` is `1`, `true` or `yes`. |
+| `CASCET_TIMEOUT_MS` | Deadline per call in milliseconds. Default: `30000`. |
+
+`CASCET_TOOL_PINS` and `--accept-tool-changes` belong to the stdio bridge of
+`cascet connect` and do not apply here.
 
 [`example_gateway.py`](example_gateway.py) uses `from_env()`:
 
@@ -101,20 +117,21 @@ It prints the same value as `npx @cascet/cli account-hash`.
 ## Protocol building blocks (no policy)
 
 These functions apply no allowlist or budget. Check `payTo`, `asset`,
-`network` and `amount` yourself before you sign.
+`network`, `amount` and `maxTimeoutSeconds` yourself before you sign, and do
+not let the paid request follow a redirect.
 
 ```python
 import requests
 from cascet_x402 import CasperKey, build_payment_payload, parse_payment_required, payment_signature_header
 
 key = CasperKey.from_pem("agent.pem")
-resp = requests.post(url, json=body, timeout=30)
+resp = requests.post(url, json=body, timeout=30, allow_redirects=False)
 if resp.status_code == 402:
     challenge = parse_payment_required(resp)   # the decoded PAYMENT-REQUIRED header
     requirements = challenge["accepts"][0]     # check payTo, asset, network and amount first
     payload = build_payment_payload(key=key, requirements=requirements,
                                     resource=challenge.get("resource"))
-    resp = requests.post(url, json=body, timeout=30,
+    resp = requests.post(url, json=body, timeout=30, allow_redirects=False,
                          headers={"PAYMENT-SIGNATURE": payment_signature_header(payload)})
 ```
 
@@ -138,14 +155,17 @@ clients/python/venv/bin/python clients/python/example_settle.py
 ```
 
 This moves 0.5 of the CasCet x402 token on testnet. `CASCET_NET=mainnet` moves
-real funds on mainnet. Other settings:
+real funds on mainnet, and there it has no defaults: the script stops unless
+`CASCET_KEY_PATH` and `CASCET_SELLER_ACCOUNT_HASH` are set. (The repo's demo
+key is a throwaway key, and the old demo payee was the account of the single
+hot deployer key.) Other settings:
 
 | Variable | Meaning |
 |---|---|
-| `CASCET_KEY_PATH` | Payer key. Default: `tools/e2e/keys/agent.pem`. |
+| `CASCET_KEY_PATH` | Payer key. Testnet default: `tools/e2e/keys/agent.pem`. Required on mainnet. |
 | `FACILITATOR` | Facilitator base URL. Default: `http://127.0.0.1:4501`. |
 | `CASCET_FACILITATOR_TOKEN` | Sent as `Authorization: Bearer …`. The facilitator requires it on mainnet. |
-| `CASCET_SELLER_ACCOUNT_HASH` | The payee. Default: the demo seller. |
+| `CASCET_SELLER_ACCOUNT_HASH` | The payee. Testnet default: the demo seller. Required on mainnet. |
 
 ## Tests
 
@@ -154,14 +174,17 @@ clients/python/venv/bin/python -m unittest discover -s clients/python/tests
 ```
 
 The suite uses the standard library's `unittest`. It needs no external network
-access and no funds.
+access and no funds. The redirect and deadline tests start small HTTP servers
+on `127.0.0.1` and take a few seconds.
 
-[`tests/eip712_vectors.json`](tests/eip712_vectors.json) was generated by a
-throwaway node script. The script ran the TypeScript packages listed in the
-file's `generator` field from this repo's `node_modules`. It used a public
-test key (`seed = sha256(label)`, never funded) and pinned `Date.now` and the
-nonce. To check against a newer TypeScript stack, regenerate the file the same
-way; the tests show any difference.
+[`tests/eip712_vectors.json`](tests/eip712_vectors.json) was generated by
+throwaway node scripts. They ran the TypeScript packages listed in the file's
+`generator` field from this repo's `node_modules`, with a public test key
+(`seed = sha256(label)`, never funded) and a pinned `Date.now` and nonce. The
+header cases, including one with lone UTF-16 surrogates, come from
+`@x402/core`'s `encodePaymentSignatureHeader`. To check against a newer
+TypeScript stack, regenerate the file the same way; the tests show any
+difference.
 
 ## Dependencies
 
