@@ -55,13 +55,19 @@ One leak therefore means: fee-payer float drained, revenue redirected, fake
 receipts anchored, and the payment token upgradable by the attacker.
 
 What the code now does about it: the facilitator **refuses to start on
-`casper:casper` when its fee-payer key is the owner account or one of the seller
-accounts** it settles to (`CASCET_OWNER_ACCOUNT_HASH`, default the deployer
-above; `CASCET_SELLER_ACCOUNT_HASH`). Mainnet settlement therefore stays offline
-until a dedicated fee-payer key exists. The mainnet demo takes each role's key
-from its own environment variable and never loads the deployer key; it refuses an
-anchoring recorder (`CASCET_RECORDER_KEY`, the gateway's `anchoring.keyPath`) that
-is the fee payer, the owner or a seller, compared by account rather than by file.
+`casper:casper` when its fee-payer key is an owner account or one of the seller
+accounts** it settles to (`CASCET_SELLER_ACCOUNT_HASH`). The owners are
+`CASCET_OWNER_ACCOUNT_HASH` (a comma list, for example a new ReceiptRegistry
+owner) **plus, always, the deployer above**, because it keeps the token package's
+upgrade access whoever owns the registry. At mainnet start-up the facilitator
+also reads the owner and seller accounts on-chain and refuses a fee-payer key
+that is one of their **associated keys** (a hot key that can sign for them), or
+any start-up where those accounts cannot be read. Mainnet settlement therefore
+stays offline until a dedicated fee-payer key exists. The mainnet demo takes each
+role's key from its own environment variable and never loads the deployer key; it
+refuses an anchoring recorder (`CASCET_RECORDER_KEY`, the gateway's
+`anchoring.keyPath`) that is the fee payer, an owner or a seller, compared by
+account rather than by file, or an associated key of an owner or seller account.
 
 ### Role split plan (*ops*)
 
@@ -85,9 +91,13 @@ only: fund the fee payer with a small float; `authorize` the new recorder on
 ReceiptRegistry and `revoke` the old one; point `payTo` at the seller; move
 registry ownership (`transfer_ownership`, then `revoke` the previous owner, which
 stays a recorder) and/or add associated keys with higher action thresholds to the
-deployer account, which also protects the unlocked token package. **Rehearse every
-step on testnet first.** Never reuse a testnet key on mainnet. None of these keys
-are committed (`.gitignore` covers `*.pem` + `keys/`).
+deployer account, which also protects the unlocked token package. **Those
+associated keys must be new keys kept offline, never the fee-payer, recorder or
+seller keys**: a leak of such a hot key would then help sign for the owner
+account, and comparing account hashes cannot see it. After moving registry
+ownership, add the new owner to `CASCET_OWNER_ACCOUNT_HASH`. **Rehearse every step
+on testnet first.** Never reuse a testnet key on mainnet. None of these keys are
+committed (`.gitignore` covers `*.pem` + `keys/`).
 
 ## 3. Facilitator operations (mainnet)
 
@@ -110,14 +120,16 @@ pnpm --filter @cascet/e2e facilitator
 | `CASCET_FACILITATOR_KEY_ALGO` | `ed25519` | or `secp256k1` |
 | `CASCET_FACILITATOR_TOKEN` | none | **required on mainnet**, at least 32 characters; accepted as `Authorization: <token>` or `Bearer <token>` |
 | `CASCET_SELLER_ACCOUNT_HASH` | mainnet: deployer account | comma list of `payTo` accounts it settles to |
-| `CASCET_OWNER_ACCOUNT_HASH` | mainnet: deployer account | the fee payer must differ from it |
+| `CASCET_OWNER_ACCOUNT_HASH` | none (mainnet: the deployer is always added) | comma list of owner accounts; the fee payer must be none of them, nor an associated key of an owner or seller account |
 | `CASCET_ALLOWED_ASSETS` | the CasCet x402 token | comma list of package hashes |
 | `CASCET_SETTLE_PAYMENT_MOTES` | `4000000000` (4 CSPR) | gas limit per settle, 3–100 CSPR |
 | `CASCET_DAILY_GAS_CAP_MOTES` | `500000000000` (500 CSPR) | sponsored gas per UTC day |
 | `CASCET_SETTLE_WAIT_MS` | `60000` | how long `/settle` waits for execution before answering "pending"; keep it below the gateway's `timeouts.settleMs` (90 s) |
-| `CASCET_PREFLIGHT` | `on` | on-chain nonce / balance / token-name checks |
+| `CASCET_PREFLIGHT` | `on` | on-chain nonce / balance / token-name checks; **required on mainnet**; `off` elsewhere needs `CASCET_TOKEN_NAME` |
+| `CASCET_PREFLIGHT_DEADLINE_MS` | `10000` | total time one request's preflight may take, retries included; keep it below the gateway's verify timeout (`timeouts.facilitatorMs`, 15 s) |
 | `CASCET_TOKEN_VERSION` | `1` | pinned EIP-712 domain version |
-| `CASCET_RPC_URL` | the network's public node | use **one** node, not a load balancer, so balance reads already include the settlements this facilitator observed |
+| `CASCET_TOKEN_NAME` | `CasCet X402 Token` when only the CasCet token is allowlisted | pinned EIP-712 domain name, checked without RPC (and against the on-chain name when the preflight is on) |
+| `CASCET_RPC_URL` | the network's public endpoint, which is load-balanced (mainnet warns) | use **one** node you run or trust, so balance reads already include the settlements this facilitator observed; a lagging backend can overstate a balance right after a settle, and the next settle then reverts |
 | `CASCET_FACILITATOR_HOST` / `PORT` | `127.0.0.1` / `4501` | a non-loopback host requires the token |
 
 What it enforces:
@@ -128,19 +140,26 @@ What it enforces:
 - **Rate limits** (express-rate-limit): per client IP before authentication, then
   across all callers, per payer, and for settles.
 - **Allowlists** (required on mainnet): only the configured sellers and token;
-  payees and payers must be account-hash Keys (`00…`).
+  payees and payers must be account-hash Keys (`00…`). Contract-package payees
+  (`hash-…`, `01…`) are refused: this facilitator, like casper-x402 1.0.0, settles
+  to account keys only, and paying a contract has not been rehearsed on testnet.
 - **Settle window**: an authorization must stay valid for at least 20 s at
   `/verify` and at `/settle` (casper-x402 alone accepts 6 s, less than one 8 s
-  block), so a transfer is not submitted when it would likely execute after
-  `validBefore`, revert, and burn the gas limit.
+  block), checked again after the on-chain preflight, right before submission.
+  The settlement transaction's TTL ends 2 s before `validBefore`, so a transfer
+  that is not included in time is dropped by the node instead of executing after
+  `validBefore`, reverting, and burning the gas limit.
 - **Duplicate protection**: every authorization (network, asset, payer, nonce) is
   held in an in-flight ledger until it can no longer execute; a duplicate gets HTTP
   **409** (a retried settle is pointed at the earlier transaction hash).
-- **On-chain preflight**, at `/verify` and again at `/settle`: the nonce is unused
-  (`used_nonces` dictionary), the payer's balance (`balances` dictionary) covers the
-  value plus everything already in flight, and the EIP-712 domain name equals the
-  token's on-chain name. A read that times out or fails in transit is retried once;
-  if the node still cannot be read, the request fails with 503 instead of guessing.
+- **On-chain preflight** (required on mainnet), at `/verify` and again at
+  `/settle`: the nonce is unused (`used_nonces` dictionary), the payer's balance
+  (`balances` dictionary) covers the value plus everything already in flight, and
+  the EIP-712 domain name equals the token's on-chain name (the name is also pinned,
+  `CASCET_TOKEN_NAME`, and checked without RPC). One deadline bounds all reads of a
+  request (`CASCET_PREFLIGHT_DEADLINE_MS`, 10 s): a read that times out or fails in
+  transit is retried once if the deadline allows it; if the node still cannot be
+  read, the request fails with 503 instead of guessing.
   Checked live (read-only) on 2026-11-01 against both networks: the nonces of
   settled transactions `04e54a95…` (testnet) and `2c66141c…` (mainnet) read as
   used, fresh nonces as unused, and an account without an entry reads as balance 0.
@@ -154,6 +173,19 @@ What it enforces:
   payments by hash (`info_get_transaction`) before treating them as failed. Blocks
   come every 8 s and recorded settles were included 4–10 s after submission, so the
   60 s default answers almost every settle with a final result.
+- **Settle statuses** (`extra.settlementStatus`): `not_submitted` means this
+  request submitted nothing and the facilitator holds no transaction for the
+  authorization. A 409 (`duplicate_nonce`, `nonce_already_used`) answers
+  `duplicate`: nothing was submitted for this request, but an earlier transaction
+  (its hash is included when this facilitator sent it) may have charged the payer.
+  An internal error on `/settle` answers `settlement_unknown` / `unknown`, never
+  `not_submitted`. `success` and `failed` are final; `pending` and `unknown` need
+  reconciling.
+- **Shutdown**: on SIGINT or SIGTERM the facilitator stops accepting work (new
+  requests get 503), lets running `/verify` and `/settle` requests finish and
+  answer, and then exits; it waits at most `CASCET_SETTLE_WAIT_MS` + the preflight
+  deadline + two RPC timeouts (about 86 s by default). A second signal exits at
+  once. Give the process manager about 90 s to stop it.
 
 **Gas limit.** Measured consumption of a settle is 2.68 CSPR on mainnet (tx
 `2c66141c…`) and 2.71 CSPR on testnet (tx `04e54a95…`). Mainnet refunds 75 % of the
@@ -223,14 +255,27 @@ contain, then rotate, then review what was signed. The ReceiptRegistry is
 - **Pending settles are not reconciled by the facilitator.** When `/settle` answers
   `settlement_pending` or `settlement_unknown`, the gas cap keeps the full limit
   and the payer's value stays counted as in flight until the transaction can no
-  longer execute (its 10-minute TTL, or `validBefore` if later). Payers with a
-  tight balance may see `insufficient_funds` during that time. The gateway records
-  such receipts as unknown; reconcile them by transaction hash
-  (`info_get_transaction`) or by the authorization nonce (`used_nonces`).
+  longer execute: the end of its TTL, which is never later than `validBefore`
+  (plus a 60 s grace). Payers with a tight balance may see `insufficient_funds`
+  during that time. The gateway records such receipts as unknown; reconcile them
+  by transaction hash (`info_get_transaction`) or by the authorization nonce
+  (`used_nonces`).
+- **Verified hold.** A successful `/verify` keeps the payer's value counted as in
+  flight for up to 180 s (less if `validBefore` comes first), so a concurrent
+  replay cannot pass. If the gateway never settles (an upstream failure, its own
+  timeout), the hold simply expires; until then a buyer with a tight balance who
+  retries with a new authorization may get `insufficient_funds`. The preflight
+  deadline keeps `/verify` within the gateway's timeout, so the gateway rarely gives
+  up on a verify that then succeeds.
+- **Balance reads on a load-balanced endpoint can lag.** Right after a settle, a
+  lagging backend can still show the old balance, so a second payment from a tight
+  balance may pass the preflight and revert on-chain. Set `CASCET_RPC_URL` to a
+  single node (mainnet warns when it is not set).
 - **Preflight depends on the token layout**: CEP-18 `balances` and CEP-3009
   `used_nonces` named dictionaries (verified for the CasCet token on testnet and
-  mainnet). Another token makes `/verify` answer 503 until `CASCET_PREFLIGHT=off`,
-  which leaves only the in-memory ledger.
+  mainnet). Another token makes `/verify` answer 503. The preflight cannot be
+  turned off on mainnet; on testnet `CASCET_PREFLIGHT=off` (with
+  `CASCET_TOKEN_NAME`) leaves only the in-memory ledger and the name pin.
 - **Settlement builder**: the transaction is now built with casper-js-sdk 5.3.0
   instead of casper-x402 1.0.0's internal copy; its payload hash matches settled
   testnet tx `04e54a95…` byte for byte offline. Rehearse one testnet settle before
