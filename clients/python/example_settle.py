@@ -22,7 +22,9 @@ argument the facilitator passes to the token's transfer_with_authorization:
 Both carry the symbol WCSPR; only the second is the official Wrapped CSPR.
 Any facilitator other than the hosted one is taken for CasCet's self-hosted
 facilitator. A refused pairing stops before anything is signed: its settle
-would revert (User error 64658) and still burn the whole gas limit.
+would revert (User error 64658) and still burn the whole gas limit. The
+requirements sent to the hosted facilitator leave out CasCet's own
+extra.authorizationStyle, as a CasCet gateway's do (no signature covers it).
 
 Testnet, CasCet token, self-hosted facilitator (run from the repo root; the
 script finds its files from any directory):
@@ -80,6 +82,7 @@ from urllib.parse import urlsplit
 import requests
 
 from cascet_x402 import (
+    AUTHORIZATION_STYLE_EXTRA_KEY,
     NETWORK_CASPER_MAINNET,
     NETWORK_CASPER_TESTNET,
     X402_VERSION,
@@ -320,8 +323,20 @@ def load_settings(argv: Optional[Sequence[str]], env: Mapping[str, str]) -> Sett
     )
 
 
-def requirements_for(token: Token, network: str, seller: str) -> dict:
-    """The payment requirements a CasCet gateway would advertise in its 402 (`accepts[0]`)."""
+def requirements_for(token: Token, network: str, seller: str, *, advertise_style: bool = True) -> dict:
+    """
+    The payment requirements a CasCet gateway would advertise in its 402 (`accepts[0]`).
+
+    With `advertise_style` False, `extra` leaves out authorizationStyle: a
+    CasCet gateway strips that field before it forwards a payment to the
+    hosted facilitator (whether that service tolerates fields it does not know
+    is untested), so this script sends the hosted facilitator what production
+    sends it. The field is not part of the signed EIP-712 message, so the
+    signature is the same either way.
+    """
+    extra = {"name": token.name, "symbol": token.symbol, "version": "1", "decimals": "9"}
+    if advertise_style:
+        extra[AUTHORIZATION_STYLE_EXTRA_KEY] = token.style
     return {
         "scheme": "exact",
         "network": network,
@@ -329,13 +344,7 @@ def requirements_for(token: Token, network: str, seller: str) -> dict:
         "asset": token.package_hash,
         "payTo": seller,
         "maxTimeoutSeconds": 300,
-        "extra": {
-            "name": token.name,
-            "symbol": token.symbol,
-            "version": "1",
-            "decimals": "9",
-            "authorizationStyle": token.style,
-        },
+        "extra": extra,
     }
 
 
@@ -360,7 +369,9 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
     except ConfigError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return 1
-    requirements = requirements_for(settings.token, settings.network, settings.seller)
+    # Like a CasCet gateway, keep CasCet's own extra.authorizationStyle away from the hosted facilitator.
+    advertise_style = not is_hosted_facilitator_url(settings.facilitator_url)
+    requirements = requirements_for(settings.token, settings.network, settings.seller, advertise_style=advertise_style)
 
     if not settings.key_path.is_file():
         hint = "" if settings.network == NETWORK_CASPER_MAINNET else "\nset CASCET_KEY_PATH or run `pnpm --filter @cascet/e2e gen-keys`"

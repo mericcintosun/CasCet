@@ -216,7 +216,10 @@ clients/python/venv/bin/python clients/python/example_settle.py --asset wcspr
 
 This moves 0.5 of the chosen token. The script builds the payment requirements
 a CasCet gateway would advertise (with `extra.authorizationStyle`), signs them
-and posts them to the facilitator's `/settle`. Each token goes to the
+and posts them to the facilitator's `/settle`. For the hosted facilitator it
+leaves `extra.authorizationStyle` out, as a CasCet gateway does before it
+calls that facilitator: whether the hosted service accepts fields it does not
+know is untested, and no signature covers the field. Each token goes to the
 facilitator that settles its style, and the script refuses the other pairing
 before signing anything, because that settle would revert (User error 64658)
 and still burn the whole gas limit:

@@ -68,6 +68,25 @@ class TestSettleTokens(unittest.TestCase):
                 body = example_settle.settle_request(payload, requirements)
                 self.assertEqual(body, {"x402Version": 2, "paymentPayload": payload, "paymentRequirements": requirements})
 
+    def test_requirements_without_the_style_sign_the_same_message(self):
+        # What goes to the hosted facilitator: no extra.authorizationStyle, which no signature covers.
+        for name in ("legacy", "wcspr"):
+            token = example_settle.token_for(name, TESTNET)
+            with_style = example_settle.requirements_for(token, TESTNET, SELLER)
+            without_style = example_settle.requirements_for(token, TESTNET, SELLER, advertise_style=False)
+            with self.subTest(asset=name):
+                self.assertNotIn("authorizationStyle", without_style["extra"])
+                self.assertIsNone(x402.authorization_style(without_style))
+                self.assertEqual(without_style["extra"], {k: v for k, v in with_style["extra"].items()
+                                                          if k != "authorizationStyle"})
+                self.assertEqual({k: v for k, v in without_style.items() if k != "extra"},
+                                 {k: v for k, v in with_style.items() if k != "extra"})
+                fixed = {"key": TEST_KEY, "now": 1767225600, "nonce": bytes(range(32))}
+                signed_with = x402.build_payment_payload(requirements=with_style, **fixed)
+                signed_without = x402.build_payment_payload(requirements=without_style, **fixed)
+                self.assertEqual(signed_with["payload"], signed_without["payload"])  # same signature
+                self.assertEqual(signed_without["accepted"], without_style)
+
 
 class TestSettleFacilitator(unittest.TestCase):
     def test_url_shorthands(self):
@@ -252,7 +271,10 @@ class TestSettleMain(unittest.TestCase):
         body = kwargs["json"]
         self.assertEqual(body["x402Version"], 2)
         requirements = body["paymentRequirements"]
-        self.assertEqual((requirements["asset"], requirements["extra"]["authorizationStyle"]), (WCSPR, "cep3009-value"))
+        self.assertEqual((requirements["asset"], requirements["extra"]["name"]), (WCSPR, "Wrapped CSPR"))
+        # As a CasCet gateway does, CasCet's own extra.authorizationStyle stays away from the hosted facilitator.
+        self.assertNotIn("authorizationStyle", requirements["extra"])
+        self.assertNotIn("authorizationStyle", body["paymentPayload"]["accepted"]["extra"])
         self.assertEqual(body["paymentPayload"]["accepted"], requirements)
         self.assertEqual(body["paymentPayload"]["payload"]["authorization"]["from"], TEST_KEY.account_address())
         self.assertIn("https://testnet.cspr.live/transaction/" + "ab" * 32, out)
@@ -265,6 +287,7 @@ class TestSettleMain(unittest.TestCase):
         self.assertEqual(url, HOSTED + "/settle")
         self.assertEqual(kwargs["headers"], {"Authorization": "cspr-cloud-key"})
         self.assertEqual(kwargs["json"]["paymentRequirements"]["asset"], WCSPR)
+        self.assertNotIn("authorizationStyle", kwargs["json"]["paymentRequirements"]["extra"])
 
     def test_legacy_settles_through_the_self_hosted_facilitator_with_a_bearer_token(self):
         env = {"CASCET_KEY_PATH": write_test_pem(self), "CASCET_FACILITATOR_TOKEN": "self-hosted-secret"}
@@ -273,7 +296,11 @@ class TestSettleMain(unittest.TestCase):
         (url,), kwargs = post.call_args
         self.assertEqual(url, SELF_HOSTED + "/settle")
         self.assertEqual(kwargs["headers"], {"Authorization": "Bearer self-hosted-secret"})
-        self.assertEqual(kwargs["json"]["paymentRequirements"]["extra"]["authorizationStyle"], "legacy-amount")
+        body = kwargs["json"]
+        # Every other facilitator gets the requirements exactly as a CasCet gateway advertises them.
+        self.assertEqual(body["paymentRequirements"]["extra"]["authorizationStyle"], "legacy-amount")
+        self.assertEqual(body["paymentPayload"]["accepted"]["extra"]["authorizationStyle"], "legacy-amount")
+        self.assertEqual(body["paymentPayload"]["accepted"], body["paymentRequirements"])
 
     def test_refusals_happen_before_anything_is_signed_or_sent(self):
         pem = write_test_pem(self)
