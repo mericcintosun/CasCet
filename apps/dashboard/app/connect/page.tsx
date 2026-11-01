@@ -3,6 +3,7 @@ import { SiteHeader } from "@/components/site-header";
 import { ConnectBuilder } from "@/components/connect/connect-builder";
 
 export const metadata = {
+  alternates: { canonical: "/connect" },
   title: "Connect",
   description:
     "Set a buyer's budget and policy for paid MCP tools: seller and token allowlists, per-call and session caps, as a cascet connect command or an MCP client config.",

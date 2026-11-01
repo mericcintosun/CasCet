@@ -2,6 +2,7 @@ import { SiteHeader } from "@/components/site-header";
 import { BuildWizard } from "@/components/build-wizard";
 
 export const metadata = {
+  alternates: { canonical: "/build" },
   // The root layout's title template appends " · CasCet".
   title: "Build",
   description: "Generate a validated cascet.config.json to monetize any MCP server with x402 on Casper.",

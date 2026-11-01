@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import {
@@ -26,6 +27,8 @@ import { Reveal } from "@/components/landing/reveal";
 import { CascadeFlow } from "@/components/landing/cascade-flow";
 import { XIcon } from "@/components/social-icons";
 import { cn } from "@/lib/utils";
+
+export const metadata: Metadata = { alternates: { canonical: "/" } };
 
 const GH = "https://github.com/mericcintosun/CasCet";
 const SOCIALS = {
