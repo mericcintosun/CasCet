@@ -26,7 +26,7 @@ function rail(): PaymentRail {
     resourceServer: new x402ResourceServer(unusedFacilitator),
     network: "casper:casper-test" as Network,
     payTo: PAY_TO,
-    asset: ASSET,
+    assets: testConfig().assets,
     maxTimeoutSeconds: 300,
   };
 }
@@ -51,9 +51,10 @@ describe("resolveToolPolicy", () => {
     assert.deepEqual(resolveToolPolicy(cfg, "paid_tool"), {
       kind: "paid",
       price: { price: "$0.01", settleBeforeExecute: false },
-      amount: PRICE_RAW,
+      accepts: [{ asset: cfg.asset, amount: PRICE_RAW }],
       settleBeforeExecute: false,
     });
+    assert.equal(cfg.asset.packageHash, ASSET);
     assert.deepEqual(resolveToolPolicy(cfg, "free_tool"), { kind: "free" });
     assert.equal(resolveToolPolicy(cfg, "secret_tool"), undefined);
   });

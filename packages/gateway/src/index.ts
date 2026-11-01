@@ -2,17 +2,32 @@ export { startGateway, type GatewayHealth, type GatewayOptions, type RunningGate
 export { buildDiscovery, type DiscoveryDocument, type DiscoveryResource } from "./discovery.js";
 export {
   assetAmountFor,
+  assetPricesFor,
+  assetRoutes,
   buildToolTable,
+  checkPricing,
   createPaymentRail,
-  gatewayAsset,
+  gatewayAssets,
   gatewayTimeouts,
+  priceIn,
+  requirementExtra,
   resolveToolPolicy,
   routeForTool,
+  type AssetPrice,
   type GatewayTimeouts,
+  type PaidToolPolicy,
   type PaymentRail,
+  type PaymentRailOptions,
   type ToolPolicy,
   type ToolTable,
 } from "./paywall.js";
+export {
+  AssetRoutingFacilitatorClient,
+  ExtraStrippingFacilitatorClient,
+  mergeSupported,
+  UnroutedAssetError,
+  type AssetRoute,
+} from "./facilitator-router.js";
 export { CASCET_PAYMENT_FLOWS, CascetCasperServerScheme, type ServerSchemeAsset } from "./server-scheme.js";
 export {
   connectUpstream,
@@ -29,6 +44,7 @@ export { TimeoutFacilitatorClient, SettlementIndeterminateError, classifySettleF
 export {
   createCesPreemptionChecker,
   decodeCesEvent,
+  routePreemptionChecks,
   type PreemptionOutcome,
   type PreemptionQuery,
   type SettlementPreemptionChecker,
