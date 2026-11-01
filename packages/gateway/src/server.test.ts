@@ -231,6 +231,28 @@ describe("replay protection (M18)", () => {
     });
   });
 
+  it("counts the facilitator's verify time in the validity an authorization needs", async () => {
+    // Defaults: facilitatorMs 15 s + upstreamMs 60 s + 30 s settle headroom = 105 s.
+    await withHarness({}, async h => {
+      const now = Math.floor(Date.now() / 1_000);
+      const tooShort = await payFor(h, "paid_tool", { validBefore: now + 60 + 30 + 1 });
+      const refused = await callPaid(h, "paid_tool", tooShort.header);
+      assert.equal(refused.status, 402);
+      assert.match(refused.body.error?.message ?? "", /authorization_expires_too_soon: it must stay valid for at least 105 s/);
+      assert.equal(h.facilitator.count("verify"), 0);
+      const enough = await payFor(h, "paid_tool", { validBefore: Math.floor(Date.now() / 1_000) + 107 });
+      assert.equal((await callPaid(h, "paid_tool", enough.header)).status, 200);
+    });
+  });
+
+  it("needs only verify time plus headroom when the tool settles before it runs", async () => {
+    const config = { pricing: { tools: { paid_tool: { price: "$0.01", settleBeforeExecute: true } } } };
+    await withHarness({ config }, async h => {
+      const { header } = await payFor(h, "paid_tool", { validBefore: Math.floor(Date.now() / 1_000) + 15 + 30 + 2 });
+      assert.equal((await callPaid(h, "paid_tool", header)).status, 200);
+    });
+  });
+
   it("refuses authorizations that casper-x402 would verify but that can never settle, before verify", async () => {
     await withHarness({}, async h => {
       const cases: Array<[Parameters<typeof payFor>[2], RegExp]> = [

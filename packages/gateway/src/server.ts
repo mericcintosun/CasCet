@@ -43,7 +43,7 @@ import {
   buildToolTable,
   createPaymentRail,
   MAX_CLOCK_SKEW_SECONDS,
-  SETTLE_HEADROOM_SECONDS,
+  requiredValiditySeconds,
   unmatchedConfiguredTools,
   type PaymentRail,
   type ToolPolicy,
@@ -373,7 +373,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     }
     const now = Math.floor(Date.now() / 1_000);
     const remaining = auth.validBefore - now;
-    const needed = (policy.settleBeforeExecute ? 0 : Math.ceil(cfg.timeouts.upstreamMs / 1_000)) + SETTLE_HEADROOM_SECONDS;
+    const needed = requiredValiditySeconds(cfg, policy.settleBeforeExecute);
     if (remaining < needed) {
       return `authorization_expires_too_soon: it must stay valid for at least ${needed} s, it has ${Math.max(0, remaining)} s`;
     }

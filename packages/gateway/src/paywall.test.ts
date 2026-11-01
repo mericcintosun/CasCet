@@ -6,6 +6,7 @@ import {
   buildToolTable,
   createPaymentRail,
   maxTimeoutSecondsFor,
+  requiredValiditySeconds,
   resolveToolPolicy,
   routeForTool,
   settleablePayTo,
@@ -114,9 +115,17 @@ describe("buildToolTable", () => {
 });
 
 describe("maxTimeoutSecondsFor", () => {
-  it("covers running the tool and settling, never below 300 s", () => {
+  it("covers verifying, running the tool and settling, never below 300 s", () => {
     assert.equal(maxTimeoutSecondsFor(testConfig()), 300);
-    assert.equal(maxTimeoutSecondsFor(testConfig({ timeouts: { upstreamMs: 600_000, settleMs: 90_000 } })), 720);
+    assert.equal(maxTimeoutSecondsFor(testConfig({ timeouts: { facilitatorMs: 15_000, upstreamMs: 600_000, settleMs: 90_000 } })), 735);
+  });
+});
+
+describe("requiredValiditySeconds", () => {
+  it("leaves the settle headroom after the facilitator's verify and, by default, the tool run", () => {
+    const cfg = testConfig({ timeouts: { facilitatorMs: 15_000, upstreamMs: 60_000 } });
+    assert.equal(requiredValiditySeconds(cfg, false), 15 + 60 + 30);
+    assert.equal(requiredValiditySeconds(cfg, true), 15 + 30);
   });
 });
 

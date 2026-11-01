@@ -24,11 +24,22 @@ export interface PaymentRail {
 }
 
 /**
- * The window must cover running the tool and settling afterwards, so it grows
- * with the configured timeouts; never below x402's customary 300 s.
+ * How long an authorization must still be valid when it arrives: the
+ * facilitator's verify, then (in the default run-then-settle mode) the tool
+ * run, must leave SETTLE_HEADROOM_SECONDS for the settle transaction.
+ */
+export function requiredValiditySeconds(cfg: CascetConfig, settleBeforeExecute: boolean): number {
+  const beforeSettleMs = cfg.timeouts.facilitatorMs + (settleBeforeExecute ? 0 : cfg.timeouts.upstreamMs);
+  return Math.ceil(beforeSettleMs / 1_000) + SETTLE_HEADROOM_SECONDS;
+}
+
+/**
+ * The window must cover verifying, running the tool and settling afterwards,
+ * so it grows with the configured timeouts; never below x402's customary 300 s.
  */
 export function maxTimeoutSecondsFor(cfg: CascetConfig): number {
-  return Math.max(300, Math.ceil((cfg.timeouts.upstreamMs + cfg.timeouts.settleMs) / 1_000) + SETTLE_HEADROOM_SECONDS);
+  const { facilitatorMs, upstreamMs, settleMs } = cfg.timeouts;
+  return Math.max(300, Math.ceil((facilitatorMs + upstreamMs + settleMs) / 1_000) + SETTLE_HEADROOM_SECONDS);
 }
 
 /**
