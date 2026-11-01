@@ -167,6 +167,7 @@ impl RevenueSplit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::Lcg;
     use odra::casper_types::U256;
     use odra::host::{Deployer, HostEnv};
     use odra_modules::cep18_token::{Cep18, Cep18HostRef, Cep18InitArgs};
@@ -351,19 +352,6 @@ mod tests {
         assert_eq!(token.balance_of(&owner), U256::from(1_000_000u64 - 70));
     }
 
-    /// Small deterministic generator for the invariant test (no extra crates).
-    struct Lcg(u64);
-
-    impl Lcg {
-        fn next(&mut self, bound: u64) -> u64 {
-            self.0 = self
-                .0
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
-            (self.0 >> 33) % bound
-        }
-    }
-
     // Accounting invariant: whatever the order of deposits and releases, no
     // payee is ever owed or paid more than its share of what was received,
     // and the payouts never exceed the revenue.
@@ -388,15 +376,15 @@ mod tests {
         let mut rng = Lcg(0x5eed);
         let mut deposited = U256::zero();
         for _ in 0..120 {
-            if rng.next(3) == 0 {
-                let amount = U256::from(1 + rng.next(10_000));
+            if rng.below(3) == 0 {
+                let amount = U256::from(1 + rng.below(10_000));
                 env.set_caller(source);
                 token.transfer(&split.address(), &amount);
                 deposited += amount;
             } else {
                 // Anyone may trigger a release; use a payee as the caller.
-                let who = payees[rng.next(3) as usize];
-                env.set_caller(payees[rng.next(3) as usize]);
+                let who = payees[rng.below(3) as usize];
+                env.set_caller(payees[rng.below(3) as usize]);
                 if !split.releasable(who).is_zero() {
                     split.release(who);
                 }

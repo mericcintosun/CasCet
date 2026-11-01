@@ -7,3 +7,6 @@ pub mod demo_token;
 pub mod payment_channel;
 pub mod receipt_registry;
 pub mod revenue_split;
+
+#[cfg(test)]
+mod test_util;
