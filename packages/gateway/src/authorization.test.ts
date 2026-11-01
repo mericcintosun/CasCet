@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import casperSdk from "casper-js-sdk";
 import { toClientCasperSigner } from "@make-software/casper-x402";
 import { ExactCasperScheme as ExactCasperClientScheme } from "@make-software/casper-x402/exact/client";
-import { normalizeAccountAddress, parseCasperAuthorization } from "./authorization.js";
+import { normalizeAccountAddress, parseCasperAuthorization, paymentAssetOf } from "./authorization.js";
 
 const ed25519Key = `01${"44".repeat(32)}`;
 const secp256k1Key = `0203${"44".repeat(32)}`;
@@ -103,6 +103,22 @@ describe("parseCasperAuthorization", () => {
     const parsed = parseCasperAuthorization(payload({ ...valid, from: `00${"33".repeat(32)}` }));
     assert.equal(parsed.ok, false);
     if (!parsed.ok) assert.match(parsed.reason, /publicKey does not belong to authorization.from/);
+  });
+});
+
+describe("paymentAssetOf", () => {
+  const hash = "3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e";
+
+  it("reads accepted.asset as a bare lower-case package hash", () => {
+    for (const asset of [hash, hash.toUpperCase(), `hash-${hash}`, ` 0x${hash} `]) {
+      assert.equal(paymentAssetOf({ x402Version: 2, accepted: { asset }, payload: {} }), hash, asset);
+    }
+  });
+
+  it("is undefined when the payload names no package hash", () => {
+    for (const value of [undefined, null, "x", {}, { accepted: null }, { accepted: {} }, { accepted: { asset: 7 } }, { accepted: { asset: "hash-abcd" } }]) {
+      assert.equal(paymentAssetOf(value), undefined, JSON.stringify(value));
+    }
   });
 });
 
