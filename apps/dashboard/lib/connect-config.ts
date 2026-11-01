@@ -19,8 +19,9 @@ export const CLI_VERSION = "latest";
 export const CLI_SPEC = `${CLI_PACKAGE}@${CLI_VERSION}`;
 
 export const CONNECT_NETWORKS = {
-  testnet: { id: "casper:casper-test", label: "Casper Testnet" },
-  mainnet: { id: "casper:casper", label: "Casper Mainnet" },
+  /** `cascetToken`: CasCet's x402 payment token (Cep18X402) on that network, as a hint for the asset allowlist. */
+  testnet: { id: "casper:casper-test", label: "Casper Testnet", cascetToken: "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3" },
+  mainnet: { id: "casper:casper", label: "Casper Mainnet", cascetToken: "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41" },
 } as const;
 export type ConnectNetwork = keyof typeof CONNECT_NETWORKS;
 

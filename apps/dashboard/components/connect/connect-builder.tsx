@@ -338,8 +338,8 @@ export function ConnectBuilder() {
               label="Allowed tokens (asset package hashes)"
               hint={
                 <>
-                  One per line, <code>hash-…</code> or 64 hex. On testnet, CasCet&apos;s x402 token is{" "}
-                  <code className="break-all">cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3</code>.
+                  One per line, <code>hash-…</code> or 64 hex. On {CONNECT_NETWORKS[s.network].label}, CasCet&apos;s x402 token is{" "}
+                  <code className="break-all">{CONNECT_NETWORKS[s.network].cascetToken}</code>.
                 </>
               }
               error={assetsError && !assetsError.ok ? `${assetRows.find((r) => !r.parsed.ok)?.input}: ${assetsError.reason}` : null}
