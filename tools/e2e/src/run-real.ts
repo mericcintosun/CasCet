@@ -82,6 +82,12 @@ const TOOL = "get_cspr_market_data";
 const PRICE = "$0.01";
 /** The gateway confirms an anchor for up to 120 s (anchoring.confirmTimeoutMs). */
 const ANCHOR_WAIT_MS = 150_000;
+/**
+ * A run-then-settle call is answered after up to facilitatorMs + upstreamMs +
+ * settleMs (165 s with the gateway's defaults); a buyer that gives up earlier
+ * (the client default is 30 s) may be charged without receiving the result.
+ */
+const PAID_CALL_TIMEOUT_MS = 180_000;
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -95,10 +101,16 @@ interface ReceiptJson {
   note?: string;
 }
 
-async function receiptById(id: string): Promise<ReceiptJson | undefined> {
+async function listReceipts(): Promise<ReceiptJson[]> {
   const body = (await (await fetch("http://localhost:4402/receipts")).json()) as { receipts: ReceiptJson[] };
-  return body.receipts.find(r => r.id === id);
+  return body.receipts;
 }
+
+async function receiptById(id: string): Promise<ReceiptJson | undefined> {
+  return (await listReceipts()).find(r => r.id === id);
+}
+
+const TX_HASH = /^[0-9a-f]{64}$/i;
 
 /** Read-only: the hosted facilitator names a testnet fee payer that can pay for a settle. */
 async function hostedPreflight(rpc: ReturnType<typeof createCasperRpc>): Promise<void> {
@@ -258,38 +270,49 @@ async function main(): Promise<number> {
       privateKeyPath: resolve(KEYS, "agent.pem"),
       allowedPayTo: [seller],
       allowedAssets: [asset.config.packageHash],
+      timeoutMs: PAID_CALL_TIMEOUT_MS,
       onPayment: info =>
         console.log(
           `[agent] 💸 authorizing ${info.amountRaw} raw units of ${info.asset.slice(0, 10)}… ` +
             `(${info.authorizationStyle ?? "style not advertised"}) → ${info.payTo.slice(0, 12)}…`,
         ),
     });
-    const client = new PaidMcpHttpClient("http://localhost:4402/mcp", paying.fetch);
+    const client = new PaidMcpHttpClient("http://localhost:4402/mcp", paying.fetch, { timeoutMs: PAID_CALL_TIMEOUT_MS });
     await client.initialize();
 
-    const { result, paymentId } = await client.callTool(TOOL, {});
-    const text = (result.content as Array<{ type: string; text?: string }>).find(c => c.type === "text")?.text;
-    console.log(`\n[agent] paid + received (payment ${paymentId}):\n${text}\n`);
+    // Gateway receipts persist across runs: remember the earlier ones, so a failed
+    // call is matched to this run's receipt and never to an old one (L12).
+    const earlier = new Set((await listReceipts()).map(r => r.id));
+    let paymentId: string | undefined;
+    try {
+      const outcome = await client.callTool(TOOL, {});
+      paymentId = outcome.paymentId;
+      const text = (outcome.result.content as Array<{ type: string; text?: string }>).find(c => c.type === "text")?.text;
+      console.log(`\n[agent] paid + received (payment ${paymentId}):\n${text}\n`);
+    } catch (err) {
+      console.error(`\n[agent] the paid call failed: ${message(err)}\n`);
+    }
 
-    // This payment's own receipt: gateway receipts persist, so "any settled receipt"
-    // could be one from an earlier run (L12).
-    const receipt = paymentId ? await receiptById(paymentId) : undefined;
+    // This payment's own receipt (the new one for this tool when the call failed).
+    const receipt = paymentId
+      ? await receiptById(paymentId)
+      : (await listReceipts()).filter(r => r.tool === TOOL && !earlier.has(r.id)).at(-1);
     const settled = receipt?.status === "settled" ? receipt : undefined;
     console.log("──────── real settlement ────────");
-    console.log(`settlement tx: ${settled?.txHash ?? "(pending)"}`);
-    if (settled?.txHash) console.log(`  ${TESTNET.explorer}/transaction/${settled.txHash}`);
+    console.log(`settlement tx: ${settled?.txHash ?? receipt?.txHash ?? "(none)"}`);
+    if (receipt?.txHash) console.log(`  ${TESTNET.explorer}/transaction/${receipt.txHash}`);
     if (!settled) {
       console.error(`receipt status: ${receipt?.status ?? "(none)"}${receipt?.note ? ` (${receipt.note})` : ""}`);
     }
 
     // --- measured gas: the settle and the anchor, read back from the chain ---
     const rows: Array<{ label: string; report: TransactionReport }> = [];
-    if (receipt?.txHash) {
+    if (receipt?.txHash && TX_HASH.test(receipt.txHash)) {
       rows.push({ label: "settle", report: await readTransactionReport(rpc, receipt.txHash, { deadlineMs: Date.now() + 60_000 }) });
     }
-    if (settled && paymentId) {
+    if (settled) {
       console.log(`\n[demo] waiting for the receipt's anchor (up to ${ANCHOR_WAIT_MS / 1000} s)…`);
-      const anchor = await waitForAnchor(gateway, paymentId);
+      const anchor = await waitForAnchor(gateway, settled.id);
       if (anchor.hash) {
         console.log(`anchor tx: ${anchor.hash}\n  ${TESTNET.explorer}/transaction/${anchor.hash}`);
         rows.push({ label: "anchor", report: await readTransactionReport(rpc, anchor.hash, { deadlineMs: Date.now() + 60_000 }) });
