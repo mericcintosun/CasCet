@@ -19,3 +19,20 @@ overrides:
   fast-uri@<3.1.9: "^3.1.9"
   sharp@<0.35.5: "^0.35.5"
   "@hono/node-server@<2.0.10": "^2.0.10"
+
+# Pin the peer-install mode this lockfile was resolved with, so
+# `pnpm install --frozen-lockfile` (CI, contributors) no longer depends on
+# anyone's global pnpm config; with pnpm's default (true) it fails with
+# ERR_PNPM_LOCKFILE_CONFIG_MISMATCH.
+autoInstallPeers: false
+
+# Advisories accepted on purpose. `pnpm audit` and the CI audit gate skip only
+# these; every entry names its reason and the change that removes it.
+#  - GHSA-mrhx-c7xc-m3w5 / CVE-2023-54404 (zod <4.6.6: memory exhaustion on very
+#    large arrays). Our own packages use zod 4.6.7; the vulnerable zod 3.25.76
+#    comes only through @x402/core 2.15/2.17, which stays on ~2.17.0 until the
+#    planned @x402 2.29 migration, and zod 3.x has no patched release. Remove
+#    this entry with that migration.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-mrhx-c7xc-m3w5
