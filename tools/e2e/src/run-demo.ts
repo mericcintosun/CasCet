@@ -44,12 +44,21 @@ const anchoring = {
 
 const asset = { packageHash: X402_TOKEN, name: "CasCet X402 Token", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 50 };
 
+// get_defi_yields computes a live staking APY when it has a cspr.cloud token. Pass the
+// token on explicitly: a gateway need not forward its own environment to the upstream.
+const csprCloudEnv: Record<string, string> = {};
+for (const name of ["CSPR_CLOUD_TOKEN", "CSPR_CLOUD_URL"]) {
+  const value = process.env[name];
+  if (value) csprCloudEnv[name] = value;
+}
+
 const dataConfig: CascetConfig = cascetConfigSchema.parse({
   name: "casper-defi-data",
   upstream: {
     type: "stdio",
     command: "node",
     args: [resolve(ROOT, "servers/casper-defi-data/dist/index.js")],
+    env: csprCloudEnv,
   },
   network: "casper:casper-test",
   payTo: SELLER_DATA_ACCOUNT_HASH,

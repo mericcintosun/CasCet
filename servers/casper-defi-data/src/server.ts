@@ -115,7 +115,9 @@ export function createDataServer(opts: DataServerOptions = {}): McpServer {
       inputSchema: {},
     },
     safeTool("get_defi_yields", log, async () => {
-      // The token is read per call: the CasCet gateway forwards it to this upstream.
+      // Read per call from this process' environment. Behind a CasCet gateway, set
+      // CSPR_CLOUD_TOKEN (and CSPR_CLOUD_URL) in the gateway config's upstream.env:
+      // a gateway does not have to pass its own environment on (I10).
       const token = env.CSPR_CLOUD_TOKEN;
       const hit = token
         ? await stakingApy.get(csprCloud, () => fetchStakingApy({ baseUrl: csprCloud, token, fetchImpl }))
