@@ -153,6 +153,8 @@ impl ScenarioMetadata for ReleaseShare {
 }
 
 /// Anchors a demo receipt directly (used to verify the deployed registry).
+/// The receipt is fixture data ("demo-payer", "demo-tx"), so the scenario
+/// refuses to run against mainnet (see `refuse_on_mainnet`).
 pub struct AnchorDemoReceipt;
 
 impl Scenario for AnchorDemoReceipt {
@@ -173,6 +175,7 @@ impl Scenario for AnchorDemoReceipt {
         container: &DeployedContractsContainer,
         args: Args,
     ) -> Result<(), Error> {
+        refuse_on_mainnet(Self::NAME)?;
         let mut registry = container.contract_ref::<ReceiptRegistry>(env)?;
         let payment_id = args.get_single::<String>("payment_id")?;
         let amount = args.get_single::<U256>("amount")?;
@@ -193,7 +196,23 @@ impl Scenario for AnchorDemoReceipt {
 
 impl ScenarioMetadata for AnchorDemoReceipt {
     const NAME: &'static str = "anchor-demo";
-    const DESCRIPTION: &'static str = "Anchor a demo receipt to verify the deployed registry works";
+    const DESCRIPTION: &'static str =
+        "Anchor a fixture receipt to check a deployed registry (testnet only)";
+}
+
+/// Fail when the livenet env targets mainnet (chain name `casper`). Odra loads
+/// `.env` into the process environment while it builds the livenet env, which
+/// happens before any scenario runs, so this sees the chain name in use.
+/// Fixture receipts written to the mainnet registry cannot be removed and
+/// already had to be filtered out by the dashboard (finding L42).
+fn refuse_on_mainnet(scenario: &str) -> Result<(), Error> {
+    let chain = std::env::var("ODRA_CASPER_LIVENET_CHAIN_NAME").unwrap_or_default();
+    if chain == "casper" {
+        return Err(Error::OdraError {
+            message: format!("`{scenario}` writes fixture data and is disabled on mainnet"),
+        });
+    }
+    Ok(())
 }
 
 fn parse_addr(s: &str) -> Result<Address, Error> {
