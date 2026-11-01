@@ -33,6 +33,7 @@ describe("cascet CLI", () => {
     assert.equal(help.status, 0);
     assert.match(help.stdout, /cascet account-hash <public-key>/);
     assert.match(help.stdout, /--allow-any-seller/);
+    assert.match(help.stdout, /CASCET_PREFER_STYLES/);
     const version = run(["--version"]);
     assert.equal(version.status, 0);
     assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+/);

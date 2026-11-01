@@ -100,7 +100,8 @@ async function connect(args: ParsedArgs): Promise<void> {
     ...cfg.paying,
     onPayment: info =>
       console.error(
-        `[cascet] 💸 authorized ${info.amountRaw} raw units of ${info.asset.slice(0, 10)}… → ${info.payTo.slice(0, 12)}…`,
+        `[cascet] 💸 authorized ${info.amountRaw} raw units of ${info.asset.slice(0, 10)}…` +
+          `${info.authorizationStyle ? ` (${info.authorizationStyle})` : ""} → ${info.payTo.slice(0, 12)}…`,
       ),
   });
   console.error(cfg.summary);
@@ -142,6 +143,9 @@ connect env vars:
   CASCET_ALLOWED_ASSETS           comma-separated CEP-18 package hashes to pay in (required*)
   CASCET_MAX_PER_CALL             largest single payment, raw token units (required**)
   CASCET_MAX_SESSION              session total per token, raw token units (required**)
+  CASCET_PREFER_STYLES            comma-separated authorization styles in order of preference
+                                  (cep3009-value, legacy-amount) when a gateway offers several tokens;
+                                  only orders the options the allowlists and budgets accept
   CASCET_TIMEOUT_MS               deadline per call in ms (default 180000: a paid call settles on-chain)
   CASCET_TOOL_PINS                tool pin file (default ~/.cascet/tool-pins.json)
   CASCET_ALLOW_ANY_SELLER=1       same as --allow-any-seller

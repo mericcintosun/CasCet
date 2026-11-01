@@ -91,6 +91,17 @@ describe("resolveConnectConfig", () => {
     assert.deepEqual(viaEnv.paying.budget, {});
   });
 
+  it("passes CASCET_PREFER_STYLES as an ordered, de-duplicated preference, and nothing when it is unset", () => {
+    const cfg = resolveConnectConfig(inputs({ CASCET_PREFER_STYLES: " cep3009-value, legacy-amount,cep3009-value " }));
+    assert.deepEqual(cfg.paying.preferStyles, ["cep3009-value", "legacy-amount"]);
+    assert.match(cfg.summary, /\| prefer cep3009-value > legacy-amount \|/);
+    for (const unset of [undefined, "", " , "]) {
+      const plain = resolveConnectConfig(inputs({ CASCET_PREFER_STYLES: unset }));
+      assert.equal("preferStyles" in plain.paying, false, JSON.stringify(unset));
+      assert.doesNotMatch(plain.summary, /prefer/);
+    }
+  });
+
   it("rejects malformed values and names the env var", () => {
     const cases: Array<[Record<string, string>, RegExp]> = [
       [{ CASCET_MAX_PER_CALL: "-1" }, /CASCET_MAX_PER_CALL must be a whole number/],
@@ -106,6 +117,11 @@ describe("resolveConnectConfig", () => {
       [{ CASCET_KEY_ALGO: "rsa" }, /CASCET_KEY_ALGO must be/],
       [{ CASCET_TIMEOUT_MS: "30s" }, /CASCET_TIMEOUT_MS must be a whole number/],
       [{ CASCET_KEY_PATH: "" }, /CASCET_KEY_PATH .* is required/],
+      [
+        { CASCET_PREFER_STYLES: "cep3009-value,permit2" },
+        /CliError: CASCET_PREFER_STYLES: unknown authorization style "permit2"; known styles: legacy-amount, cep3009-value$/,
+      ],
+      [{ CASCET_PREFER_STYLES: "CEP3009-VALUE" }, /CASCET_PREFER_STYLES: unknown authorization style "CEP3009-VALUE"/],
     ];
     for (const [env, pattern] of cases) assert.throws(() => resolveConnectConfig(inputs(env)), pattern, JSON.stringify(env));
   });
