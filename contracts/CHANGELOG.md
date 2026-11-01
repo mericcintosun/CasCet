@@ -39,9 +39,18 @@ which gateways and docs must point at the new hashes.
   were not affected.
 - **RevenueSplit: share total cannot wrap (L40).** The u32 sum of shares uses
   `checked_add` and reverts with `SharesOverflow` (code 7).
-- **CascadeController: overflow-free budget check.** `charge` compares `gross`
-  with `budget - spent`, so a huge `gross` reverts with `BudgetExceeded`
-  instead of an opaque overflow trap.
+- **RevenueSplit: a large balance cannot block `release`.** `releasable`
+  computed `received * shares` in full, which trapped once the received total
+  passed `U256::MAX / shares`. It now computes the same floor division without
+  the full product.
+- **CascadeController: overflow-free budget and attribution math.** `charge`
+  compares `gross` with `budget - spent`, so a `gross` beyond the budget
+  reverts with `BudgetExceeded` instead of an opaque overflow trap. The
+  attribution cut, `gross * bps / 10_000` rounded down, is computed without
+  the full product, which trapped for any `gross` above `U256::MAX / 10_000`
+  even when the hop fit the budget; every hop within the budget can now be
+  charged. Both changes give the same results as before wherever the old code
+  did not trap.
 - **Release wasm traps on integer overflow** (`overflow-checks = true`). It
   used to wrap silently while the tests panicked.
 - **CLI: `anchor-demo` refuses to run on mainnet (L42).** It writes fixture
@@ -54,7 +63,24 @@ which gateways and docs must point at the new hashes.
 - `Cargo.lock` is tracked so builds are reproducible (L44). Updated in the lock:
   h2, rustls, rustls-webpki and tokio (host-side CLI only, RUSTSEC fixes) and
   spin 0.9.8 (yanked) → 0.9.9. Still open: RUSTSEC-2026-0387 in crypto-bigint
-  0.5.5, which comes in through casper-types and needs an upstream release.
+  0.5.5, which comes in through casper-types and needs an upstream release, and
+  the yanked clipboard-win 5.4.1 (Windows-only, through odra-cli and
+  rustyline), whose fixed releases 5.4.2 and 5.4.3 date from 2026-10-23 and
+  are still too new to take.
+- The wasm artifacts built on 2026-07-22, minutes before the mainnet deploy
+  run last wrote `resources/casper-contracts.toml`, are reproduced byte for
+  byte from commit `4e00541` with the Odra 2.8.2 lock. The README lists their
+  hashes and explains why the bytes a node stores differ (L44).
+- PaymentChannel: `redeem` documents the signature encoding (L128). A voucher
+  signature is a 65-byte casper-types `Signature`: tag `0x01` (Ed25519) or
+  `0x02` (Secp256k1), then 64 bytes over the raw voucher message (Secp256k1:
+  ECDSA over SHA-256 of it, `r || s`, low-S). Undecodable bytes revert with
+  `CouldNotDeserializeSignature`, a wrong signature with `InvalidVoucher`.
+- ReceiptRegistry docs: parent links can form cycles (`A` names a parent `B`
+  that is not anchored yet, then `B` names `A`), so readers that walk them must
+  track visited ids.
+- CLI header: `scenario release --payee` takes an `account-hash-…` string, not
+  a public key (I02).
 - Formatted with rustfmt; `cargo fmt --check` and
   `cargo clippy --all-targets` are clean.
 - `rust-toolchain` (plain text) → `rust-toolchain.toml`. The channel is
@@ -63,21 +89,27 @@ which gateways and docs must point at the new hashes.
   (L72, I03).
 
 ### Tests
-- 13 → 49 unit tests. New coverage:
+- 13 → 54 unit tests. New coverage:
   - DemoToken, which had no tests (L130).
   - Regression tests for the July 2026 fixes: C1 voucher binding across
     deployments and channel ids, C2 checks-effects-interactions against a
     re-entrant token, and C4 channel durations.
   - Budget, attribution and revenue-split invariants over deterministic
     pseudo-random runs.
-  - A golden vector for the voucher byte layout.
-  - Every error code the five contracts define or re-expose.
+  - Arithmetic edges: a `U256::MAX` cascade budget charged with huge child
+    hops, a `U256::MAX` revenue split, and the shared floor-division helper
+    against the plain formula.
+  - Golden vectors for the voucher byte layout and for voucher signatures
+    with fixed Ed25519 and Secp256k1 keys, cross-checked with Node's crypto.
+  - Every error code the five contracts define or re-expose, including the
+    exact error for undecodable voucher signatures.
 - The tests now pay with `DemoToken`, the token that is actually deployed,
   instead of odra-modules' `Cep18`, and sign vouchers with the test
   environment's own account keys. As a result `cargo odra test -b casper`
   runs them on the Casper execution engine against the built wasm (with
-  overflow checks). 47 of the 49 run there; the two reentrancy tests need a
-  test-only token that has no wasm, so they run in the mock VM only.
+  overflow checks). 52 of the 54 run there; the two `*_mockvm_only` reentrancy
+  tests need a test-only token that has no wasm, so on that engine they return
+  early.
 
 ## [0.1.0] - 2026-07
 ### Added
