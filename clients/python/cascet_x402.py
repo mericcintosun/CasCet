@@ -47,6 +47,7 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 from urllib.parse import urlsplit
 
@@ -71,6 +72,9 @@ __all__ = [
     "HEADER_PAYMENT_RESPONSE",
     "HEADER_CASCET_PARENT_ID",
     "HEADER_CASCET_PAYMENT_ID",
+    "AUTHORIZATION_STYLES",
+    "AUTHORIZATION_STYLE_EXTRA_KEY",
+    "LEGACY_AMOUNT_TOKENS",
     "CONTRACT_PAYEE_REASON",
     "X402Error",
     "ProtocolError",
@@ -83,6 +87,8 @@ __all__ = [
     "pay_to_from_public_key",
     "normalize_pay_to",
     "normalize_asset",
+    "default_authorization_style",
+    "authorization_style",
     "parse_amount",
     "validate_requirements",
     "build_payment_payload",
@@ -117,6 +123,24 @@ VALID_AFTER_SKEW_SECONDS = 600
 #: The TS client's `maxAuthorizationSeconds` default.
 MAX_VALIDITY_SECONDS = 900
 
+# ---- token authorization styles (same names and values as @cascet/core) ----
+#: How a token's `transfer_with_authorization` takes the amount. Both styles
+#: verify the same EIP-712 message, so this client signs them the same way:
+#: "legacy-amount" tokens (CasCet's own x402 token) take `amount`,
+#: "cep3009-value" tokens (the official Wrapped CSPR, other CEP-3009 tokens)
+#: take `value`. Only the facilitator that settles the payment cares.
+AUTHORIZATION_STYLES: Tuple[str, ...] = ("legacy-amount", "cep3009-value")
+#: Key of the style in an `accepts` entry's `extra`. The gateway sets it; a
+#: client echoes it in `accepted`, may prefer a style and refuses values it
+#: does not know. Facilitators must not rely on it: the token's ABI decides.
+AUTHORIZATION_STYLE_EXTRA_KEY = "authorizationStyle"
+#: Known tokens whose `transfer_with_authorization` takes `amount`: bare
+#: package hash -> CAIP-2 network. Both are CasCet's x402 token ("CasCet X402
+#: Token"), as in @cascet/core's LEGACY_AMOUNT_TOKENS.
+LEGACY_AMOUNT_TOKENS: Mapping[str, str] = MappingProxyType({
+    "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3": NETWORK_CASPER_TESTNET,
+    "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41": NETWORK_CASPER_MAINNET,
+})
 #: Why a "01" payTo (a contract package, or a public key passed off as one) is
 #: never paid, worded as in @cascet/client's CONTRACT_PAYEE_REASON.
 CONTRACT_PAYEE_REASON = (
@@ -390,6 +414,43 @@ def normalize_asset(value: str) -> str:
     return low
 
 
+def default_authorization_style(package_hash: str) -> str:
+    """The style assumed for a token that names none, as @cascet/core's defaultAuthorizationStyle.
+
+    A known CasCet x402 token (LEGACY_AMOUNT_TOKENS) is "legacy-amount"; every
+    other token "cep3009-value", the CEP-3009 standard. `package_hash` takes
+    the forms normalize_asset accepts; anything else raises ValueError.
+    """
+    return "legacy-amount" if normalize_asset(package_hash) in LEGACY_AMOUNT_TOKENS else "cep3009-value"
+
+
+def _show(value: Any) -> str:
+    """repr() of a value from a server, shortened for error messages."""
+    text = repr(value)
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
+def authorization_style(requirements: Mapping[str, Any]) -> Optional[str]:
+    """
+    The authorization style one `accepts` entry advertises in
+    `extra.authorizationStyle`, or None when it names none (a gateway from
+    before the field existed).
+
+    Raises ProtocolError (a ValueError) for any other value: a style this
+    client does not know means terms it cannot judge, so it is never paid.
+    """
+    extra = requirements.get("extra") if isinstance(requirements, Mapping) else None
+    if not isinstance(extra, Mapping) or AUTHORIZATION_STYLE_EXTRA_KEY not in extra:
+        return None
+    style = extra[AUTHORIZATION_STYLE_EXTRA_KEY]
+    if not isinstance(style, str) or style not in AUTHORIZATION_STYLES:
+        raise ProtocolError(
+            f"extra.{AUTHORIZATION_STYLE_EXTRA_KEY} {_show(style)} is not an authorization style this client knows "
+            f"({', '.join(AUTHORIZATION_STYLES)})"
+        )
+    return style
+
+
 def _nonempty_text(value: Any) -> bool:
     # A lone surrogate (valid in JSON, "\ud800") has no UTF-8 form, so it cannot be hashed into the domain.
     return isinstance(value, str) and value != "" and not _SURROGATE_RE.search(value)
@@ -406,8 +467,10 @@ def _max_timeout_seconds(value: Any) -> int:
 def validate_requirements(requirements: Mapping[str, Any]) -> None:
     """Check that one `accepts` entry is a well-formed Casper `exact` requirement.
 
-    Raises ProtocolError naming the bad field. These are the checks the TS
-    scheme and the facilitator apply, done before anything is signed.
+    Raises ProtocolError (a ValueError) naming the bad field. These are the
+    checks the TS scheme and the facilitator apply, done before anything is
+    signed, plus the TS client's: an `extra.authorizationStyle` it does not
+    know is refused.
     """
     if not isinstance(requirements, Mapping):
         raise ProtocolError("payment requirements must be a JSON object")
@@ -435,6 +498,7 @@ def validate_requirements(requirements: Mapping[str, Any]) -> None:
             "extra.name and extra.version (the token's EIP-712 domain) must be non-empty strings "
             "(without lone UTF-16 surrogates)"
         )
+    authorization_style(requirements)
     if "maxTimeoutSeconds" in requirements:
         _max_timeout_seconds(requirements["maxTimeoutSeconds"])
 
@@ -475,14 +539,22 @@ def build_payment_payload(
     The result is what the TypeScript client sends: `x402Version`, the signed
     `payload`, the 402's `resource` (and `extensions`) when given, and
     `accepted`, a copy of `requirements` exactly as advertised (including
-    `maxTimeoutSeconds` and `extra`). A CasCet gateway only accepts a payment
-    whose `accepted` equals one of its `accepts` entries, and the facilitator
-    reads `accepted.scheme` / `accepted.network`.
+    `maxTimeoutSeconds` and all of `extra`, such as `extra.authorizationStyle`).
+    A CasCet gateway only accepts a payment whose `accepted` equals one of its
+    `accepts` entries, and the facilitator reads `accepted.scheme` /
+    `accepted.network`. Both authorization styles are signed the same way;
+    an `extra.authorizationStyle` this client does not know raises
+    ProtocolError (a ValueError).
 
-    Pass `requirements` unchanged from the 402. Without `valid_after` /
-    `valid_before` the window is the TS client's: from `now - 600` to `now +
-    maxTimeoutSeconds`, capped at `max_validity_seconds` (default
-    MAX_VALIDITY_SECONDS, 900).
+    Pass `requirements` unchanged from the 402. Without `valid_before` the
+    authorization expires at `now + maxTimeoutSeconds`, capped at
+    `max_validity_seconds` (default MAX_VALIDITY_SECONDS, 900). Without
+    `valid_after` it is valid from `now - 600`, back-dated for clock skew as
+    @make-software/casper-x402's client did. `valid_after` may be 0, which is
+    what @x402/casper 2.29's client (the TypeScript client since the 2.29
+    migration) signs: pass `valid_after=0` for the same payload byte for byte.
+    The CasCet gateway and facilitator, and @x402/casper's facilitator, accept
+    both.
 
     This applies no spending policy: use PayingClient for allowlists and budgets.
     """
