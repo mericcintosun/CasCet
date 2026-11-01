@@ -17,8 +17,9 @@ import { startRealFacilitator } from "./real-facilitator.js";
  *   pnpm --filter @cascet/e2e facilitator
  *
  * Every variable is documented in src/facilitator-env.ts. The facilitator
- * refuses to start on mainnet when the fee-payer key is the contract owner
- * (CASCET_OWNER_ACCOUNT_HASH, default: the CasCet deployer) or a seller.
+ * refuses to start on mainnet when the fee-payer key is an owner account
+ * (CASCET_OWNER_ACCOUNT_HASH; the CasCet deployer always counts) or a seller,
+ * or when it is an associated key of one of them.
  */
 const ROOT = resolve(import.meta.dirname, "../../..");
 
@@ -42,7 +43,7 @@ try {
     ...(cfg.authToken ? { authToken: cfg.authToken } : {}),
     allowedPayTo: cfg.allowedPayTo,
     allowedAssets: cfg.allowedAssets,
-    ...(cfg.ownerAccountHash ? { ownerAccountHash: cfg.ownerAccountHash } : {}),
+    ownerAccountHashes: cfg.ownerAccountHashes,
     paymentMotes: cfg.paymentMotes,
     dailyGasCapMotes: cfg.dailyGasCapMotes,
     settleWaitMs: cfg.settleWaitMs,

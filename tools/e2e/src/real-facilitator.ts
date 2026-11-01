@@ -29,8 +29,10 @@ import {
   MAX_SETTLE_PAYMENT_MOTES,
   MIN_SETTLE_PAYMENT_MOTES,
   NETWORKS,
+  ownerAccountsFor,
 } from "./facilitator-env.js";
-import { checkRoleSeparation, normalizeAccountHash } from "./facilitator-roles.js";
+import { checkRoleSeparation } from "./facilitator-roles.js";
+import { accountsSignableBy } from "./account-keys.js";
 import { DailyGasBudget } from "./gas-budget.js";
 import { loadSecretKeyFile } from "./key-file.js";
 import { createCasperSettlementChain } from "./settlement.js";
@@ -71,8 +73,9 @@ import { TokenStateReader } from "./token-state.js";
  *     submission and counting the real on-chain cost when known;
  *   - answers "pending"/"unknown" with the transaction hash instead of a
  *     failure when RPC errors hide the outcome;
- *   - refuses to start on mainnet when the fee-payer key is the contract owner
- *     or a seller account.
+ *   - refuses to start on mainnet when the fee-payer key is an owner account
+ *     (the deployer always counts as one) or a seller account, or when it is
+ *     an associated key of one of them (read on-chain at start-up).
  */
 export interface RealFacilitatorOptions {
   /** Port to listen on (0 = any free port). */
@@ -95,8 +98,11 @@ export interface RealFacilitatorOptions {
   allowedPayTo?: string[];
   /** CEP-18 package hashes this facilitator settles. Required on mainnet. */
   allowedAssets?: string[];
-  /** Contract owner account; the fee payer must differ from it. Required on mainnet. */
-  ownerAccountHash?: string;
+  /**
+   * Owner accounts (e.g. a new ReceiptRegistry owner); the fee payer must be none
+   * of them. On mainnet the CasCet deployer is always added.
+   */
+  ownerAccountHashes?: string[];
   /** Max settle requests accepted per minute (all payers). Default 60. */
   maxSettlesPerMinute?: number;
   /** Max /verify + /settle requests per minute (all payers). Default 300. */
@@ -398,7 +404,7 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   if (!Number.isSafeInteger(preflightDeadlineMs) || preflightDeadlineMs < 1_000 || preflightDeadlineMs > 60_000) {
     throw new Error("preflightDeadlineMs must be a whole number of milliseconds from 1000 to 60000");
   }
-  const ownerAccountHash = opts.ownerAccountHash ? normalizeAccountHash(opts.ownerAccountHash) : undefined;
+  const owners = ownerAccountsFor(network, opts.ownerAccountHashes ?? []);
 
   // --- fee payer and key-role separation (M07) ---
   const privateKey = loadSecretKeyFile(opts.keyPath, opts.keyAlgo ?? "ed25519", "fee-payer", m => logger.warn(m));
@@ -406,14 +412,34 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   const roles = checkRoleSeparation({
     network,
     feePayerAccountHash: feePayer,
-    ...(ownerAccountHash ? { ownerAccountHash } : {}),
+    ownerAccountHashes: owners,
     sellerAccountHashes: allowedPayTo ?? [],
   });
   for (const w of roles.warnings) logger.warn(`key roles: ${w}`);
   if (roles.errors.length > 0) throw new Error(`refusing to start on mainnet: ${roles.errors.join("; ")}`);
 
-  // --- wiring ---
   const rpc = createCasperRpc(rpcUrl, { timeoutMs: opts.rpcTimeoutMs ?? 8_000 });
+  if (mainnet) {
+    // Account comparisons cannot see associated keys: if the fee-payer key were
+    // added to the owner or a seller account, its leak would let an attacker
+    // sign for that account. Read it on-chain; refuse when it cannot be read.
+    let signable: string[];
+    try {
+      signable = await accountsSignableBy(rpc, [...owners, ...(allowedPayTo ?? [])], feePayer);
+    } catch (err) {
+      throw new Error(
+        `refusing to start on mainnet: could not read the owner and seller accounts' keys (${logText(err)}); check CASCET_RPC_URL`,
+      );
+    }
+    if (signable.length > 0) {
+      throw new Error(
+        `refusing to start on mainnet: the fee-payer key is an associated key of ${signable.map(a => `${a.slice(0, 10)}…`).join(", ")}; ` +
+          "a leak of the hot fee-payer key could sign for that account. Remove it there or use another fee-payer key",
+      );
+    }
+  }
+
+  // --- wiring ---
   const chain = createCasperSettlementChain({
     rpc,
     privateKey,

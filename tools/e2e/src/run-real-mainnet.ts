@@ -2,6 +2,8 @@ import { resolve } from "node:path";
 import { cascetConfigSchema, type CascetConfig } from "@cascet/core";
 import { startGateway } from "@cascet/gateway";
 import { createPayingFetch, PaidMcpHttpClient } from "@cascet/client";
+import { accountsSignableBy } from "./account-keys.js";
+import { createCasperRpc } from "./casper-rpc.js";
 import { NETWORKS, readFacilitatorEnv } from "./facilitator-env.js";
 import { checkRecorderSeparation } from "./facilitator-roles.js";
 import { accountHashOfKeyFile } from "./key-file.js";
@@ -24,9 +26,10 @@ import { startRealFacilitator } from "./real-facilitator.js";
  *   CASCET_FACILITATOR_KEY      fee-payer PEM (required; must not be the owner or the seller)
  *   CASCET_FACILITATOR_TOKEN    shared facilitator token (required, at least 32 characters)
  *   CASCET_SELLER_ACCOUNT_HASH  payTo (default: the deployer account, as before)
- *   CASCET_OWNER_ACCOUNT_HASH   contract owner (default: the deployer account)
+ *   CASCET_OWNER_ACCOUNT_HASH   further owner accounts (the deployer account always counts as one)
  *   CASCET_RECORDER_KEY         authorized ReceiptRegistry recorder PEM (optional; no anchoring without it;
- *                               refused if it is the fee payer, the owner or the seller)
+ *                               refused if it is the fee payer, an owner or the seller, or an associated
+ *                               key of an owner or seller account)
  *
  * Run: pnpm --filter @cascet/e2e demo-real-mainnet
  */
@@ -51,22 +54,28 @@ const RECEIPT_REGISTRY = MAINNET.receiptRegistry;
 const recorderEnv = process.env.CASCET_RECORDER_KEY?.trim();
 const RECORDER_KEY = recorderEnv ? resolve(recorderEnv) : undefined;
 if (RECORDER_KEY) {
+  const recorder = accountHashOfKeyFile(RECORDER_KEY, "ed25519", "recorder");
   const roles = checkRecorderSeparation({
     network: "casper:casper",
-    recorderAccountHash: accountHashOfKeyFile(RECORDER_KEY, "ed25519", "recorder"),
+    recorderAccountHash: recorder,
     feePayerAccountHash: accountHashOfKeyFile(fac.keyPath, fac.keyAlgo, "fee-payer"),
-    ...(fac.ownerAccountHash ? { ownerAccountHash: fac.ownerAccountHash } : {}),
+    ownerAccountHashes: fac.ownerAccountHashes,
     sellerAccountHashes: fac.allowedPayTo,
   });
   if (roles.errors.length > 0) {
     throw new Error(`CASCET_RECORDER_KEY: ${roles.errors.join("; ")} (docs/mainnet-readiness.md)`);
+  }
+  // Read-only: the hot recorder key must not be able to sign for an owner or seller account.
+  const signable = await accountsSignableBy(createCasperRpc(fac.rpcUrl), [...fac.ownerAccountHashes, ...fac.allowedPayTo], recorder);
+  if (signable.length > 0) {
+    throw new Error(`CASCET_RECORDER_KEY is an associated key of ${signable.map(a => `${a.slice(0, 10)}…`).join(", ")} (docs/mainnet-readiness.md)`);
   }
 } else {
   console.warn("[demo] CASCET_RECORDER_KEY not set: the receipt is not anchored on-chain");
 }
 
 // Self-hosted mainnet facilitator: dedicated fee payer, token-protected, allowlisted.
-// It refuses to start if the fee payer is the owner or the seller.
+// It refuses to start if the fee payer is an owner or the seller, or can sign for one.
 const facilitator = await startRealFacilitator({
   port: fac.port,
   network: "casper:casper",
@@ -76,7 +85,7 @@ const facilitator = await startRealFacilitator({
   ...(fac.authToken ? { authToken: fac.authToken } : {}),
   allowedPayTo: fac.allowedPayTo,
   allowedAssets: fac.allowedAssets,
-  ...(fac.ownerAccountHash ? { ownerAccountHash: fac.ownerAccountHash } : {}),
+  ownerAccountHashes: fac.ownerAccountHashes,
   paymentMotes: fac.paymentMotes,
   dailyGasCapMotes: fac.dailyGasCapMotes,
   settleWaitMs: fac.settleWaitMs,

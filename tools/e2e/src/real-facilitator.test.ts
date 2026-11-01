@@ -7,7 +7,10 @@ import { after, before, describe, test } from "node:test";
 import casperSdk from "casper-js-sdk";
 import type { SettleResponse, VerifyResponse } from "@x402/core/types";
 import type { CoreResult, FacilitatorCore, FacilitatorLogger, ParsedPayment } from "./facilitator-core.js";
+import { NETWORKS } from "./facilitator-env.js";
 import { createFacilitatorApp, startRealFacilitator, type FacilitatorAppOptions } from "./real-facilitator.js";
+import * as fx from "./rpc-fixtures.js";
+import { startFakeRpcServer, type FakeRpcServer } from "./test-helpers.js";
 
 const { PrivateKey, KeyAlgorithm } = casperSdk;
 
@@ -223,17 +226,29 @@ describe("startRealFacilitator start-up rules (M07)", () => {
   let dir: string;
   let feePayerPem: string;
   let feePayerHash: string;
-  before(() => {
+  /** Mainnet start-up reads the owner and seller accounts' associated keys: a local fake node. */
+  let node: FakeRpcServer;
+  const SELLER = `00${"88".repeat(32)}`;
+  const OWNER = `00${"0e".repeat(32)}`;
+  const DEPLOYER = NETWORKS["casper:casper"].deployerAccount.slice(2);
+
+  before(async () => {
     dir = mkdtempSync(join(tmpdir(), "cascet-fac-"));
     const key = PrivateKey.generate(KeyAlgorithm.ED25519);
     feePayerPem = join(dir, "fee-payer_secret_key.pem");
     writeFileSync(feePayerPem, key.toPem(), { mode: 0o600 });
     feePayerHash = key.publicKey.accountHash().toHex();
+    node = await startFakeRpcServer({
+      [`query_global_state account-hash-${DEPLOYER}`]: fx.mainnetDeployerAccountResponse,
+      [`query_global_state account-hash-${OWNER.slice(2)}`]: fx.accountNotFoundResponse,
+      [`query_global_state account-hash-${SELLER.slice(2)}`]: fx.accountNotFoundResponse,
+    });
   });
-  after(() => rmSync(dir, { recursive: true, force: true }));
+  after(async () => {
+    rmSync(dir, { recursive: true, force: true });
+    await node.close();
+  });
 
-  const SELLER = `00${"88".repeat(32)}`;
-  const OWNER = `00${"0e".repeat(32)}`;
   const mainnet = () => ({
     port: 0,
     network: "casper:casper" as const,
@@ -241,16 +256,37 @@ describe("startRealFacilitator start-up rules (M07)", () => {
     authToken: TOKEN,
     allowedPayTo: [SELLER],
     allowedAssets: ["8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41"],
-    ownerAccountHash: OWNER,
-    rpcUrl: "http://127.0.0.1:9/rpc", // never contacted at start-up
+    ownerAccountHashes: [OWNER],
+    rpcUrl: node.url,
     logger: quiet,
   });
 
-  test("refuses mainnet when the fee payer is the owner or a seller", async () => {
-    await assert.rejects(startRealFacilitator({ ...mainnet(), ownerAccountHash: `00${feePayerHash}` }), /contract owner/);
+  test("refuses mainnet when the fee payer is an owner or a seller", async () => {
+    await assert.rejects(startRealFacilitator({ ...mainnet(), ownerAccountHashes: [OWNER, `00${feePayerHash}`] }), /contract owner/);
     await assert.rejects(startRealFacilitator({ ...mainnet(), allowedPayTo: [SELLER, `00${feePayerHash}`] }), /seller/);
-    const { ownerAccountHash: _omit, ...noOwner } = mainnet();
-    await assert.rejects(startRealFacilitator(noOwner), /CASCET_OWNER_ACCOUNT_HASH/);
+  });
+
+  test("refuses mainnet when the fee-payer key can sign for the deployer (an associated key)", async () => {
+    // The plan's step 5b done wrong: the hot fee-payer key added to the deployer account.
+    const account = structuredClone(fx.mainnetDeployerAccountResponse) as unknown as {
+      result: { stored_value: { Account: { associated_keys: Array<{ account_hash: string; weight: number }> } } };
+    };
+    account.result.stored_value.Account.associated_keys.push({ account_hash: `account-hash-${feePayerHash}`, weight: 1 });
+    const misconfigured = await startFakeRpcServer({
+      [`query_global_state account-hash-${DEPLOYER}`]: account,
+      "query_global_state": fx.accountNotFoundResponse,
+    });
+    try {
+      // No owner named: the deployer is checked anyway.
+      const { ownerAccountHashes: _omit, ...noOwner } = mainnet();
+      await assert.rejects(startRealFacilitator({ ...noOwner, rpcUrl: misconfigured.url }), /associated key of b9a38c8277/);
+    } finally {
+      await misconfigured.close();
+    }
+  });
+
+  test("refuses mainnet when the owner and seller accounts cannot be read", async () => {
+    await assert.rejects(startRealFacilitator({ ...mainnet(), rpcUrl: "http://127.0.0.1:9/rpc", rpcTimeoutMs: 500 }), /could not read/);
   });
 
   test("refuses mainnet without a strong token, allowlists, or with a too-low gas limit", async () => {
@@ -276,8 +312,15 @@ describe("startRealFacilitator start-up rules (M07)", () => {
   });
 
   test("starts on mainnet with separated roles, serves /supported, protects /settle", async () => {
+    const before = node.calls.length;
     const fac = await startRealFacilitator(mainnet());
     try {
+      const checked = node.calls.slice(before).map(c => String(c.params["key"]));
+      assert.deepEqual(
+        [...checked].sort(),
+        [`account-hash-${DEPLOYER}`, `account-hash-${OWNER.slice(2)}`, `account-hash-${SELLER.slice(2)}`].sort(),
+        "the deployer, the named owner and the seller were read",
+      );
       assert.equal(fac.feePayer, feePayerHash);
       const supported = (await (await fetch(`${fac.url}/supported`)).json()) as { kinds: Array<{ network: string; extra: { feePayer: string } }> };
       assert.deepEqual(supported.kinds[0], { x402Version: 2, scheme: "exact", network: "casper:casper", extra: { feePayer: feePayerHash } });

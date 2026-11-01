@@ -3,10 +3,12 @@
  *
  * On mainnet CasCet ran one hot key as fee payer, seller (payTo), anchoring
  * recorder and contract owner. The facilitator now refuses to start on
- * `casper:casper` when its fee-payer account is the owner account or one of
+ * `casper:casper` when its fee-payer account is an owner account or one of
  * the seller accounts it settles to, so a leaked fee-payer key can no longer
  * also drain revenue or administer the contracts. On testnet the same overlaps
  * only produce warnings, so the demos keep working with one deployer key.
+ * (Associated keys, which these account comparisons cannot see, are checked
+ * on-chain by account-keys.ts.)
  */
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -24,10 +26,14 @@ export interface RoleCheckInput {
   network: string;
   /** Account hash of the key that signs and pays for settlement transactions. */
   feePayerAccountHash: string;
-  /** Account that owns the CasCet contracts (deployer). Required on mainnet. */
-  ownerAccountHash?: string;
+  /**
+   * Accounts that own or administer the CasCet contracts: the deployer (it holds
+   * the token package's upgrade access) and any later ReceiptRegistry owner.
+   * At least one is required on mainnet.
+   */
+  ownerAccountHashes: readonly string[];
   /** Accounts the facilitator settles payments to (its payTo allowlist). */
-  sellerAccountHashes: string[];
+  sellerAccountHashes: readonly string[];
 }
 
 export interface RoleCheckResult {
@@ -42,15 +48,15 @@ export function checkRoleSeparation(input: RoleCheckInput): RoleCheckResult {
   const problem = (msg: string) => (mainnet ? errors : warnings).push(msg);
 
   const feePayer = normalizeAccountHash(input.feePayerAccountHash);
-  const owner = input.ownerAccountHash ? normalizeAccountHash(input.ownerAccountHash) : undefined;
+  const owners = input.ownerAccountHashes.map(normalizeAccountHash);
   const sellers = input.sellerAccountHashes.map(normalizeAccountHash);
 
-  if (mainnet && !owner) {
+  if (mainnet && owners.length === 0) {
     errors.push("the owner account is required on mainnet (set CASCET_OWNER_ACCOUNT_HASH)");
   }
-  if (owner && feePayer === owner) {
+  if (owners.includes(feePayer)) {
     problem(
-      `the fee-payer key is the contract owner account (${owner.slice(0, 10)}…); use a separate, low-float fee-payer key ` +
+      `the fee-payer key is a contract owner account (${feePayer.slice(0, 10)}…); use a separate, low-float fee-payer key ` +
         "(see tools/e2e/src/key-roles.ts and docs/mainnet-readiness.md)",
     );
   }
@@ -67,8 +73,8 @@ export interface RecorderCheckInput {
   /** Account hash of the ReceiptRegistry recorder key (the gateway's anchoring.keyPath). */
   recorderAccountHash: string;
   feePayerAccountHash: string;
-  ownerAccountHash?: string;
-  sellerAccountHashes: string[];
+  ownerAccountHashes: readonly string[];
+  sellerAccountHashes: readonly string[];
 }
 
 /**
@@ -87,9 +93,9 @@ export function checkRecorderSeparation(input: RecorderCheckInput): RoleCheckRes
   if (recorder === normalizeAccountHash(input.feePayerAccountHash)) {
     problem("the recorder key is also the fee-payer key; use one key per role");
   }
-  if (input.ownerAccountHash && recorder === normalizeAccountHash(input.ownerAccountHash)) {
+  if (input.ownerAccountHashes.map(normalizeAccountHash).includes(recorder)) {
     problem(
-      `the recorder key is the contract owner account (${recorder.slice(0, 10)}…); authorize a dedicated recorder on ` +
+      `the recorder key is a contract owner account (${recorder.slice(0, 10)}…); authorize a dedicated recorder on ` +
         "ReceiptRegistry and keep the owner key offline",
     );
   }

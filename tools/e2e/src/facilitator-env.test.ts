@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { FacilitatorConfigError, NETWORKS, readFacilitatorEnv, resolveNetwork } from "./facilitator-env.js";
+import { FacilitatorConfigError, NETWORKS, ownerAccountsFor, readFacilitatorEnv, resolveNetwork } from "./facilitator-env.js";
 import { checkRecorderSeparation, checkRoleSeparation, normalizeAccountHash } from "./facilitator-roles.js";
 
 const ROOT = "/repo";
@@ -20,7 +20,7 @@ describe("key-role separation rules (M07)", () => {
   });
 
   test("mainnet: refuses a fee payer that is the owner or a seller", () => {
-    const base = { network: "casper:casper", ownerAccountHash: DEPLOYER, sellerAccountHashes: [SELLER] };
+    const base = { network: "casper:casper", ownerAccountHashes: [DEPLOYER], sellerAccountHashes: [SELLER] };
     assert.deepEqual(checkRoleSeparation({ ...base, feePayerAccountHash: FEE_PAYER }), { errors: [], warnings: [] });
     assert.match(checkRoleSeparation({ ...base, feePayerAccountHash: DEPLOYER }).errors.join(), /contract owner/);
     assert.match(
@@ -33,13 +33,38 @@ describe("key-role separation rules (M07)", () => {
   });
 
   test("mainnet: the owner account must be known", () => {
-    const r = checkRoleSeparation({ network: "casper:casper", feePayerAccountHash: FEE_PAYER, sellerAccountHashes: [SELLER] });
+    const r = checkRoleSeparation({ network: "casper:casper", feePayerAccountHash: FEE_PAYER, ownerAccountHashes: [], sellerAccountHashes: [SELLER] });
     assert.match(r.errors.join(), /CASCET_OWNER_ACCOUNT_HASH/);
+  });
+
+  test("mainnet: naming a new owner never drops the deployer (it holds the token's upgrade access)", () => {
+    const NEW_OWNER = `00${"0e".repeat(32)}`;
+    const cfg = readFacilitatorEnv(
+      {
+        CASCET_NETWORK: "casper:casper",
+        CASCET_FACILITATOR_KEY: "/secure/fee.pem",
+        CASCET_FACILITATOR_TOKEN: TOKEN,
+        CASCET_OWNER_ACCOUNT_HASH: NEW_OWNER,
+        CASCET_SELLER_ACCOUNT_HASH: SELLER,
+      },
+      ROOT,
+    );
+    assert.deepEqual(cfg.ownerAccountHashes, ["0e".repeat(32), DEPLOYER.slice(2)]);
+    // The review's bypass: the deployer as hot fee payer after ownership moved. Refused.
+    const roles = checkRoleSeparation({
+      network: "casper:casper",
+      feePayerAccountHash: DEPLOYER,
+      ownerAccountHashes: cfg.ownerAccountHashes,
+      sellerAccountHashes: cfg.allowedPayTo,
+    });
+    assert.match(roles.errors.join(), /contract owner/);
+    assert.deepEqual(ownerAccountsFor("casper:casper-test", []), [], "testnet has no implicit owner");
+    assert.deepEqual(ownerAccountsFor("casper:casper", [DEPLOYER, `account-hash-${DEPLOYER.slice(2)}`]), [DEPLOYER.slice(2)]);
   });
 
   test("mainnet: the anchoring recorder is its own key (not the fee payer, owner or a seller)", () => {
     const RECORDER = "7e".repeat(32);
-    const base = { network: "casper:casper", feePayerAccountHash: FEE_PAYER, ownerAccountHash: DEPLOYER, sellerAccountHashes: [SELLER] };
+    const base = { network: "casper:casper", feePayerAccountHash: FEE_PAYER, ownerAccountHashes: [DEPLOYER], sellerAccountHashes: [SELLER] };
     assert.deepEqual(checkRecorderSeparation({ ...base, recorderAccountHash: RECORDER }), { errors: [], warnings: [] });
     assert.match(checkRecorderSeparation({ ...base, recorderAccountHash: `00${FEE_PAYER}` }).errors.join(), /fee-payer/);
     assert.match(checkRecorderSeparation({ ...base, recorderAccountHash: DEPLOYER }).errors.join(), /contract owner/);
@@ -52,7 +77,7 @@ describe("key-role separation rules (M07)", () => {
     const r = checkRoleSeparation({
       network: "casper:casper-test",
       feePayerAccountHash: FEE_PAYER,
-      ownerAccountHash: FEE_PAYER,
+      ownerAccountHashes: [FEE_PAYER],
       sellerAccountHashes: [`00${FEE_PAYER}`],
     });
     assert.equal(r.errors.length, 0);
@@ -84,7 +109,7 @@ describe("facilitator environment", () => {
     assert.equal(cfg.rpcUrl, "https://node.mainnet.casper.network/rpc");
     assert.deepEqual(cfg.allowedAssets, [NETWORKS["casper:casper"].token]);
     assert.deepEqual(cfg.allowedPayTo, [DEPLOYER]);
-    assert.equal(cfg.ownerAccountHash, DEPLOYER.slice(2));
+    assert.deepEqual(cfg.ownerAccountHashes, [DEPLOYER.slice(2)]);
     assert.equal(cfg.paymentMotes, 4_000_000_000);
     assert.equal(cfg.dailyGasCapMotes, 500_000_000_000n);
     assert.equal(cfg.settleWaitMs, 60_000);
@@ -103,7 +128,7 @@ describe("facilitator environment", () => {
         CASCET_FACILITATOR_KEY: "/secure/fee.pem",
         CASCET_FACILITATOR_TOKEN: TOKEN,
         CASCET_SELLER_ACCOUNT_HASH: ` account-hash-${"5E".repeat(32)} , ${SELLER}`,
-        CASCET_OWNER_ACCOUNT_HASH: `00${"0e".repeat(32)}`,
+        CASCET_OWNER_ACCOUNT_HASH: `00${"0e".repeat(32)}, account-hash-${"0f".repeat(32)}`,
         CASCET_ALLOWED_ASSETS: `hash-${"cb".repeat(32)}`,
         CASCET_SETTLE_PAYMENT_MOTES: "3_500_000_000",
         CASCET_DAILY_GAS_CAP_MOTES: "50_000_000_000",
@@ -115,7 +140,7 @@ describe("facilitator environment", () => {
       ROOT,
     );
     assert.deepEqual(cfg.allowedPayTo, [SELLER, SELLER]);
-    assert.equal(cfg.ownerAccountHash, "0e".repeat(32));
+    assert.deepEqual(cfg.ownerAccountHashes, ["0e".repeat(32), "0f".repeat(32), DEPLOYER.slice(2)]);
     assert.deepEqual(cfg.allowedAssets, ["cb".repeat(32)]);
     assert.equal(cfg.paymentMotes, 3_500_000_000);
     assert.equal(cfg.dailyGasCapMotes, 50_000_000_000n);
@@ -182,7 +207,7 @@ describe("facilitator environment", () => {
     assert.equal(cfg.network, "casper:casper-test");
     assert.equal(cfg.keyPath, "/repo/contracts/keys/deployer_secret_key.pem");
     assert.deepEqual(cfg.allowedPayTo, [NETWORKS["casper:casper-test"].defaultSeller]);
-    assert.equal(cfg.ownerAccountHash, undefined);
+    assert.deepEqual(cfg.ownerAccountHashes, []);
     assert.equal(cfg.authToken, undefined);
     assert.ok(cfg.warnings.some(w => w.includes("deployer key")));
   });

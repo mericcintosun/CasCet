@@ -11,7 +11,9 @@ import { normalizeAccountHash } from "./facilitator-roles.js";
  *   CASCET_FACILITATOR_KEY_ALGO   ed25519 (default) | secp256k1
  *   CASCET_FACILITATOR_TOKEN      shared bearer token, gateway `facilitator.apiKey` (REQUIRED on mainnet, ≥ 32 chars)
  *   CASCET_SELLER_ACCOUNT_HASH    comma list of payTo account hashes the facilitator settles to
- *   CASCET_OWNER_ACCOUNT_HASH     contract owner account (start is refused on mainnet if the fee payer is it)
+ *   CASCET_OWNER_ACCOUNT_HASH     comma list of owner accounts (e.g. a new ReceiptRegistry owner); on mainnet the
+ *                                 CasCet deployer is always added. Start is refused on mainnet if the fee payer is
+ *                                 one of them or one of their associated keys
  *   CASCET_ALLOWED_ASSETS         comma list of CEP-18 package hashes (default: the CasCet x402 token)
  *   CASCET_SETTLE_PAYMENT_MOTES   gas limit per settle (default 4_000_000_000 = 4 CSPR)
  *   CASCET_DAILY_GAS_CAP_MOTES    sponsored gas per UTC day (default 500 CSPR)
@@ -74,6 +76,18 @@ export const DEFAULT_DAILY_GAS_CAP_MOTES = 500_000_000_000n;
 export const DEFAULT_SETTLE_WAIT_MS = 60_000;
 /** On-chain `name` of the CasCet x402 token on both networks (read-only check, 2026-11-01). */
 export const CASCET_TOKEN_NAME = "CasCet X402 Token";
+
+/**
+ * Accounts a hot key must never be, nor be able to sign for: the configured
+ * owners plus, on mainnet, always the CasCet deployer. It keeps the upgrade
+ * access of the unlocked x402 token package even after ReceiptRegistry
+ * ownership moves, so naming a new owner must not drop it. Bare 64-hex hashes.
+ */
+export function ownerAccountsFor(network: CasperNetwork, owners: readonly string[]): string[] {
+  const list = owners.map(normalizeAccountHash);
+  if (network === "casper:casper") list.push(normalizeAccountHash(NETWORKS["casper:casper"].deployerAccount));
+  return [...new Set(list)];
+}
 
 export class FacilitatorConfigError extends Error {
   constructor(message: string) {
@@ -155,7 +169,8 @@ export interface FacilitatorEnvConfig {
   authToken?: string;
   allowedPayTo: string[];
   allowedAssets: string[];
-  ownerAccountHash?: string;
+  /** Owner accounts (bare 64 hex); on mainnet always includes the deployer. */
+  ownerAccountHashes: string[];
   paymentMotes: number;
   dailyGasCapMotes: bigint;
   settleWaitMs: number;
@@ -221,14 +236,9 @@ export function readFacilitatorEnv(env: Env, repoRoot: string, forceNetwork?: Ca
     throw new FacilitatorConfigError(`CASCET_ALLOWED_ASSETS: ${(err as Error).message}`);
   }
 
-  let ownerAccountHash: string | undefined;
+  let ownerAccountHashes: string[];
   try {
-    const owner = value(env, "CASCET_OWNER_ACCOUNT_HASH");
-    ownerAccountHash = owner
-      ? normalizeAccountHash(owner)
-      : mainnet
-        ? normalizeAccountHash(NETWORKS["casper:casper"].deployerAccount)
-        : undefined;
+    ownerAccountHashes = ownerAccountsFor(network, list(env, "CASCET_OWNER_ACCOUNT_HASH") ?? []);
   } catch (err) {
     throw new FacilitatorConfigError(`CASCET_OWNER_ACCOUNT_HASH: ${(err as Error).message}`);
   }
@@ -272,7 +282,7 @@ export function readFacilitatorEnv(env: Env, repoRoot: string, forceNetwork?: Ca
     ...(authToken ? { authToken } : {}),
     allowedPayTo,
     allowedAssets,
-    ...(ownerAccountHash ? { ownerAccountHash } : {}),
+    ownerAccountHashes,
     paymentMotes,
     dailyGasCapMotes,
     settleWaitMs: integer(env, "CASCET_SETTLE_WAIT_MS", DEFAULT_SETTLE_WAIT_MS, 3_000, 300_000),

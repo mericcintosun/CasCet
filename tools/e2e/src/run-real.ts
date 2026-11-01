@@ -45,7 +45,7 @@ for (const warning of checkRecorderSeparation({
   network: "casper:casper-test",
   recorderAccountHash: accountHashOfKeyFile(RECORDER_KEY, "ed25519", "recorder"),
   feePayerAccountHash: accountHashOfKeyFile(fac.keyPath, fac.keyAlgo, "fee-payer"),
-  ...(fac.ownerAccountHash ? { ownerAccountHash: fac.ownerAccountHash } : {}),
+  ownerAccountHashes: fac.ownerAccountHashes,
   sellerAccountHashes: fac.allowedPayTo,
 }).warnings) {
   console.warn(`[demo] warning: ${warning}`);
@@ -69,7 +69,7 @@ const facilitator = await startRealFacilitator({
   ...(fac.authToken ? { authToken: fac.authToken } : {}),
   allowedPayTo: fac.allowedPayTo,
   allowedAssets: fac.allowedAssets,
-  ...(fac.ownerAccountHash ? { ownerAccountHash: fac.ownerAccountHash } : {}),
+  ownerAccountHashes: fac.ownerAccountHashes,
   paymentMotes: fac.paymentMotes,
   dailyGasCapMotes: fac.dailyGasCapMotes,
   settleWaitMs: fac.settleWaitMs,

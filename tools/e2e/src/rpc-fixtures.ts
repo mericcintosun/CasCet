@@ -560,3 +560,50 @@ export const noSuchTransactionResponse = {
   id: 1,
   error: { code: -32014, message: "No such transaction", data: "no transaction for hash transaction-v1-hash(0000..00aa)" },
 } as const;
+
+/**
+ * The CasCet mainnet deployer account (query_global_state account-hash-b9a38c82…),
+ * recorded 2026-11-02: one associated key (itself), thresholds 1/1. Named keys
+ * trimmed to one.
+ */
+export const mainnetDeployerAccountResponse = {
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "api_version": "2.0.0",
+    "block_header": null,
+    "stored_value": {
+      "Account": {
+        "account_hash": "account-hash-b9a38c827771d6bc510dd5f1e24fee61acdd4f97f758f4d68fe1dea13a7a140d",
+        "named_keys": [
+          {
+            "name": "CasCet_X402_package_hash",
+            "key": "hash-8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41"
+          }
+        ],
+        "main_purse": "uref-0522f0c3812ca5b328dbe10fc5a060b5e16029b058567403095e11aebc0012a9-007",
+        "associated_keys": [
+          {
+            "account_hash": "account-hash-b9a38c827771d6bc510dd5f1e24fee61acdd4f97f758f4d68fe1dea13a7a140d",
+            "weight": 1
+          }
+        ],
+        "action_thresholds": {
+          "deployment": 1,
+          "key_management": 1
+        }
+      }
+    }
+  }
+} as const;
+
+/** An account that does not exist on mainnet: the node answers "value was not found". */
+export const accountNotFoundResponse = {
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32003,
+    "message": "Query failed",
+    "data": "value was not found in the global state"
+  }
+} as const;
