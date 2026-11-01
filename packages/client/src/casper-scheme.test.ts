@@ -127,3 +127,78 @@ describe("structural signer and @x402/casper client scheme", () => {
     );
   });
 });
+
+describe("createCasperClientScheme: last checks before a signature", () => {
+  const signer = clientSignerFromPem(PrivateKey.generate(KeyAlgorithm.ED25519).toPem());
+  const requirements = (overrides: Record<string, unknown> = {}): PaymentRequirements =>
+    ({
+      scheme: "exact",
+      network: "casper:casper-test",
+      asset: WCSPR_TESTNET,
+      amount: "400",
+      payTo: SELLER,
+      maxTimeoutSeconds: 300,
+      extra: { name: "Wrapped CSPR", version: "1", authorizationStyle: "cep3009-value" },
+      ...overrides,
+    }) as PaymentRequirements;
+  /** A signer that fails the test if it is ever asked to sign. */
+  const neverSigns = {
+    accountAddress: signer.accountAddress,
+    publicKey: signer.publicKey,
+    signEIP712: async (): Promise<Uint8Array> => assert.fail("nothing may be signed"),
+  };
+
+  it("signs only for its own network, and never takes a wildcard", async () => {
+    const scheme = createCasperClientScheme(signer, { network: "casper:casper-test" });
+    assert.equal((await scheme.createPaymentPayload(2, requirements())).x402Version, 2);
+    await assert.rejects(
+      createCasperClientScheme(neverSigns, { network: "casper:casper-test" }).createPaymentPayload(2, requirements({ network: "casper:casper" })),
+      /^Error: refusing to sign: the requirements name network "casper:casper", but this scheme signs for casper:casper-test only$/,
+    );
+    assert.throws(() => createCasperClientScheme(signer, { network: "casper:*" }), /wildcards are not allowed/);
+  });
+
+  it("refuses a payee that is not an account hash, contract packages included", async () => {
+    const scheme = createCasperClientScheme(neverSigns);
+    for (const payTo of [`01${"c3".repeat(32)}`, `account-hash-${SELLER.slice(2)}`, "00abc", 7]) {
+      await assert.rejects(scheme.createPaymentPayload(2, requirements({ payTo })), /refusing to sign: payTo .* is not an account hash/);
+    }
+  });
+
+  it("refuses malformed amounts (M32)", async () => {
+    const scheme = createCasperClientScheme(neverSigns);
+    for (const amount of ["-1000000", "0x10", "1e5", "", "5.0", " 5", "0", "000", "9".repeat(41), 100, null]) {
+      await assert.rejects(
+        scheme.createPaymentPayload(2, requirements({ amount })),
+        /refusing to sign: malformed amount/,
+        `amount ${JSON.stringify(amount)}`,
+      );
+    }
+  });
+
+  it("refuses above its own per-payment cap and above the cap x402's spend controls pass in", async () => {
+    const capped = createCasperClientScheme(signer, { maxAmountPerPayment: 400n });
+    assert.equal((await capped.createPaymentPayload(2, requirements({ amount: "400" }))).x402Version, 2);
+    await assert.rejects(
+      createCasperClientScheme(neverSigns, { maxAmountPerPayment: "400" }).createPaymentPayload(2, requirements({ amount: "401" })),
+      /refusing to sign: amount 401 exceeds the per-payment cap 400/,
+    );
+    const open = createCasperClientScheme(neverSigns);
+    await assert.rejects(
+      open.createPaymentPayload(2, requirements({ amount: "400" }), { maxAmountPerPayment: "300" }),
+      /refusing to sign: amount 400 exceeds the spend-control cap 300/,
+    );
+    await assert.rejects(
+      open.createPaymentPayload(2, requirements({ amount: "400" }), { maxAmountPerPayment: "$1" }),
+      /refusing to sign: malformed spend-control cap/,
+    );
+    assert.throws(() => createCasperClientScheme(signer, { maxAmountPerPayment: "-1" }), /maxAmountPerPayment must be a whole number/);
+  });
+
+  it("refuses an authorization style it does not know", async () => {
+    await assert.rejects(
+      createCasperClientScheme(neverSigns).createPaymentPayload(2, requirements({ extra: { name: "Wrapped CSPR", version: "1", authorizationStyle: "permit2" } })),
+      /refusing to sign: unknown authorization style "permit2"/,
+    );
+  });
+});

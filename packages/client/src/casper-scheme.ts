@@ -1,12 +1,23 @@
 import { readFile } from "node:fs/promises";
+import { AUTHORIZATION_STYLE_EXTRA_KEY, AUTHORIZATION_STYLES, isAuthorizationStyle } from "@cascet/core";
 import type { ClientCasperSigner } from "@x402/casper";
 import { ExactCasperScheme } from "@x402/casper/exact/client";
-import type { SchemeNetworkClient } from "@x402/core/types";
+import type { PaymentRequirements, SchemeNetworkClient } from "@x402/core/types";
 import casperSdk from "casper-js-sdk";
+import { CONTRACT_PAYEE_REASON, normalizeNetworks, parseRawAmount, RAW_AMOUNT_PATTERN } from "./policy.js";
 
 const { KeyAlgorithm, PrivateKey } = casperSdk;
 
 export type CasperKeyAlgorithm = "ed25519" | "secp256k1";
+
+/**
+ * Prefix of the error a CasCet client scheme throws when it refuses to sign.
+ * Nothing has been signed when it is thrown.
+ */
+export const SIGNING_REFUSED_PREFIX = "refusing to sign: ";
+
+/** The payee form a CasCet client signs for: "00" + account hash. */
+const ACCOUNT_PAYEE = /^00[0-9a-f]{64}$/;
 
 /**
  * A `ClientCasperSigner` for @x402/casper from a PEM private key, built with
@@ -30,19 +41,94 @@ export async function loadClientSigner(privateKeyPath: string, algorithm: Casper
   return clientSignerFromPem(await readFile(privateKeyPath, "utf8"), algorithm);
 }
 
+export interface CasperClientSchemeOptions {
+  /**
+   * The CAIP-2 network this scheme signs for (e.g. "casper:casper-test").
+   * Requirements that name any other network are refused. Register one scheme
+   * per network the client pays on, never a "casper:*" pattern.
+   */
+  network?: string;
+  /** Largest amount, in raw token units, this scheme signs in one authorization. */
+  maxAmountPerPayment?: bigint | string;
+}
+
 /**
- * @x402/casper's exact client scheme, without `findDefaultAsset`.
+ * @x402/casper's exact client scheme, without `findDefaultAsset`, behind
+ * CasCet's last checks before a signature.
  *
  * Both authorization styles verify the same EIP-712 TransferWithAuthorization
  * message (signed over `value`), so one scheme pays legacy-amount and
  * cep3009-value tokens alike. `findDefaultAsset` is left out because x402's
  * spend controls treat every asset it recognizes (csprUSD) as allowed by
  * default; CasCet's SpendPolicy decides which assets a buyer pays in.
+ *
+ * The spending policy has accepted the requirements before this runs. The
+ * scheme still refuses, without signing, requirements for another network
+ * than its own, a payee that is not an account hash ("01" contract packages
+ * included, see CONTRACT_PAYEE_REASON), an amount that is not a whole number
+ * of raw units above zero, an amount above `maxAmountPerPayment` or above the
+ * per-payment cap x402's spend controls pass in, and an authorization style it
+ * does not know.
  */
-export function createCasperClientScheme(signer: ClientCasperSigner): SchemeNetworkClient {
+export function createCasperClientScheme(signer: ClientCasperSigner, options: CasperClientSchemeOptions = {}): SchemeNetworkClient {
+  const network = options.network === undefined ? undefined : normalizeNetworks([options.network])[0];
+  const ownCap =
+    options.maxAmountPerPayment === undefined
+      ? undefined
+      : parseRawAmount(
+          typeof options.maxAmountPerPayment === "bigint" ? options.maxAmountPerPayment.toString() : options.maxAmountPerPayment,
+          "maxAmountPerPayment",
+        );
   const inner = new ExactCasperScheme(signer);
   return {
     scheme: inner.scheme,
-    createPaymentPayload: (x402Version, requirements) => inner.createPaymentPayload(x402Version, requirements),
+    createPaymentPayload: async (x402Version, requirements, context) => {
+      const refusal = signingRefusal(requirements, network, ownCap, context?.maxAmountPerPayment);
+      if (refusal !== undefined) throw new Error(`${SIGNING_REFUSED_PREFIX}${refusal}`);
+      return inner.createPaymentPayload(x402Version, requirements);
+    },
   };
+}
+
+/** Why the scheme refuses to sign these requirements, or undefined when it signs. */
+function signingRefusal(
+  requirements: PaymentRequirements,
+  network: string | undefined,
+  ownCap: bigint | undefined,
+  x402Cap: string | undefined,
+): string | undefined {
+  if (network !== undefined && requirements.network !== network) {
+    return `the requirements name network ${show(requirements.network)}, but this scheme signs for ${network} only`;
+  }
+  const payTo = typeof requirements.payTo === "string" ? requirements.payTo.toLowerCase() : undefined;
+  if (payTo === undefined || !ACCOUNT_PAYEE.test(payTo)) {
+    return `payTo ${show(requirements.payTo)} is not an account hash ("00" + 64 hex); ${CONTRACT_PAYEE_REASON}`;
+  }
+  const amountText: unknown = requirements.amount;
+  if (typeof amountText !== "string" || !RAW_AMOUNT_PATTERN.test(amountText) || BigInt(amountText) <= 0n) {
+    return `malformed amount ${show(amountText)} (expected 1-40 decimal digits, above zero)`;
+  }
+  const amount = BigInt(amountText);
+  if (ownCap !== undefined && amount > ownCap) return `amount ${amount} exceeds the per-payment cap ${ownCap}`;
+  if (x402Cap !== undefined) {
+    if (typeof x402Cap !== "string" || !RAW_AMOUNT_PATTERN.test(x402Cap)) {
+      return `malformed spend-control cap ${show(x402Cap)}`;
+    }
+    if (amount > BigInt(x402Cap)) return `amount ${amount} exceeds the spend-control cap ${x402Cap}`;
+  }
+  const extra: unknown = requirements.extra;
+  const style = typeof extra === "object" && extra !== null ? (extra as Record<string, unknown>)[AUTHORIZATION_STYLE_EXTRA_KEY] : undefined;
+  if (style !== undefined && !isAuthorizationStyle(style)) {
+    return `unknown authorization style ${show(style)}; this client knows ${AUTHORIZATION_STYLES.join(", ")}`;
+  }
+  return undefined;
+}
+
+function show(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(value.length > 80 ? `${value.slice(0, 77)}...` : value);
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
 }
