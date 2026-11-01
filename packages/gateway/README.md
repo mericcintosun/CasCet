@@ -22,13 +22,18 @@ Or from the command line: `npx @cascet/cli wrap cascet.config.json`.
 | `host` | `127.0.0.1` | Interface to listen on. Use `0.0.0.0` only for a deployment that must be reachable from other hosts. |
 | `port` | `4402` | `0` picks a free port. |
 | `cors.allowedOrigins` | `[]` | Exact origins (`https://app.example`) allowed to call the gateway from a browser. `*` and `null` are rejected. |
-| `pricing.tools.<name>` | | `{ price: "$0.01", description?, settleBeforeExecute?: false }` |
-| `pricing.default` | none | Price for every upstream tool that is neither in `tools` nor in `freeTools`. |
+| `pricing.tools.<name>` | | `{ price: "$0.01", description?, settleBeforeExecute?: false, assets?: ["<asset id>", …] }` |
+| `pricing.default` | none | Price for every upstream tool that is neither in `tools` nor in `freeTools` (also takes `assets`). |
 | `pricing.freeTools` | `[]` | Upstream tools served free of charge. |
+| `pricing.*.assets` | every asset | The assets a price accepts, by id. The 402 lists them in config order, not in the order of this list. |
+| `asset` / `assets` | | One token (`asset`) or several (`assets`, in order of preference); set exactly one. See *Accepting several tokens*. |
 | `asset.authorization` | from `packageHash` | The token's `transfer_with_authorization` ABI: `"legacy-amount"` (CasCet's own x402 token, takes `amount`) or `"cep3009-value"` (CEP-3009 tokens such as Wrapped CSPR, take `value`). CasCet's tokens default to the first, every other token to the second. Buyers see it as `extra.authorizationStyle`. A legacy-amount asset settled by the hosted facilitator is a config error. |
-| `facilitator.authScheme` | `"raw"` | How `facilitator.apiKey` is sent: `raw` (`Authorization: <key>`, what the hosted CSPR.cloud facilitator expects) or `bearer` (`Authorization: Bearer <key>`). |
+| `asset.id` | lower-cased `symbol` | Handle used by `pricing.*.assets`. Two assets with the same symbol need explicit ids. |
+| `asset.facilitator` | `"default"` | The facilitator that verifies and settles this asset: a key of `facilitators`, or `"default"` (the top-level `facilitator`). |
+| `facilitator` | the hosted facilitator | The `"default"` facilitator: `{ url, apiKey?, authScheme?, timeoutMs? }`. |
+| `facilitators.<name>` | `{}` | More facilitators, same fields, for assets that name them. |
+| `facilitator.authScheme` | `"raw"` | How `apiKey` is sent: `raw` (`Authorization: <key>`, what the hosted CSPR.cloud facilitator expects; `bearer` is refused for it) or `bearer` (`Authorization: Bearer <key>`). |
 | `facilitator.timeoutMs` | none | Per-request timeout of this facilitator; replaces `timeouts.facilitatorMs` and `timeouts.settleMs` for its calls. |
-| `assets`, `facilitators` | | The config accepts several assets (each may name a facilitator from `facilitators`), but this gateway version serves one asset and refuses to start with more. |
 | `timeouts.facilitatorMs` | `15000` | Facilitator `/verify` and `/supported`. |
 | `timeouts.settleMs` | `90000` | Facilitator `/settle` (a Casper facilitator answers after the transfer executed). |
 | `timeouts.upstreamMs` | `60000` | One upstream MCP request. |
@@ -52,7 +57,46 @@ POSIX) plus exactly `upstream.env`. Pass any secret the upstream needs there.
 **Buyer timeouts must be longer than `facilitatorMs + upstreamMs + settleMs`**
 (165 s with the defaults). In the default mode the gateway answers a paid call
 only after the tool ran and the payment settled; a buyer that gives up earlier
-may be charged without receiving the result.
+may be charged without receiving the result. With several facilitators the
+gateway sizes this with the slowest one.
+
+## Accepting several tokens
+
+A gateway can sell in several tokens at once, for example CasCet's own x402
+token (legacy-amount, settled by a self-hosted facilitator) next to the
+official Wrapped CSPR (cep3009-value, settled by the hosted facilitator):
+
+```json
+{
+  "assets": [
+    { "id": "cascet", "packageHash": "hash-cb65a928…35c3", "name": "CasCet X402 Token", "symbol": "WCSPR", "facilitator": "self" },
+    { "id": "wcspr", "packageHash": "hash-3d80df21…7c1e", "name": "Wrapped CSPR", "symbol": "WCSPR", "decimals": 9, "tokensPerUsd": 20 }
+  ],
+  "facilitator": { "url": "https://x402-facilitator.cspr.cloud", "apiKey": "<CSPR.cloud access key>" },
+  "facilitators": { "self": { "url": "http://127.0.0.1:4501", "apiKey": "<token>", "authScheme": "bearer" } },
+  "pricing": { "tools": { "search": { "price": "$0.01" }, "report": { "price": "$0.05", "assets": ["wcspr"] } } }
+}
+```
+
+- Every 402 lists one `accepts` entry per token the tool accepts, in config
+  order, each with its amount (converted with that token's `tokensPerUsd` and
+  `decimals`) and `extra` `{ name, version, symbol, decimals,
+  authorizationStyle }`. x402 buyers take the first entry they can pay unless
+  their policy prefers another.
+- Verify and settle go to the facilitator of the token the buyer paid in
+  (x402 itself would pick one facilitator per network). A payment in a token
+  the tool does not accept is refused before any facilitator is asked.
+- Startup fails when a facilitator does not answer `/supported` or does not
+  support x402 v2 `exact` payments on the gateway's network, and when a price
+  rounds to zero units of one of its tokens.
+- The hosted facilitator gets the raw access key, and requirements without
+  CasCet's own `extra.authorizationStyle` (no facilitator needs it; buyers
+  still see it).
+- Receipts, `_meta.cascet` (`asset`, `assetSymbol`, `amountRaw`) and the
+  on-chain settlement check use the token and amount of each payment's matched
+  requirements; `GET /pricing` and the discovery document list every token of
+  every tool. Receipts of two tokens with the same symbol differ in `asset`
+  (the package hash).
 
 ## Payment flow
 
@@ -61,19 +105,21 @@ may be charged without receiving the result.
    (`code: -32002`, `data`: the decoded PaymentRequired object).
 2. With a payment, the gateway first checks the authorization locally, before
    the facilitator is asked:
-   - payee and exact price;
+   - the token (`accepted.asset`) is one the tool accepts;
+   - payee and exact price in that token;
    - the payer is an account (`00` tag), the signature's algorithm tag equals
      the public key's, and the public key belongs to the payer (casper-x402
      1.0.0 verifies authorizations that break these rules, but they always
      revert on-chain);
    - it stays valid long enough: `facilitatorMs` + `upstreamMs` (not with
      `settleBeforeExecute`) + 30 s for the settle transaction;
-   - this `(payer, nonce)` was never presented before. Replays are refused,
-     also across restarts.
+   - this `(payer, nonce)` was never presented before, in any of the
+     gateway's tokens. Replays are refused, also across restarts.
 
-   Then the facilitator verifies it, and the gateway appends a write-ahead
-   record of the authorization to the receipt log before anything runs. If
-   that write fails the call is refused (503, nothing charged).
+   Then the facilitator of that token verifies it, and the gateway appends a
+   write-ahead record of the authorization (with its token) to the receipt
+   log before anything runs. If that write fails the call is refused (503,
+   nothing charged).
 3. Default mode: the tool runs, then the payment settles. Buyers pay only for
    successful calls. With `settleBeforeExecute: true` the payment settles
    first and the tool runs only once it is final; use it for tools with side
@@ -90,19 +136,25 @@ may be charged without receiving the result.
      on-chain.
 
 A priced tool without a matching payment route, or a verified payment whose
-amount, payee, asset or network differs from the configuration, is refused
-(fail closed). Every 402 carries the `PAYMENT-REQUIRED` header and the decoded
-challenge in `error.data`.
+amount, payee, asset or network differs from the configuration (or whose
+token differs from the one the gateway checked locally), is refused (fail
+closed). Every 402 carries the `PAYMENT-REQUIRED` header and the decoded
+challenge in `error.data`. When verified work ends before settlement (the
+tool threw or returned an error, the gateway refused the verified payment,
+or the upstream was gone before a settle-first call), the gateway tells x402
+through its cancellation dispatcher; the `exact` scheme moves nothing then.
 
 ## Settlement preemption
 
 Anyone can submit a signed authorization. If someone else executes it before
 the gateway's facilitator does, the facilitator's settle fails although the
 seller was paid. When `settlement.nodeUrl` (or `anchoring.nodeUrl`) is set,
-the gateway then reads the token's events and looks for
-`AuthorizationUsed(payer, nonce)` directly followed by
+the gateway then reads the events of the token the payment was in and looks
+for `AuthorizationUsed(payer, nonce)` directly followed by
 `Transfer(payer → payTo, price)`. A used nonce alone is never taken as
-payment: the payer can cancel it or spend it on another authorization.
+payment: the payer can cancel it or spend it on another authorization. Both
+token styles write this pair (checked on CasCet's token and on testnet
+Wrapped CSPR).
 
 - Exact authorization found: delivered as settled by a third party when
   `acceptThirdPartySettlement` is on, otherwise recorded as `unknown`.
@@ -132,7 +184,10 @@ payment: the payer can cancel it or spend it on another authorization.
   Give the process supervisor a stop timeout at least that long. A second
   signal exits at once.
 - Browser requests carrying an `Origin` that is not allowlisted get HTTP 403.
-- `GET /receipts`, `GET /pricing`, `GET /.well-known/x402.json`.
+- `GET /receipts`, `GET /pricing` (`assets`, and per tool its `accepts`:
+  token id, symbol, package hash, raw amount, authorization style; `asset` and
+  `amountRaw` keep naming the preferred token), `GET /.well-known/x402.json`
+  (one `accepts` entry per token, with its `extra`).
 - Receipts are appended to `.cascet/<name>.receipts.jsonl`; status is
   `settled`, `failed` or `unknown`, with the verified payer and the
   authorization nonce. The same log holds the write-ahead authorization
