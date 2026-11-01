@@ -31,13 +31,16 @@ type RowState =
 export function RevenueSplitPanel() {
   const wallet = useWallet();
   const [data, setData] = useState<RevenueData | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [rows, setRows] = useState<Record<string, RowState>>({});
 
   useEffect(() => {
     fetch("/api/revenue")
-      .then((r) => r.json())
-      .then(setData)
-      .catch(() => setData(null));
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        setData((await r.json()) as RevenueData);
+      })
+      .catch((e: unknown) => setLoadError(e instanceof Error ? e.message : "request failed"));
   }, []);
 
   async function withdraw(payee: PayeeRow) {
@@ -77,7 +80,15 @@ export function RevenueSplitPanel() {
     return (
       <Card>
         <CardContent className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading revenue split…
+          {loadError ? (
+            <span className="flex items-center gap-1.5 text-destructive">
+              <TriangleAlert className="h-4 w-4" /> Could not load the revenue split ({loadError}). Reload to retry.
+            </span>
+          ) : (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading revenue split…
+            </>
+          )}
         </CardContent>
       </Card>
     );
@@ -140,7 +151,7 @@ export function RevenueSplitPanel() {
                 {state.status === "done" ? (
                   <a href={state.txUrl} target="_blank" rel="noreferrer">
                     <Badge variant="success" className="gap-1">
-                      <CheckCircle2 className="h-3.5 w-3.5" /> released — view tx
+                      <CheckCircle2 className="h-3.5 w-3.5" /> submitted — view tx
                     </Badge>
                   </a>
                 ) : state.status === "error" ? (
@@ -175,7 +186,8 @@ export function RevenueSplitPanel() {
         })}
         <p className="pt-1 text-xs text-muted-foreground">
           <code className="text-xs">release</code> is permissionless — the connected wallet only pays gas
-          (~5 CSPR); funds always go to the payee. Exact amounts settle on-chain and are visible on the tx.
+          (~5 CSPR); funds always go to the payee. &ldquo;Submitted&rdquo; means the node accepted the transaction;
+          open it on cspr.live to see whether it executed and the exact amount released.
         </p>
       </CardContent>
     </Card>
