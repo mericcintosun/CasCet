@@ -1,4 +1,5 @@
 import { wrapFetchWithPayment, x402Client, x402HTTPClient } from "@x402/fetch";
+import { x402Version } from "@x402/core";
 import type { PaymentPolicy, SpendControlAsset, SpendControls } from "@x402/core/client";
 import type { Network, PaymentRequirements } from "@x402/core/types";
 import type { ClientCasperSigner } from "@x402/casper";
@@ -15,6 +16,7 @@ import { createCasperClientScheme, loadClientSigner, SIGNING_REFUSED_PREFIX } fr
 import {
   DEFAULT_TIMEOUT_MS,
   decodeBase64Json,
+  encodeBase64Json,
   readTextCapped,
   RequestTimeoutError,
   validateTimeoutMs,
@@ -431,9 +433,13 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
       if (response.status !== 402) return response;
       // @x402/fetch would read an unbounded 402 body into memory (L117): give it a capped copy.
       const text = await readTextCapped(response, MAX_402_BODY_BYTES, "the gateway's 402 response");
-      // The challenge to the caller's request: when the policy refuses every option it offers,
-      // stop here, before x402 selects or signs anything, with the policy's own reason. A 402
-      // that answers the paid retry goes back to the caller as before: that payment was signed.
+      const headers = new Headers(response.headers);
+      headers.delete("content-length");
+      headers.delete("content-encoding");
+      // The challenge to the caller's request: when it is of another x402 version, or the policy
+      // refuses every option it offers, stop here, before x402 selects or signs anything, with
+      // the policy's own reason. A 402 that answers the paid retry goes back to the caller as
+      // before: that payment was signed.
       if (first) {
         if (carriesPayment(i, n)) {
           // x402 would sign a second payment, then refuse to send it ("Payment already attempted").
@@ -442,13 +448,20 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
               "this client does not add a second payment to it",
           );
         }
-        offered = acceptsOffered(response.headers);
-        const refusal = offered === undefined ? undefined : refusalReason(policy, offered);
-        if (refusal !== undefined) throw new PaymentRefusedError(`payment refused: ${refusal}`);
+        const challenge = decodeBase64Json(response.headers.get(HEADER_PAYMENT_REQUIRED));
+        if (challenge !== undefined) {
+          offered = Array.isArray(challenge.accepts) ? challenge.accepts : [];
+          const refusal = versionRefusal(challenge.x402Version) ?? refusalReason(policy, offered);
+          if (refusal !== undefined) throw new PaymentRefusedError(`payment refused: ${refusal}`);
+          // x402 sees only the options the policy accepts. Its own selection reads every entry
+          // before CasCet's filter runs, and a malformed one (a null entry, a non-string asset
+          // next to an asset allowlist) would make it throw for the whole 402.
+          const acceptable = offered.filter(option => policy.check(option).ok);
+          if (acceptable.length < offered.length) {
+            headers.set(HEADER_PAYMENT_REQUIRED, encodeBase64Json({ ...challenge, accepts: acceptable }));
+          }
+        }
       }
-      const headers = new Headers(response.headers);
-      headers.delete("content-length");
-      headers.delete("content-encoding");
       return new Response(text, { status: 402, statusText: response.statusText, headers });
     };
     try {
@@ -524,8 +537,12 @@ const SELECTION_FAILURES = [
   /No client registered for x402 version/,
 ];
 
-/** Turn x402's generic errors into a PaymentRefusedError with a readable reason where possible. */
-function explainPaymentError(err: unknown, offered: readonly unknown[] | undefined, policy: SpendPolicy): unknown {
+/**
+ * Turn x402's generic errors into a PaymentRefusedError with a readable reason
+ * where possible. `offered` is the 402's `accepts` as the gateway sent it.
+ * Exported for tests.
+ */
+export function explainPaymentError(err: unknown, offered: readonly unknown[] | undefined, policy: SpendPolicy): unknown {
   if (!(err instanceof Error) || err instanceof RequestTimeoutError || err instanceof PaymentRefusedError) return err;
   const aborted = /Payment creation aborted: ([\s\S]*)$/.exec(err.message);
   if (aborted) return new PaymentRefusedError(`payment refused: ${aborted[1]}`, { cause: err });
@@ -538,7 +555,8 @@ function explainPaymentError(err: unknown, offered: readonly unknown[] | undefin
       (offered === undefined ? undefined : refusalReason(policy, offered)) ??
       (err.message.includes("No network/scheme registered")
         ? networkRefusal([], policy.networks)
-        : err.message.replace(/^Failed to create payment payload: /, "").slice(0, 300));
+        : // x402's own text, which can quote what the gateway sent (an x402 version, for one).
+          escapeControlCharacters(err.message.replace(/^Failed to create payment payload: /, "").slice(0, 300)));
     return new PaymentRefusedError(`payment refused: ${reason}`, { cause: err });
   }
   if (err.cause instanceof Error && /redirect/i.test(err.cause.message)) {
@@ -550,11 +568,37 @@ function explainPaymentError(err: unknown, offered: readonly unknown[] | undefin
   return err;
 }
 
-/** The payment options of a 402's PAYMENT-REQUIRED header; an empty list when it has none, undefined without the header. */
-function acceptsOffered(headers: Headers): unknown[] | undefined {
-  const paymentRequired = decodeBase64Json(headers.get(HEADER_PAYMENT_REQUIRED));
-  if (paymentRequired === undefined) return undefined;
-  return Array.isArray(paymentRequired.accepts) ? paymentRequired.accepts : [];
+/**
+ * Why this client refuses a 402 of another x402 version, or undefined for the
+ * version every scheme of it is registered for. The version comes from the
+ * gateway, so it is quoted as JSON, shortened and escaped.
+ */
+function versionRefusal(version: unknown): string | undefined {
+  if (version === x402Version) return undefined;
+  const quoted = JSON.stringify(version);
+  const shown = quoted === undefined ? "(none)" : escapeControlCharacters(quoted.length > 64 ? `${quoted.slice(0, 61)}...` : quoted);
+  return `the gateway's 402 uses x402 version ${shown}, but this client pays x402 version ${x402Version} only`;
+}
+
+/**
+ * Escape the control characters (C0, DEL, C1), line and paragraph separators
+ * and bidirectional-text controls of gateway-supplied text as `\uXXXX`, so that
+ * it cannot fake lines or reorder text in logs and messages.
+ */
+function escapeControlCharacters(text: string): string {
+  let escaped = "";
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    const control =
+      code <= 0x1f ||
+      (code >= 0x7f && code <= 0x9f) ||
+      code === 0x200e ||
+      code === 0x200f ||
+      (code >= 0x2028 && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069);
+    escaped += control ? `\\u${code.toString(16).padStart(4, "0")}` : char;
+  }
+  return escaped;
 }
 
 /** Whether a request carries an x402 payment header. */

@@ -14,6 +14,7 @@ import {
   CASCET_SPEND_CONTROLS,
   createPayingFetch,
   createPaymentClient,
+  explainPaymentError,
   MAX_402_BODY_BYTES,
   optionAuthorizationStyle,
   PaymentRefusedError,
@@ -48,8 +49,10 @@ interface Hit {
 interface FakeGateway {
   url: (path?: string) => string;
   hits: Hit[];
-  /** Requirements served in the next 402s. */
-  accepts: Array<Record<string, unknown>>;
+  /** Requirements served in the next 402s (entries need not be well-formed). */
+  accepts: unknown[];
+  /** x402Version of the next 402s (default 2). */
+  x402Version: unknown;
   close: () => Promise<void>;
 }
 
@@ -73,7 +76,7 @@ function requirement(overrides: Record<string, unknown> = {}): Record<string, un
  */
 async function startFakeGateway(): Promise<FakeGateway> {
   const hits: Hit[] = [];
-  const state = { accepts: [requirement()] };
+  const state: { accepts: unknown[]; x402Version: unknown } = { accepts: [requirement()], x402Version: 2 };
   const server = http.createServer((req, res) => {
     req.resume();
     req.on("end", () => {
@@ -91,7 +94,7 @@ async function startFakeGateway(): Promise<FakeGateway> {
       const signature = req.headers["payment-signature"];
       if (typeof signature !== "string" || path === "/reject-paid") {
         const paymentRequired = {
-          x402Version: 2,
+          x402Version: state.x402Version,
           resource: { url: `http://127.0.0.1${path}`, description: "paid tool", mimeType: "application/json" },
           accepts: state.accepts,
         };
@@ -127,6 +130,12 @@ async function startFakeGateway(): Promise<FakeGateway> {
     },
     set accepts(value) {
       state.accepts = value;
+    },
+    get x402Version() {
+      return state.x402Version;
+    },
+    set x402Version(value) {
+      state.x402Version = value;
     },
     close: () =>
       new Promise<void>(resolve => {
@@ -630,6 +639,58 @@ describe("createPayingFetch with a legacy-amount and a cep3009-value token side 
     }
   });
 
+  it("pays the acceptable option of a 402 that also carries malformed entries, with or without an asset allowlist", async () => {
+    // x402's own selection reads these fields before CasCet's policy runs: a null entry, or a
+    // non-string asset next to an asset allowlist, used to fail the whole 402 with a TypeError.
+    const malformed: unknown[] = [
+      null,
+      "exact",
+      wcsprOption({ asset: 42 }),
+      wcsprOption({ asset: { hash: WCSPR } }),
+      legacyOption({ payTo: 7 }),
+      wcsprOption({ network: ["casper:casper-test"] }),
+      wcsprOption({ maxTimeoutSeconds: "300" }),
+    ];
+    for (const allowedAssets of [[LEGACY, WCSPR], undefined]) {
+      gateway.accepts = [...malformed, wcsprOption()];
+      const payments: PaymentInfo[] = [];
+      const paying = await make({ allowedAssets, onPayment: info => payments.push(info) });
+      const { signed } = await payOnce(paying, payments);
+      assert.deepEqual(signed.accepted, wcsprOption(), "the gateway's own entry, unchanged");
+      assert.equal(signedFor(signed, "Wrapped CSPR", WCSPR), true);
+      assert.deepEqual(payments, [
+        { amountRaw: "400", payTo: SELLER, network: "casper:casper-test", asset: WCSPR, authorizationStyle: "cep3009-value" },
+      ]);
+
+      gateway.accepts = malformed;
+      await refused(paying, /^payment refused: none of the 7 payment options the gateway offers is acceptable: malformed payment requirements; /);
+    }
+  });
+
+  it("refuses a 402 of another x402 version before x402 reads it, and quotes the version safely", async () => {
+    gateway.accepts = [wcsprOption()];
+    const paying = await make();
+    try {
+      for (const [version, shown] of [
+        [1, "1"],
+        ["2", '"2"'],
+        [undefined, "(none)"],
+        ["2\n[cascet] authorized 1 raw units", '"2\\n[cascet] authorized 1 raw units"'],
+      ] as const) {
+        gateway.x402Version = version;
+        await refused(paying, /uses x402 version .*, but this client pays x402 version 2 only$/);
+        await assert.rejects(paying.fetch(gateway.url(), { method: "POST", body: "{}" }), (err: Error) => {
+          assert.ok(err.message.includes(`uses x402 version ${shown}, but`), err.message);
+          assert.doesNotMatch(err.message, /\n/);
+          return true;
+        });
+      }
+    } finally {
+      gateway.x402Version = 2;
+    }
+    assert.equal((await payOnce(paying)).signed.accepted.asset, WCSPR);
+  });
+
   it("never lets concurrent payments overshoot the session budget together", async () => {
     gateway.accepts = [wcsprOption({ amount: "400" })];
     const paying = await make({ budget: { maxPerCallRaw: "400", maxSessionRaw: "700" } });
@@ -883,6 +944,36 @@ describe("preferStylesPolicy", () => {
     assert.deepEqual(options.map(optionAuthorizationStyle), ["legacy-amount", undefined, "cep3009-value", "cep3009-value"]);
     const plainLegacy = requirement({ asset: LEGACY, extra: { name: "CasCet X402 Token", version: "1" } }) as unknown as PaymentRequirements;
     assert.equal(optionAuthorizationStyle(plainLegacy), "legacy-amount");
+  });
+});
+
+describe("explainPaymentError", () => {
+  const policy = new SpendPolicy({ allowedAssets: [ASSET_A] });
+  /** The escape sequence the client prints for a control character. */
+  const esc = (code: number): string => "\\" + "u" + code.toString(16).padStart(4, "0");
+
+  it("quotes x402's own text with control, separator and bidi characters escaped", () => {
+    const raw =
+      "Failed to create payment payload: No client registered for x402 version: 2" +
+      `${String.fromCharCode(0x0a)}[cascet] fake${String.fromCharCode(0x202e)}txt${String.fromCharCode(0x1b)}[31m` +
+      `${String.fromCharCode(0x2028)}end`;
+    const err = new Error(raw);
+    const explained = explainPaymentError(err, undefined, policy);
+    assert.ok(explained instanceof PaymentRefusedError);
+    assert.equal(
+      explained.message,
+      `payment refused: No client registered for x402 version: 2${esc(0x0a)}[cascet] fake${esc(0x202e)}txt${esc(0x1b)}[31m${esc(0x2028)}end`,
+    );
+    assert.equal(explained.cause, err);
+  });
+
+  it("names the policy's own reasons when x402 refused every option, and keeps errors it does not know", () => {
+    const filtered = new Error("Failed to create payment payload: All payment requirements were filtered out by policies for x402 version: 2");
+    const explained = explainPaymentError(filtered, [requirement({ asset: ASSET_B })], policy);
+    assert.ok(explained instanceof PaymentRefusedError);
+    assert.equal(explained.message, `payment refused: asset ${ASSET_B} is not allowlisted`);
+    const unknown = new Error("socket hang up");
+    assert.equal(explainPaymentError(unknown, undefined, policy), unknown);
   });
 });
 
