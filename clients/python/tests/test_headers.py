@@ -87,6 +87,18 @@ class TestParsePaymentRequired(unittest.TestCase):
                 with self.assertRaises(x402.ProtocolError):
                     x402.parse_payment_required(FakeResponse(402, {"PAYMENT-REQUIRED": bad}))
 
+    def test_rejects_deeply_nested_json(self):
+        nested = {"x402Version": 2, "accepts": [], "resource": {"url": "u", "extra": "[" * 40 + "]" * 40}}
+        self.assertEqual(x402.parse_payment_required(FakeResponse(402, {"PAYMENT-REQUIRED": b64(nested)})), nested)
+        deep = make_payment_required()
+        node = deep["resource"]
+        for _ in range(40):
+            node["next"] = {}
+            node = node["next"]
+        for value in (b64(deep), b64("[" * 100000 + "]" * 100000)):
+            with self.assertRaises(x402.ProtocolError):
+                x402.parse_payment_required(FakeResponse(402, {"PAYMENT-REQUIRED": value}))
+
 
 class TestParsePaymentResponse(unittest.TestCase):
     def test_decodes_settlement(self):

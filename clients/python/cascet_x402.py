@@ -517,6 +517,22 @@ def _b64_json_encode(obj: Any) -> str:
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
 
 
+#: x402 objects are a few levels deep; deeper JSON from a server is refused so
+#: copying or re-encoding it can never hit the recursion limit.
+_MAX_JSON_DEPTH = 32
+
+
+def _json_depth(obj: Any) -> int:
+    deepest, stack = 0, [(obj, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, (dict, list)):
+            deepest = max(deepest, depth)
+            if depth <= _MAX_JSON_DEPTH:
+                stack.extend((child, depth + 1) for child in (node.values() if isinstance(node, dict) else node))
+    return deepest
+
+
 def _b64_json_decode(value: Any, what: str) -> Any:
     if not isinstance(value, str):
         raise ProtocolError(f"{what} header must be a string")
@@ -525,9 +541,12 @@ def _b64_json_decode(value: Any, what: str) -> Any:
         raise ProtocolError(f"{what} header is not base64")
     try:
         raw = base64.b64decode(value + "=" * (-len(value) % 4), validate=True)
-        return json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
-    except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+        decoded = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
+    except (binascii.Error, UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise ProtocolError(f"{what} header is not base64-encoded JSON: {exc}") from exc
+    if _json_depth(decoded) > _MAX_JSON_DEPTH:
+        raise ProtocolError(f"{what} header nests JSON deeper than {_MAX_JSON_DEPTH} levels")
+    return decoded
 
 
 def payment_signature_header(payload: Mapping[str, Any]) -> str:
