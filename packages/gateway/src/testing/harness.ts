@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import casperSdk from "casper-js-sdk";
 import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from "@x402/core/http";
 import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { cascetConfigSchema, type CascetConfig } from "@cascet/core";
@@ -11,7 +12,10 @@ import { createFakeUpstream, type FakeTool, type FakeUpstream } from "./fake-ups
 
 export const PAY_TO = `00${"11".repeat(32)}`;
 export const ASSET = "22".repeat(32);
-export const PAYER = `00${"33".repeat(32)}`;
+/** Placeholder ed25519 public key of the test buyer (the fake facilitator checks no signature). */
+export const PAYER_PUBLIC_KEY = `01${"44".repeat(32)}`;
+/** The test buyer's account address: "00" + the account hash of PAYER_PUBLIC_KEY. */
+export const PAYER = `00${casperSdk.PublicKey.fromHex(PAYER_PUBLIC_KEY).accountHash().toHex()}`;
 /** $0.01 at 50 tokens/USD with 9 decimals. */
 export const PRICE_RAW = "500000000";
 
@@ -126,6 +130,8 @@ export function challengeOf(response: RpcResponse): PaymentRequired {
 }
 
 export interface PaymentOverrides {
+  signature?: string;
+  publicKey?: string;
   from?: string;
   to?: string;
   value?: string;
@@ -136,7 +142,8 @@ export interface PaymentOverrides {
 
 /**
  * A PAYMENT-SIGNATURE header for `accepted`. The fake facilitator does not
- * check signatures, so the signature and public key are placeholders.
+ * check signatures, so the signature is a placeholder; the public key does
+ * hash to PAYER, as the gateway's local checks require.
  */
 export function paymentHeader(accepted: PaymentRequirements, overrides: PaymentOverrides = {}): { header: string; nonce: string } {
   const now = Math.floor(Date.now() / 1_000);
@@ -145,8 +152,8 @@ export function paymentHeader(accepted: PaymentRequirements, overrides: PaymentO
     x402Version: 2,
     accepted,
     payload: {
-      signature: `01${"00".repeat(64)}`,
-      publicKey: `01${"44".repeat(32)}`,
+      signature: overrides.signature ?? `01${"00".repeat(64)}`,
+      publicKey: overrides.publicKey ?? PAYER_PUBLIC_KEY,
       authorization: {
         from: overrides.from ?? PAYER,
         to: overrides.to ?? accepted.payTo,

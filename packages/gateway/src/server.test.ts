@@ -230,6 +230,30 @@ describe("replay protection (M18)", () => {
       assert.equal(h.upstream.calls.length, 0);
     });
   });
+
+  it("refuses authorizations that casper-x402 would verify but that can never settle, before verify", async () => {
+    await withHarness({}, async h => {
+      const cases: Array<[Parameters<typeof payFor>[2], RegExp]> = [
+        // "01" + the payer's account hash: settles as an account-hash key, so the signed digest never matches.
+        [{ from: `01${PAYER.slice(2)}` }, /only accounts sign authorizations/],
+        // A secp256k1-tagged signature next to the payer's ed25519 key.
+        [{ signature: `02${"00".repeat(64)}` }, /algorithm tag does not match/],
+        // A public key of somebody else.
+        [{ publicKey: `01${"55".repeat(32)}` }, /publicKey does not belong/],
+      ];
+      for (const [overrides, expected] of cases) {
+        const { header } = await payFor(h, "paid_tool", overrides);
+        const res = await callPaid(h, "paid_tool", header);
+        assert.equal(res.status, 402);
+        assert.equal(res.body.error?.code, -32002);
+        assert.match(res.body.error?.message ?? "", expected);
+        assert.equal((res.body.error?.data as unknown as PaymentRequired).x402Version, 2, "error.data is the fresh challenge");
+      }
+      assert.equal(h.facilitator.count("verify"), 0);
+      assert.equal(h.facilitator.count("settle"), 0);
+      assert.equal(h.upstream.calls.length, 0);
+    });
+  });
 });
 
 describe("settleBeforeExecute (M18)", () => {
