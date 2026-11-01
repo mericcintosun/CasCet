@@ -115,7 +115,10 @@ export function internalErrorResult(err: unknown, log: (line: string) => void) {
   return errorResult(`analysis failed: internal error (ref ${ref})`);
 }
 
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁩﻿]/g;
+// Written with escapes only: literal invisible or bidi characters in source are a Trojan Source risk.
+// Cc control, Cf format (bidi overrides, zero-width, tag characters), Cs lone surrogates,
+// Co private use, Cn unassigned, Zl/Zp line and paragraph separators.
+const INVISIBLE_OR_CONTROL = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]/gu;
 
 /**
  * Text bought from the data provider (venue names, provenance labels) is
@@ -124,8 +127,10 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁩﻿]/g;
  * invisible content into the analysis.
  */
 export function cleanProviderText(value: string, maxLength: number): string {
-  const flat = value.replace(CONTROL_CHARS, " ").replace(/\s+/g, " ").trim();
-  return flat.length > maxLength ? `${flat.slice(0, maxLength - 1)}…` : flat;
+  const flat = value.replace(INVISIBLE_OR_CONTROL, " ").replace(/\s+/g, " ").trim();
+  // Count and cut by code point, so truncation never leaves half a surrogate pair behind.
+  const chars = Array.from(flat);
+  return chars.length > maxLength ? `${chars.slice(0, maxLength - 1).join("")}…` : flat;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

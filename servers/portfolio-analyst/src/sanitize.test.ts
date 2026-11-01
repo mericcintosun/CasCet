@@ -88,13 +88,24 @@ describe("internalErrorResult", () => {
 
 describe("cleanProviderText", () => {
   it("strips control and bidi characters and collapses whitespace", () => {
-    assert.equal(cleanProviderText("a\u0000b‮c\n\td​", 50), "a b c d");
+    assert.equal(cleanProviderText("a\u0000b\u202ec\n\td\u200b", 50), "a b c d");
+  });
+
+  it("strips invisible tag characters and other format characters (ASCII smuggling)", () => {
+    // U+E0041.. are invisible "tag" letters a model can still read; U+2066 is a bidi isolate.
+    assert.equal(cleanProviderText("safe\u{E0041}\u{E0042}\u{E0043}text\u2066!\u00ad", 50), "safe text !");
   });
 
   it("caps the length", () => {
     const out = cleanProviderText("x".repeat(100), 10);
     assert.equal(out.length, 10);
     assert.ok(out.endsWith("…"));
+  });
+
+  it("never cuts a surrogate pair in half", () => {
+    const out = cleanProviderText("\u{1F600}".repeat(20), 5);
+    assert.equal(Array.from(out).length, 5);
+    assert.doesNotMatch(out, /\p{Cs}/u);
   });
 });
 

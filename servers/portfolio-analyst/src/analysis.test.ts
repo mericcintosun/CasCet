@@ -154,7 +154,7 @@ describe("analyzePortfolio", { timeout: 15_000 }, () => {
     const buyer = new FakeBuyer({
       get_defi_yields: async () => ({
         result: textResult({
-          yields: [{ venue: "Evil‮ venue\u0000\nname" + "x".repeat(500), apyPct: 50, risk: "low\u0007" }],
+          yields: [{ venue: "Evil\u202e venue\u0000\nname" + "x".repeat(500), apyPct: 50, risk: "low\u0007" }],
           source: "s".repeat(300),
         }),
         paymentId: "not-a-uuid\r\nX-Injected: 1",
@@ -165,7 +165,7 @@ describe("analyzePortfolio", { timeout: 15_000 }, () => {
     assert.equal(yieldPurchase?.paymentId, undefined);
     assert.ok((yieldPurchase?.source.length ?? 0) <= 80);
     const rec = body.recommendations[1] ?? "";
-    assert.doesNotMatch(rec, /[\u0000-\u001f‮]/);
+    assert.doesNotMatch(rec, /[\u0000-\u001f\u202e]/);
     assert.match(rec, /via Evil venue name/);
     assert.ok(rec.length < 200);
   });
