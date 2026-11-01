@@ -90,16 +90,13 @@ export async function createDataBuyer(cfg: AnalystConfig, ctx: BuyerContext): Pr
 }
 
 /**
- * The payTo allowlist in the form the @cascet/client of this branch compares
- * with a 402's payTo: it matches the serialized Key ("00"/"01" + hex), so a
- * contract package ("hash-" + hex in the shared form) goes in as "01" + hex.
- *
- * INTEGRATION with the buyer-side fixes: that client takes the shared payTo
- * form itself and rejects "01" + hex as a public key, so return the entries
- * unchanged there (buyer.test checks a contract-package payee end to end).
+ * The payTo allowlist as @cascet/client expects it. The analyst config only
+ * admits account hashes ("00" + 64 hex), which the client takes as they are;
+ * contract-package payees are refused on both sides (casper-x402 1.0.0 cannot
+ * settle to them).
  */
 export function clientAllowedPayTo(entries: readonly string[] | undefined): string[] | undefined {
-  return entries?.map(entry => (entry.startsWith("hash-") ? `01${entry.slice("hash-".length)}` : entry));
+  return entries === undefined ? undefined : [...entries];
 }
 
 function optionalRaw(value: string | undefined): bigint | undefined {

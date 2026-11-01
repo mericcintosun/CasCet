@@ -30,8 +30,8 @@ export interface AnalystConfig {
   /** CAIP-2 networks the analyst may pay on. Never a wildcard. */
   networks: string[];
   /**
-   * payTo allowlist in the shared payTo form: "00" + 64 hex for an account,
-   * "hash-" + 64 hex for a contract package. Undefined only with CASCET_ALLOW_ANY_SELLER=1.
+   * payTo allowlist: account hashes as "00" + 64 hex (contract-package payees are
+   * refused). Undefined only with CASCET_ALLOW_ANY_SELLER=1.
    */
   allowedPayTo?: string[];
   /** Normalized asset allowlist ("hash-" + 64 hex). Undefined only with CASCET_ALLOW_ANY_SELLER=1. */
@@ -156,26 +156,32 @@ export function describeConfig(cfg: AnalystConfig): string {
 const HINT_ACCOUNT_HASH = "run: npx @cascet/cli account-hash <public-key>";
 
 /**
- * Validate a payTo allowlist entry with the shared payTo rule and normalize it
- * to the shared form: "00" + 64 hex for an account ("00"+hex or
- * "account-hash-"+hex), "hash-" + 64 hex for a contract package ("hash-"+hex
- * or "package-hash-"+hex). A public key ("01"+64 hex ed25519, "02"+66 hex
- * secp256k1) is NOT a payTo; it is rejected so the operator pins the account
- * hash instead.
+ * Validate a payTo allowlist entry and normalize it to "00" + 64 hex
+ * ("00"+hex or "account-hash-"+hex). A public key ("01"+64 hex ed25519,
+ * "02"+66 hex secp256k1) is NOT a payTo; it is rejected so the operator pins
+ * the account hash instead. A contract package ("hash-"/"package-hash-"+hex)
+ * is rejected too: the @make-software/casper-x402 1.0.0 facilitators settle
+ * to account hashes only, so a payment to a package would be credited to an
+ * account nobody controls (the same rule @cascet/client and the gateway apply).
  */
 export function normalizePayTo(raw: string): { value: string } | { error: string } {
   const v = raw.trim().toLowerCase();
   const account = /^(?:00|account-hash-)([0-9a-f]{64})$/.exec(v)?.[1];
   if (account) return { value: `00${account}` };
-  const contractPackage = /^(?:hash|package-hash)-([0-9a-f]{64})$/.exec(v)?.[1];
-  if (contractPackage) return { value: `hash-${contractPackage}` };
+  if (/^(?:hash|package-hash)-[0-9a-f]{64}$/.test(v)) {
+    return {
+      error:
+        `"${short(raw)}" is a contract-package payee: casper-x402 1.0.0 facilitators can only settle to ` +
+        `account hashes, so the payment would be credited to an account nobody controls. Allowlist the seller's account hash.`,
+    };
+  }
   if (/^01[0-9a-f]{64}$/.test(v) || /^02[0-9a-f]{66}$/.test(v)) {
     return { error: `"${short(raw)}" is a public key, not a payTo account hash (${HINT_ACCOUNT_HASH})` };
   }
   return {
     error:
-      `"${short(raw)}" is not a payTo: use "00"+64 hex or account-hash-<64 hex> for an account, ` +
-      `hash-<64 hex> for a contract package (for a public key, ${HINT_ACCOUNT_HASH})`,
+      `"${short(raw)}" is not a payTo: use "00"+64 hex or account-hash-<64 hex> for an account ` +
+      `(for a public key, ${HINT_ACCOUNT_HASH})`,
   };
 }
 

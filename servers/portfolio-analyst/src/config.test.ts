@@ -138,17 +138,26 @@ describe("loadAnalystConfig", () => {
   it("normalizes payTo and asset allowlist entries to the shared form and drops duplicates", () => {
     const r = loadAnalystConfig({
       ...BASE,
-      CASCET_ALLOWED_PAYTO: ` account-hash-${ACCOUNT.toUpperCase()}, 00${ACCOUNT} ,package-hash-${TOKEN},hash-${TOKEN}`,
+      CASCET_ALLOWED_PAYTO: ` account-hash-${ACCOUNT.toUpperCase()}, 00${ACCOUNT} `,
       CASCET_ALLOWED_ASSETS: `${TOKEN},0x${TOKEN},contract-package-${TOKEN}`,
     });
     assert.ok(r.ok, JSON.stringify(r));
-    assert.deepEqual(r.config.allowedPayTo, [`00${ACCOUNT}`, `hash-${TOKEN}`]);
+    assert.deepEqual(r.config.allowedPayTo, [`00${ACCOUNT}`]);
     assert.deepEqual(r.config.allowedAssets, [`hash-${TOKEN}`]);
   });
 
-  it("accepts only the payTo forms of the shared rule", () => {
+  it("accepts only account-hash payTo forms", () => {
     for (const bad of [`0x00${ACCOUNT}`, `contract-package-${TOKEN}`, `0x${ACCOUNT}`, ACCOUNT, `account-hash-${ACCOUNT}ff`]) {
       assert.ok(problemsOf({ ...BASE, CASCET_ALLOWED_PAYTO: bad }).some(p => p.startsWith("CASCET_ALLOWED_PAYTO:")), bad);
+    }
+  });
+
+  it("refuses contract-package payees, which casper-x402 1.0.0 cannot settle to", () => {
+    for (const pkg of [`hash-${TOKEN}`, `package-hash-${TOKEN}`]) {
+      assert.ok(
+        problemsOf({ ...BASE, CASCET_ALLOWED_PAYTO: pkg }).some(p => p.includes("contract-package payee")),
+        pkg,
+      );
     }
   });
 

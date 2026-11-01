@@ -149,6 +149,10 @@ describe("payTo (L60)", () => {
   });
 
   it("refuses at startup, before the facilitator is contacted", async () => {
-    await assert.rejects(createPaymentRail(testConfig({ payTo: `01${hex}` })), /cannot settle to a contract package/);
+    // The core config schema already rejects a raw "01" payTo (it has the shape
+    // of an ed25519 public key), so `cascet wrap` never gets this far. The rail
+    // keeps its own guard for configs built in code, which bypass the schema.
+    assert.throws(() => testConfig({ payTo: `01${hex}` }), /is a Casper public key, not an account hash/);
+    await assert.rejects(createPaymentRail({ ...testConfig(), payTo: `01${hex}` }), /cannot settle to a contract package/);
   });
 });

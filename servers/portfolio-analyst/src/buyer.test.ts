@@ -67,9 +67,9 @@ describe("withAbortSignal", () => {
 });
 
 describe("clientAllowedPayTo", () => {
-  it("passes a contract package as its serialized Key and keeps account hashes", () => {
+  it("passes account hashes through unchanged", () => {
     const account = `00${"a".repeat(64)}`;
-    assert.deepEqual(clientAllowedPayTo([account, `hash-${"c".repeat(64)}`]), [account, `01${"c".repeat(64)}`]);
+    assert.deepEqual(clientAllowedPayTo([account]), [account]);
     assert.equal(clientAllowedPayTo(undefined), undefined);
   });
 });
@@ -239,13 +239,10 @@ describe("createDataBuyer with the real paying fetch", { timeout: 15_000 }, () =
     assertRefused(err, gateway, /payTo .* is not allowlisted/);
   });
 
-  it("matches a contract-package payee allowlisted as hash-<hex> against a 402 payTo of 01<hex>", async () => {
-    // The price is over the per-call cap, so reaching that check proves the payTo allowlist matched.
-    const { err, gateway } = await refusal(
-      { payTo: `01${PACKAGE}`, amount: "1000000001" },
-      { CASCET_ALLOWED_PAYTO: `hash-${PACKAGE}` },
-    );
-    assertRefused(err, gateway, /exceeds (the )?per-call budget/);
+  it("refuses a 402 that names a contract-package payee (01<hex>)", async () => {
+    // casper-x402 1.0.0 would credit such a payment to an account nobody controls.
+    const { err, gateway } = await refusal({ payTo: `01${PACKAGE}` });
+    assertRefused(err, gateway, /payTo/);
   });
 
   it("refuses an asset that is not allowlisted (CASCET_ALLOWED_ASSETS)", async () => {
