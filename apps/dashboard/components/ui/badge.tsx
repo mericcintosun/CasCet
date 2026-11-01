@@ -9,8 +9,10 @@ const badgeVariants = cva(
       variant: {
         default: "border-transparent bg-primary/10 text-primary",
         secondary: "border-transparent bg-secondary text-secondary-foreground",
-        success: "border-transparent bg-success/12 text-success",
-        destructive: "border-transparent bg-destructive/12 text-destructive",
+        // /15 (not /12): Tailwind 3 only generates opacity modifiers from its scale.
+        success: "border-transparent bg-success/15 text-success",
+        warning: "border-transparent bg-warning/15 text-warning",
+        destructive: "border-transparent bg-destructive/15 text-destructive",
         outline: "text-foreground",
       },
     },

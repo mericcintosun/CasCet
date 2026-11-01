@@ -180,7 +180,7 @@ function Stat({ label, value, sub }: { label: string; value: string; sub: string
     <div className="rounded-xl border border-border bg-card p-4">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 font-mono text-xl font-semibold tabular-nums text-primary">{value}</div>
-      <div className="mt-1 font-mono text-[11px] text-muted-foreground/70">{sub}</div>
+      <div className="mt-1 font-mono text-[11px] text-muted-foreground">{sub}</div>
     </div>
   );
 }
@@ -250,7 +250,7 @@ function CascadeTree({
         <rect x={root.x} y={root.y - 24} width={96} height={48} rx="10" fill="hsl(var(--card))" stroke={stroke} strokeWidth="1.5" />
         <circle cx={root.x + 14} cy={root.y - 8} r="3" fill={stroke} filter="url(#pgGlow)" />
         <text x={root.x + 24} y={root.y - 4} className="fill-foreground" fontSize="10.5" fontWeight="600" fontFamily="var(--font-geist-mono)">root</text>
-        <text x={root.x + 48} y={root.y + 14} textAnchor="middle" fill={exceeded ? "hsl(var(--destructive))" : "hsl(var(--primary))"} fontSize="11" fontWeight="600" fontFamily="var(--font-geist-mono)">{usd(rootPrice)}</text>
+        <text x={root.x + 48} y={root.y + 14} textAnchor="middle" fill={exceeded ? "hsl(var(--destructive-text))" : "hsl(var(--primary-text))"} fontSize="11" fontWeight="600" fontFamily="var(--font-geist-mono)">{usd(rootPrice)}</text>
       </g>
 
       {/* child nodes */}
@@ -259,12 +259,12 @@ function CascadeTree({
           <rect x={k.x} y={k.y - 16} width={130} height={32} rx="9" fill="hsl(var(--card))" stroke="hsl(var(--border))" strokeWidth="1.5" />
           <circle cx={k.x + 12} cy={k.y} r="2.5" fill={stroke} />
           <text x={k.x + 22} y={k.y + 4} className="fill-muted-foreground" fontSize="10" fontFamily="var(--font-geist-mono)">tool_{i + 1}</text>
-          <text x={k.x + 118} y={k.y + 4} textAnchor="end" fill="hsl(var(--primary))" fontSize="10" fontWeight="600" fontFamily="var(--font-geist-mono)">{usd(childPrice)}</text>
+          <text x={k.x + 118} y={k.y + 4} textAnchor="end" fill="hsl(var(--primary-text))" fontSize="10" fontWeight="600" fontFamily="var(--font-geist-mono)">{usd(childPrice)}</text>
         </g>
       ))}
 
       {attrPct > 0 && (
-        <text x={childX - 30} y={20} textAnchor="middle" fill="hsl(var(--flow))" fontSize="10" fontFamily="var(--font-geist-mono)">
+        <text x={childX - 30} y={20} textAnchor="middle" fill="hsl(var(--flow-text))" fontSize="10" fontFamily="var(--font-geist-mono)">
           ← {attrPct}% attribution up
         </text>
       )}

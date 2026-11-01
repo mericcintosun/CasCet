@@ -312,7 +312,7 @@ function CodeCard() {
           <span className="text-white/40"># 1. agent calls a priced tool</span>
           {"\n"}POST /mcp <span className="text-[#8be9fd]">tools/call</span> get_rwa_price{"\n"}
           {"\n"}
-          <span className="text-warning">← 402 Payment Required</span>{"\n"}
+          <span className="text-amber-300">← 402 Payment Required</span>{"\n"}
           <span className="text-white/40">  price: $0.02 · asset: CEP-18 · network: casper-test</span>
           {"\n\n"}
           <span className="text-white/40"># 2. wallet signs transfer_with_authorization, retries</span>
@@ -323,7 +323,7 @@ function CodeCard() {
           {"\n"}
           {"  "}{"{"} &quot;asset&quot;: &quot;gold&quot;, &quot;priceUsd&quot;: <span className="text-[#C6F94E]">4095.83</span> {"}"}
           {"\n\n"}
-          <span className="text-success">✓ settled on Casper</span> <span className="text-white/40">· receipt anchored on-chain</span>
+          <span className="text-emerald-400">✓ settled on Casper</span> <span className="text-white/40">· receipt anchored on-chain</span>
         </code>
       </pre>
     </div>
@@ -374,7 +374,7 @@ function AgentSection() {
               <p className="mt-3 border-t border-white/10 pt-3 text-white/70">
                 → keep ~55% stCSPR liquid staking (9.9% APY, liquid), rotate ~30% into tokenized treasuries, ~15% gold hedge.
               </p>
-              <p className="text-success">✓ 4 tools bought under budget · grounded in real data</p>
+              <p className="text-emerald-400">✓ 4 tools bought under budget · grounded in real data</p>
             </div>
           </div>
         </Reveal>
@@ -400,7 +400,7 @@ function Contracts() {
                 <ArrowUpRight className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-primary" />
               </div>
               <p className="mt-2 flex-1 text-xs leading-relaxed text-muted-foreground">{c.note}</p>
-              <span className="mt-3 truncate font-mono text-[10px] text-muted-foreground/60">{c.hash.slice(0, 20)}…</span>
+              <span className="mt-3 truncate font-mono text-[10px] text-muted-foreground">{c.hash.slice(0, 20)}…</span>
             </Link>
           </Reveal>
         ))}
@@ -655,8 +655,8 @@ function Footer() {
           </div>
         </div>
         <div className="mt-10 flex flex-col items-center justify-between gap-3 border-t border-border pt-6 sm:flex-row">
-          <p className="font-mono text-xs text-muted-foreground/70">Casper Agentic Buildathon 2026 · Apache-2.0</p>
-          <p className="font-mono text-xs text-muted-foreground/70">Built on Casper</p>
+          <p className="font-mono text-xs text-muted-foreground">Casper Agentic Buildathon 2026 · Apache-2.0</p>
+          <p className="font-mono text-xs text-muted-foreground">Built on Casper</p>
         </div>
       </div>
     </footer>
@@ -666,7 +666,7 @@ function Footer() {
 function FooterCol({ title, links }: { title: string; links: [string, string][] }) {
   return (
     <div>
-      <div className="mb-2.5 font-mono text-xs uppercase tracking-wide text-muted-foreground/60">{title}</div>
+      <div className="mb-2.5 font-mono text-xs uppercase tracking-wide text-muted-foreground">{title}</div>
       <ul className="space-y-2">
         {links.map(([label, href]) => (
           <li key={label}>
