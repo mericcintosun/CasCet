@@ -165,7 +165,12 @@ impl CascadeController {
         if attribution_bps > BPS_DENOMINATOR {
             self.env().revert(Error::InvalidAttribution);
         }
-        if cascade.spent + gross > cascade.budget {
+        // `spent <= budget` always holds (this check is the only way `spent`
+        // grows), so the subtraction cannot underflow. Comparing against the
+        // remainder instead of computing `spent + gross` means even a gross
+        // near U256::MAX reverts with BudgetExceeded instead of an opaque
+        // overflow trap.
+        if gross > cascade.budget - cascade.spent {
             self.env().revert(Error::BudgetExceeded);
         }
 
