@@ -19,6 +19,7 @@ import {
   type FacilitatorCore,
   type FacilitatorLogger,
   type ParsedPayment,
+  type SettlementStatus,
 } from "./facilitator-core.js";
 import {
   DEFAULT_DAILY_GAS_CAP_MOTES,
@@ -158,8 +159,20 @@ type RouteKind = "verify" | "settle" | "other";
 const routeKind = (req: Request): RouteKind =>
   req.path === "/verify" ? "verify" : req.path === "/settle" ? "settle" : "other";
 
-/** Send a rejection in the shape the caller's x402 client parses for this route. */
-function sendRejection(req: Request, res: Response, network: Network, status: number, reason: string, message: string): void {
+/**
+ * Send a rejection in the shape the caller's x402 client parses for this route.
+ * `settlementStatus` (settle only) defaults to not_submitted: everything that is
+ * rejected before the core runs has submitted nothing.
+ */
+function sendRejection(
+  req: Request,
+  res: Response,
+  network: Network,
+  status: number,
+  reason: string,
+  message: string,
+  settlementStatus: SettlementStatus = "not_submitted",
+): void {
   const kind = routeKind(req);
   if (kind === "verify") {
     res.status(status).json({ isValid: false, invalidReason: reason, invalidMessage: message });
@@ -170,7 +183,7 @@ function sendRejection(req: Request, res: Response, network: Network, status: nu
       errorMessage: message,
       transaction: "",
       network,
-      extra: { settlementStatus: "not_submitted" },
+      extra: { settlementStatus },
     });
   } else {
     res.status(status).json({ error: reason, message });
@@ -270,14 +283,30 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
   });
 
   // JSON errors only: never Express's HTML page or a stack trace.
-  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
+    // An answer is already on its way: let Express close the connection.
+    if (res.headersSent) return next(err);
     const e = err as { status?: unknown; statusCode?: unknown; type?: unknown };
     const status = typeof e.status === "number" ? e.status : typeof e.statusCode === "number" ? e.statusCode : 500;
     if (status >= 400 && status < 500) {
+      // Body parsing and other request errors: nothing reached the core.
       sendRejection(req, res, network, status, Reason.invalidRequest, typeof e.type === "string" ? e.type : "bad request");
       return;
     }
     logger.error(`internal error on ${routeKind(req)}: ${logText(err)}`);
+    if (routeKind(req) === "settle") {
+      // The core may already have submitted a transaction: never claim "not submitted".
+      sendRejection(
+        req,
+        res,
+        network,
+        500,
+        Reason.unknown,
+        "internal facilitator error; the settlement outcome is unknown: reconcile by the authorization nonce",
+        "unknown",
+      );
+      return;
+    }
     sendRejection(req, res, network, 500, Reason.internal, "internal facilitator error");
   });
 

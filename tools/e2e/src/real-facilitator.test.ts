@@ -42,13 +42,17 @@ function requestBody(from = `00${"65".repeat(32)}`, nonce = "9c".repeat(32)) {
 
 class FakeCore implements FacilitatorCore {
   verifyStatus = 200;
+  /** Simulate a bug in the core (an exception after it may have submitted). */
+  throws = false;
   calls: string[] = [];
   async verify(p: ParsedPayment): Promise<CoreResult<VerifyResponse>> {
     this.calls.push(`verify ${p.authorization.from.slice(0, 6)}`);
+    if (this.throws) throw new Error("boom\nwith a second line");
     return { status: this.verifyStatus, body: { isValid: this.verifyStatus === 200, payer: p.authorization.from } };
   }
   async settle(p: ParsedPayment): Promise<CoreResult<SettleResponse>> {
     this.calls.push(`settle ${p.authorization.from.slice(0, 6)}`);
+    if (this.throws) throw new Error("boom after submission");
     return { status: 200, body: { success: true, transaction: "aa".repeat(32), network: NETWORK, payer: p.authorization.from } };
   }
   supported() {
@@ -124,12 +128,33 @@ describe("HTTP surface: authentication (CodeQL js/user-controlled-bypass)", () =
       assert.equal(bad.status, 400);
       assert.match(bad.type, /application\/json/);
       assert.equal(bad.body["invalidReason"], "invalid_request");
+      const badSettle = await s.post("/settle", null, TOKEN, "{not json");
+      assert.deepEqual([badSettle.status, badSettle.body["errorReason"]], [400, "invalid_request"]);
+      assert.deepEqual(badSettle.body["extra"], { settlementStatus: "not_submitted" }, "nothing reached the core");
       const missing = await s.post("/settle", { paymentPayload: {} }, TOKEN);
       assert.equal(missing.status, 400);
       assert.equal(missing.body["errorReason"], "invalid_request");
       const unknown = await fetch(`${s.base}/nope`);
       assert.equal(unknown.status, 404);
       assert.deepEqual(await unknown.json(), { error: "not_found", message: "no such route" });
+    } finally {
+      await s.close();
+    }
+  });
+
+  test("an internal error on /settle is an UNKNOWN outcome, never 'not submitted'", async () => {
+    const core = new FakeCore();
+    core.throws = true;
+    const s = await serve(core);
+    try {
+      const st = await s.post("/settle", requestBody());
+      assert.equal(st.status, 500);
+      assert.match(st.type, /application\/json/);
+      assert.deepEqual([st.body["success"], st.body["errorReason"], st.body["transaction"]], [false, "settlement_unknown", ""]);
+      assert.deepEqual(st.body["extra"], { settlementStatus: "unknown" });
+      assert.doesNotMatch(String(st.body["errorMessage"]), /boom/, "no raw error text");
+      const v = await s.post("/verify", requestBody());
+      assert.deepEqual([v.status, v.body["isValid"], v.body["invalidReason"]], [500, false, "internal_error"]);
     } finally {
       await s.close();
     }

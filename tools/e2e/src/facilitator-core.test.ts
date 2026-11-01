@@ -279,6 +279,7 @@ describe("/settle", () => {
     const again = await h.core.settle(parsed());
     assert.deepEqual([again.status, again.body.errorReason], [409, Reason.duplicateNonce]);
     assert.equal(again.body.transaction, r.body.transaction, "a retry learns the earlier transaction hash");
+    assert.deepEqual(again.body.extra, { settlementStatus: "duplicate" }, "not 'not_submitted': the earlier tx charged the payer");
     assert.equal(h.chain.submits, 1);
   });
 
@@ -298,7 +299,17 @@ describe("/settle", () => {
     const first = await a;
     assert.equal(first.body.success, true);
     assert.deepEqual([second.status, second.body.errorReason], [409, Reason.duplicateNonce]);
+    assert.deepEqual(second.body.extra, { settlementStatus: "duplicate" });
     assert.equal(h.chain.submits, 1);
+  });
+
+  test("a nonce already used on-chain is a duplicate (409), not a determinate non-payment", async () => {
+    const h = harness();
+    h.state.used.add("9c".repeat(32));
+    const r = await h.core.settle(parsed());
+    assert.deepEqual([r.status, r.body.errorReason, r.body.transaction], [409, Reason.nonceAlreadyUsed, ""]);
+    assert.deepEqual(r.body.extra, { settlementStatus: "duplicate" });
+    assert.deepEqual([h.chain.builds, h.chain.submits, h.ledger.size], [0, 0, 0]);
   });
 
   test("a settle that fails before submission releases gas and the nonce", async () => {

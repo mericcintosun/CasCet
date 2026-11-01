@@ -63,15 +63,26 @@ export const Reason = {
 
 /**
  * `extra.settlementStatus` on every /settle response:
- *  - not_submitted: nothing was sent; the payer was not charged (determinate)
+ *  - not_submitted: this request submitted nothing, and this facilitator holds
+ *                   no transaction for the authorization (determinate: this
+ *                   request did not and will not charge the payer)
+ *  - duplicate:     this request submitted nothing because the authorization is
+ *                   already known: being settled or settled by an earlier
+ *                   request here (409 duplicate_nonce, `transaction` = that
+ *                   earlier submission when there is one), or its nonce is
+ *                   already used on-chain (409 nonce_already_used). The earlier
+ *                   transaction may have charged the payer: reconcile by its
+ *                   hash or by the nonce instead of treating this as a failure
  *  - success:       the transfer executed (determinate)
  *  - failed:        the transaction executed and reverted; nothing moved (determinate)
  *  - pending:       accepted by the node, execution not observed before the deadline
- *  - unknown:       submission itself was ambiguous and the node never showed the tx
- * For pending/unknown the response carries the transaction hash; reconcile it
- * over RPC (`info_get_transaction`) before treating the payment as failed.
+ *  - unknown:       the outcome is indeterminate (ambiguous submission the node
+ *                   never showed, or an internal error on the /settle route)
+ * For pending/unknown the response carries the transaction hash when one
+ * exists; reconcile it over RPC (`info_get_transaction`, or the token's
+ * `used_nonces`) before treating the payment as failed.
  */
-export type SettlementStatus = "not_submitted" | "success" | "failed" | "pending" | "unknown";
+export type SettlementStatus = "not_submitted" | "duplicate" | "success" | "failed" | "pending" | "unknown";
 
 export interface CoreResult<T> {
   status: number;
@@ -170,6 +181,8 @@ interface Rejection {
   message: string;
   /** For duplicates: the transaction this facilitator already submitted for the nonce. */
   existingTransaction?: string;
+  /** `extra.settlementStatus` when /settle answers with this rejection (default not_submitted). */
+  settlementStatus?: SettlementStatus;
 }
 
 const MAX_FIELD = 200;
@@ -367,7 +380,7 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
         transaction: r.existingTransaction ?? "",
         network,
         ...(payer ? { payer } : {}),
-        extra: { settlementStatus: "not_submitted" satisfies SettlementStatus },
+        extra: { settlementStatus: r.settlementStatus ?? ("not_submitted" satisfies SettlementStatus) },
       },
     };
   };
@@ -403,7 +416,18 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
       deps.log.error(`preflight unavailable: ${logText(detail)}`);
       return { ok: false, rejection: { status: 503, reason: Reason.preflightUnavailable, message: "could not read the token state; retry later" } };
     }
-    if (used) return { ok: false, rejection: { status: 409, reason: Reason.nonceAlreadyUsed, message: "this authorization nonce was already used on-chain" } };
+    if (used) {
+      return {
+        ok: false,
+        rejection: {
+          status: 409,
+          reason: Reason.nonceAlreadyUsed,
+          message: "this authorization nonce was already used on-chain",
+          // Used by an earlier transfer (which charged the payer) or a cancellation.
+          settlementStatus: "duplicate",
+        },
+      };
+    }
     if (name !== undefined && extra["name"] !== name) {
       return { ok: false, rejection: { status: 200, reason: Reason.tokenDomainMismatch, message: `EIP-712 domain name must equal the token name "${name}"` } };
     }
@@ -430,6 +454,7 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
     reason: Reason.duplicateNonce,
     message: `this authorization is already ${state} at this facilitator${txHash ? ` (transaction ${txHash})` : ""}`,
     ...(txHash ? { existingTransaction: txHash } : {}),
+    settlementStatus: "duplicate",
   });
   const busy: Rejection = { status: 503, reason: Reason.busy, message: "too many authorizations in flight; retry later" };
 
