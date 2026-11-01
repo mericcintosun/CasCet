@@ -103,13 +103,17 @@ const analystGateway = await startGateway(analystConfig);
 
 console.log("\n──────── agent starts buying (real on-chain settlement) ────────\n");
 
+// The cascade root call waits for every downstream settlement plus its own (8 s blocks),
+// which can take longer than the client's 30 s default deadline.
+const CASCADE_TIMEOUT_MS = 180_000;
 const paying = await createPayingFetch({
   privateKeyPath: resolve(KEYS, "agent.pem"),
   allowedPayTo: [SELLER_ANALYST_ACCOUNT_HASH],
   allowedAssets: [X402_TOKEN],
+  timeoutMs: CASCADE_TIMEOUT_MS,
   onPayment: info => console.log(`[agent] 💸 paying ${info.amountRaw} raw units`),
 });
-const analyst = new PaidMcpHttpClient("http://localhost:4403/mcp", paying.fetch);
+const analyst = new PaidMcpHttpClient("http://localhost:4403/mcp", paying.fetch, { timeoutMs: CASCADE_TIMEOUT_MS });
 await analyst.initialize();
 
 const tools = await analyst.listTools();
