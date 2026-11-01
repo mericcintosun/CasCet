@@ -322,7 +322,8 @@ to start without the allowlists and both budgets.
 | `CASCET_ALLOWED_ASSETS` | yes¹ | comma-separated token package hashes |
 | `CASCET_MAX_PER_CALL` | yes² | most raw token units one call may cost |
 | `CASCET_MAX_SESSION` | yes² | most raw token units the whole session may spend (tracked per token) |
-| `CASCET_TIMEOUT_MS` | no | deadline per paid call in milliseconds, settlement included (default `30000`) |
+| `CASCET_PREFER_STYLES` | no | comma-separated authorization styles in order of preference (`cep3009-value`, `legacy-amount`) when a gateway offers several tokens; it only orders the options the allowlists and budgets accept |
+| `CASCET_TIMEOUT_MS` | no | deadline per paid call in milliseconds, settlement included (default `180000`) |
 | `CASCET_TOOL_PINS` | no | file where the bridge records each gateway's tools (default `~/.cascet/tool-pins.json`); `--accept-tool-changes` accepts a changed tool list after you have reviewed it |
 
 ¹ Unless `CASCET_ALLOW_ANY_SELLER=1` or `--allow-any-seller`, which lets any
