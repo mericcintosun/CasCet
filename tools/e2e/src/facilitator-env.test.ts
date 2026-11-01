@@ -98,7 +98,7 @@ describe("facilitator environment", () => {
         CASCET_SETTLE_WAIT_MS: "20000",
         CASCET_PREFLIGHT: "off",
         PORT: "8080",
-        HOST: "0.0.0.0",
+        CASCET_FACILITATOR_HOST: "0.0.0.0",
       },
       ROOT,
     );
@@ -112,6 +112,8 @@ describe("facilitator environment", () => {
     assert.equal(cfg.port, 8080);
     assert.equal(cfg.host, "0.0.0.0");
     assert.ok(cfg.warnings.some(w => w.includes("CASCET_PREFLIGHT=off")));
+    // A generic HOST (set by some shells and containers) never changes the bind address.
+    assert.equal(readFacilitatorEnv({ HOST: "0.0.0.0" }, ROOT).host, "127.0.0.1");
   });
 
   test("gas limit guard rails: never below measured consumption, warn above lane 5", () => {
@@ -132,6 +134,17 @@ describe("facilitator environment", () => {
     assert.throws(() => readFacilitatorEnv({ CASCET_SELLER_ACCOUNT_HASH: `01${"aa".repeat(32)}` }, ROOT), /CASCET_SELLER_ACCOUNT_HASH/);
     assert.throws(() => readFacilitatorEnv({ CASCET_PREFLIGHT: "maybe" }, ROOT), /CASCET_PREFLIGHT/);
     assert.throws(() => readFacilitatorEnv({ CASCET_FACILITATOR_KEY_ALGO: "rsa" }, ROOT), /ed25519 or secp256k1/);
+    assert.throws(() => readFacilitatorEnv({ CASCET_RPC_URL: "node.testnet.casper.network/rpc" }, ROOT), /CASCET_RPC_URL/);
+    assert.throws(() => readFacilitatorEnv({ CASCET_RPC_URL: "ftp://node.example/rpc" }, ROOT), /CASCET_RPC_URL/);
+  });
+
+  test("CASCET_RPC_URL: one node of your choice; plain http only to a local node without a warning", () => {
+    const local = readFacilitatorEnv({ CASCET_RPC_URL: "http://127.0.0.1:7777/rpc" }, ROOT);
+    assert.equal(local.rpcUrl, "http://127.0.0.1:7777/rpc");
+    assert.ok(!local.warnings.some(w => w.includes("CASCET_RPC_URL")));
+    const remote = readFacilitatorEnv({ CASCET_RPC_URL: "http://203.0.113.7:7777/rpc" }, ROOT);
+    assert.ok(remote.warnings.some(w => w.includes("plain http")));
+    assert.equal(readFacilitatorEnv({}, ROOT).rpcUrl, NETWORKS["casper:casper-test"].rpcUrl);
   });
 
   test("testnet keeps the demo defaults but says so", () => {

@@ -19,8 +19,10 @@ import { normalizeAccountHash } from "./facilitator-roles.js";
  *                                 keep it below the gateway's timeouts.settleMs, 90 s by default)
  *   CASCET_PREFLIGHT              on (default) | off — on-chain nonce/balance/name checks
  *   CASCET_TOKEN_VERSION          pinned EIP-712 domain version (default "1")
- *   CASCET_RPC_URL                Casper node JSON-RPC URL (default: the public node of the network)
- *   HOST / PORT                   bind address (default 127.0.0.1) and port (default 4501)
+ *   CASCET_RPC_URL                Casper node JSON-RPC URL (default: the public node of the network);
+ *                                 use ONE node, not a load balancer, so balance reads follow settlements
+ *   CASCET_FACILITATOR_HOST       bind address (default 127.0.0.1; any other address requires the token)
+ *   PORT                          port (default 4501)
  */
 
 export type CasperNetwork = "casper:casper" | "casper:casper-test";
@@ -95,6 +97,26 @@ function integer(env: Env, name: string, fallback: number, min: number, max: num
   const n = Number(cleaned);
   if (!Number.isSafeInteger(n) || n < min || n > max) throw new FacilitatorConfigError(`${name} must be between ${min} and ${max}`);
   return n;
+}
+
+/** CASCET_RPC_URL must be an http(s) URL; plain http to a remote node only warns. */
+function rpcUrl(env: Env, fallback: string, warnings: string[]): string {
+  const raw = value(env, "CASCET_RPC_URL");
+  if (raw === undefined) return fallback;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new FacilitatorConfigError(`CASCET_RPC_URL must be an http(s) URL, got "${raw.slice(0, 80)}"`);
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new FacilitatorConfigError(`CASCET_RPC_URL must be an http(s) URL, got "${raw.slice(0, 80)}"`);
+  }
+  const loopback = url.hostname === "localhost" || url.hostname === "[::1]" || /^127\.\d+\.\d+\.\d+$/.test(url.hostname);
+  if (url.protocol === "http:" && !loopback) {
+    warnings.push("CASCET_RPC_URL uses plain http to a remote node: balance, nonce and settlement answers can be altered in transit");
+  }
+  return raw;
 }
 
 /** Network from CASCET_NETWORK (CAIP-2) or the legacy CASCET_NET=mainnet|testnet. Default testnet. */
@@ -222,8 +244,8 @@ export function readFacilitatorEnv(env: Env, repoRoot: string, forceNetwork?: Ca
 
   return {
     network,
-    rpcUrl: value(env, "CASCET_RPC_URL") ?? net.rpcUrl,
-    host: value(env, "HOST") ?? "127.0.0.1",
+    rpcUrl: rpcUrl(env, net.rpcUrl, warnings),
+    host: value(env, "CASCET_FACILITATOR_HOST") ?? "127.0.0.1",
     port: integer(env, "PORT", 4501, 1, 65_535),
     keyPath,
     keyAlgo: algo,
