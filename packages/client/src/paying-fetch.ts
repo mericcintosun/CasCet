@@ -10,6 +10,9 @@ import {
   HEADER_PAYMENT_REQUIRED,
   HEADER_PAYMENT_SIGNATURE,
   isAuthorizationStyle,
+  KNOWN_CEP3009_ASSETS,
+  LEGACY_AMOUNT_TOKENS,
+  normalizePackageHash,
   type AuthorizationStyle,
 } from "@cascet/core";
 import { createCasperClientScheme, loadClientSigner, SIGNING_REFUSED_PREFIX } from "./casper-scheme.js";
@@ -83,16 +86,42 @@ export function spendPolicyFilter(policy: Pick<SpendPolicy, "check">): PaymentPo
 }
 
 /**
- * The authorization style of a payment option: the one it advertises in
- * `extra.authorizationStyle`, else the one its token is known to use (see
- * `defaultAuthorizationStyle` in @cascet/core). Undefined for a style this
- * client does not know. Used to order options, never to accept one.
+ * The authorization style this client knows a token by on a network:
+ * `legacy-amount` for CasCet's own x402 tokens (LEGACY_AMOUNT_TOKENS in
+ * @cascet/core) and `cep3009-value` for the known CEP-3009 tokens such as
+ * Wrapped CSPR (KNOWN_CEP3009_ASSETS). Undefined for any other token.
+ */
+function knownTokenStyle(network: unknown, asset: unknown): AuthorizationStyle | undefined {
+  if (typeof network !== "string" || typeof asset !== "string") return undefined;
+  const hash = normalizePackageHash(asset);
+  if (Object.hasOwn(LEGACY_AMOUNT_TOKENS, hash) && LEGACY_AMOUNT_TOKENS[hash] === network) return "legacy-amount";
+  const cep3009 = Object.hasOwn(KNOWN_CEP3009_ASSETS, network) ? KNOWN_CEP3009_ASSETS[network] : undefined;
+  return cep3009?.includes(hash) ? "cep3009-value" : undefined;
+}
+
+/**
+ * The authorization style this client ranks a payment option by. It orders
+ * options and never makes one acceptable:
+ *
+ * - the style this client knows the token by on that network (see
+ *   LEGACY_AMOUNT_TOKENS and KNOWN_CEP3009_ASSETS in @cascet/core), whatever
+ *   the option advertises, so that a gateway cannot steer a style preference
+ *   by mislabeling a token this client knows;
+ * - else the style the option advertises in `extra.authorizationStyle`;
+ * - else the style a token is assumed to have (`defaultAuthorizationStyle` in
+ *   @cascet/core: `cep3009-value`, the standard).
+ *
+ * Undefined when the option advertises a style this client does not know (the
+ * spending policy refuses such an option).
  */
 export function optionAuthorizationStyle(requirements: PaymentRequirements): AuthorizationStyle | undefined {
   const extra: unknown = requirements.extra;
   const advertised =
     typeof extra === "object" && extra !== null ? (extra as Record<string, unknown>)[AUTHORIZATION_STYLE_EXTRA_KEY] : undefined;
-  if (advertised !== undefined) return isAuthorizationStyle(advertised) ? advertised : undefined;
+  if (advertised !== undefined && !isAuthorizationStyle(advertised)) return undefined;
+  const known = knownTokenStyle(requirements.network, requirements.asset);
+  if (known !== undefined) return known;
+  if (isAuthorizationStyle(advertised)) return advertised;
   return typeof requirements.asset === "string" ? defaultAuthorizationStyle(requirements.asset) : undefined;
 }
 
@@ -155,7 +184,12 @@ export interface PaymentInfo {
   network: string;
   /** CEP-18 contract package hash (bare hex). */
   asset: string;
-  /** The token's authorization style, when the gateway advertised it (`extra.authorizationStyle`). */
+  /**
+   * The token's authorization style: the one this client knows the token by
+   * (CasCet's x402 tokens, the known CEP-3009 tokens; see
+   * {@link optionAuthorizationStyle}), else the one the gateway advertised in
+   * `extra.authorizationStyle`. Absent when neither is known.
+   */
   authorizationStyle?: AuthorizationStyle;
 }
 
@@ -199,8 +233,9 @@ export interface PayingFetchOptions {
    * pay in a CEP-3009 token (such as Wrapped CSPR) when a gateway also offers
    * CasCet's legacy-amount token. It only orders the options the spending
    * policy accepts and never makes another option payable. Without it the
-   * gateway's order decides. An option that advertises no style ranks by its
-   * token's known style.
+   * gateway's order decides. A token this client knows (CasCet's x402 tokens,
+   * Wrapped CSPR) ranks by the style it is known to have, whatever the gateway
+   * advertises (see optionAuthorizationStyle).
    */
   preferStyles?: AuthorizationStyle[];
   /**
@@ -330,13 +365,15 @@ export function createPaymentClient(opts: PaymentClientOptions): x402Client {
     .onAfterPaymentCreation(async ctx => {
       const reserved = reservations.take(ctx.selectedRequirements);
       if (!reserved || !onPayment) return;
+      // What this client knows about the token comes before the gateway's label.
+      const authorizationStyle = knownTokenStyle(reserved.network, reserved.asset) ?? reserved.authorizationStyle;
       try {
         onPayment({
           amountRaw: reserved.amount.toString(),
           payTo: reserved.payTo,
           network: reserved.network,
           asset: reserved.asset,
-          ...(reserved.authorizationStyle ? { authorizationStyle: reserved.authorizationStyle } : {}),
+          ...(authorizationStyle ? { authorizationStyle } : {}),
         });
       } catch (err) {
         log(`[cascet] onPayment callback threw: ${err instanceof Error ? err.message : String(err)}`);

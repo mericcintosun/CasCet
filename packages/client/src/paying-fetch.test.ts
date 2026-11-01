@@ -589,14 +589,42 @@ describe("createPayingFetch with a legacy-amount and a cep3009-value token side 
     await refused(await make({ allowedAssets: [LEGACY], preferStyles: ["cep3009-value"] }), /asset .* is not allowlisted/);
   });
 
-  it("ranks an option that advertises no style by its token's known style, and reports no style for it", async () => {
+  it("ranks and reports a token it knows by its known style, and reports no style for an unknown token that advertises none", async () => {
     const plain = (asset: string) => requirement({ asset, extra: { name: "Some Token", version: "1" } });
     gateway.accepts = [plain(ASSET_B), plain(LEGACY)];
     const payments: PaymentInfo[] = [];
     const paying = await make({ allowedAssets: [ASSET_B, LEGACY], preferStyles: ["legacy-amount"], onPayment: info => payments.push(info) });
     const { signed } = await payOnce(paying, payments);
     assert.equal(signed.accepted.asset, LEGACY, "a known legacy-amount token");
-    assert.deepEqual(payments, [{ amountRaw: "100", payTo: SELLER, network: "casper:casper-test", asset: LEGACY }]);
+    assert.deepEqual(payments, [
+      { amountRaw: "100", payTo: SELLER, network: "casper:casper-test", asset: LEGACY, authorizationStyle: "legacy-amount" },
+    ]);
+
+    gateway.accepts = [plain(ASSET_B)];
+    await payOnce(paying, payments);
+    assert.deepEqual(payments[1], { amountRaw: "100", payTo: SELLER, network: "casper:casper-test", asset: ASSET_B });
+  });
+
+  it("does not let a gateway steer preferStyles by mislabeling a token this client knows", async () => {
+    // CasCet's legacy-amount token, labelled cep3009-value, next to Wrapped CSPR.
+    const mislabeled = legacyOption({
+      extra: { name: "CasCet X402 Token", symbol: "CXT", version: "1", decimals: "9", authorizationStyle: "cep3009-value" },
+    });
+    gateway.accepts = [mislabeled, wcsprOption()];
+    const payments: PaymentInfo[] = [];
+    const paying = await make({ preferStyles: ["cep3009-value"], onPayment: info => payments.push(info) });
+    assert.equal((await payOnce(paying, payments)).signed.accepted.asset, WCSPR, "the token that really is cep3009-value");
+
+    // Offered alone it is still paid (the label changes nothing that is signed), echoed as the gateway
+    // sent it, and reported with the style this client knows.
+    gateway.accepts = [mislabeled];
+    const { signed } = await payOnce(paying, payments);
+    assert.deepEqual(signed.accepted, mislabeled);
+    assert.equal(signedFor(signed, "CasCet X402 Token", LEGACY), true);
+    assert.deepEqual(payments, [
+      { amountRaw: "400", payTo: SELLER, network: "casper:casper-test", asset: WCSPR, authorizationStyle: "cep3009-value" },
+      { amountRaw: "500", payTo: SELLER, network: "casper:casper-test", asset: LEGACY, authorizationStyle: "legacy-amount" },
+    ]);
   });
 
   it("skips an option with an unknown authorization style and aborts when every option has one", async () => {
@@ -934,16 +962,32 @@ describe("preferStylesPolicy", () => {
 
   it("orders by preference, keeps the gateway's order within a rank and never drops an option", () => {
     const assets = (order: Parameters<typeof preferStylesPolicy>[0]) => preferStylesPolicy(order)(2, options).map(o => o.asset);
-    assert.deepEqual(assets(["cep3009-value"]), [WCSPR, LEGACY, ASSET_A, ASSET_B]);
-    assert.deepEqual(assets(["legacy-amount"]), [ASSET_A, ASSET_B, WCSPR, LEGACY]);
-    assert.deepEqual(assets(["legacy-amount", "cep3009-value"]), [ASSET_A, WCSPR, LEGACY, ASSET_B]);
+    // LEGACY advertises cep3009-value, but this client knows it as legacy-amount.
+    assert.deepEqual(assets(["cep3009-value"]), [WCSPR, ASSET_A, ASSET_B, LEGACY]);
+    assert.deepEqual(assets(["legacy-amount"]), [ASSET_A, LEGACY, ASSET_B, WCSPR]);
+    assert.deepEqual(assets(["legacy-amount", "cep3009-value"]), [ASSET_A, LEGACY, WCSPR, ASSET_B]);
     assert.deepEqual(options.map(o => o.asset), [ASSET_A, ASSET_B, WCSPR, LEGACY], "the input is not reordered");
   });
 
-  it("reads the advertised style first, then the token's known style", () => {
-    assert.deepEqual(options.map(optionAuthorizationStyle), ["legacy-amount", undefined, "cep3009-value", "cep3009-value"]);
-    const plainLegacy = requirement({ asset: LEGACY, extra: { name: "CasCet X402 Token", version: "1" } }) as unknown as PaymentRequirements;
-    assert.equal(optionAuthorizationStyle(plainLegacy), "legacy-amount");
+  it("reads the style it knows for a token first, then the advertised one, then the default", () => {
+    assert.deepEqual(options.map(optionAuthorizationStyle), ["legacy-amount", undefined, "cep3009-value", "legacy-amount"]);
+    const style = (overrides: Record<string, unknown>) => optionAuthorizationStyle(requirement(overrides) as unknown as PaymentRequirements);
+    const extra = (authorizationStyle?: unknown) => ({ extra: { name: "Token", version: "1", authorizationStyle } });
+    const LEGACY_MAINNET = "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41";
+    // Known tokens, on their own network, whatever they advertise (any prefix or case).
+    assert.equal(style({ asset: `hash-${LEGACY.toUpperCase()}`, ...extra() }), "legacy-amount");
+    assert.equal(style({ asset: LEGACY_MAINNET, network: "casper:casper", ...extra("cep3009-value") }), "legacy-amount");
+    assert.equal(style({ asset: WCSPR, ...extra("legacy-amount") }), "cep3009-value");
+    // A known hash on another network is not that token: its label, else the default, decides.
+    assert.equal(style({ asset: LEGACY, network: "casper:casper", ...extra("cep3009-value") }), "cep3009-value");
+    assert.equal(style({ asset: WCSPR, network: "casper:casper", ...extra("legacy-amount") }), "legacy-amount");
+    // Unknown tokens: the advertised style, else cep3009-value (the standard).
+    assert.equal(style({ asset: ASSET_B, ...extra("legacy-amount") }), "legacy-amount");
+    assert.equal(style({ asset: ASSET_B, ...extra() }), "cep3009-value");
+    // An advertised style this client does not know: no rank, whatever the token.
+    assert.equal(style({ asset: LEGACY, ...extra("permit2") }), undefined);
+    assert.equal(style({ asset: ASSET_B, network: "constructor", ...extra("permit2") }), undefined);
+    assert.equal(style({ asset: "__proto__", network: "constructor", ...extra() }), "cep3009-value");
   });
 });
 
