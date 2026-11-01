@@ -32,7 +32,7 @@ const hostedSupported = {
   },
 };
 
-const KEY = "55f79117-fc4d-4d60-9956-65423f39a06a"; // CSPR.cloud's public documentation example
+const KEY = "00000000-0000-4000-8000-000000000000"; // shaped like a CSPR.cloud access key; not a real one
 
 describe("demo-real mode: token and facilitator", () => {
   test("defaults to the original demo: CasCet X402 Token through the self-hosted facilitator", () => {
