@@ -44,6 +44,8 @@ which gateways and docs must point at the new hashes.
   instead of an opaque overflow trap.
 - **Release wasm traps on integer overflow** (`overflow-checks = true`). It
   used to wrap silently while the tests panicked.
+- **CLI: `anchor-demo` refuses to run on mainnet (L42).** It writes fixture
+  receipts, and that already happened once on the mainnet registry.
 
 ### Changed
 - Odra 2.8.2 → 2.9.1 for every `odra-*` crate, from crates.io. The odra git
