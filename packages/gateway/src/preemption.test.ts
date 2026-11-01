@@ -41,7 +41,20 @@ const PACKAGE = "cb".repeat(32);
 const CONTRACT = "36".repeat(32);
 
 /** A Casper node that serves one token's events. Records the RPC calls it answered. */
-function fakeNode(events: string[], calls: Array<{ method: string; params: unknown }> = []): typeof fetch {
+/** The token's package as a node lists it: version 2 active, plus an optional newer, disabled version 3. */
+function tokenPackage(disabledNewest: boolean) {
+  return {
+    versions: [
+      { protocol_version_major: 2, contract_hash: `contract-${"00".repeat(32)}`, contract_version: 1 },
+      { protocol_version_major: 2, contract_hash: `contract-${CONTRACT}`, contract_version: 2 },
+      ...(disabledNewest ? [{ protocol_version_major: 2, contract_hash: `contract-${"99".repeat(32)}`, contract_version: 3 }] : []),
+    ],
+    // Nodes list disabled versions as [protocol_version_major, contract_version] pairs.
+    disabled_versions: disabledNewest ? [[2, 3]] : [],
+  };
+}
+
+function fakeNode(events: string[], calls: Array<{ method: string; params: unknown }> = [], disabledNewest = false): typeof fetch {
   return async (_url, init) => {
     const request = JSON.parse(String(init?.body)) as { id: number; method: string; params: Record<string, unknown> };
     calls.push({ method: request.method, params: request.params });
@@ -53,17 +66,7 @@ function fakeNode(events: string[], calls: Array<{ method: string; params: unkno
         const path = request.params.path as string[];
         if (path.length === 0) {
           assert.equal(request.params.key, `hash-${PACKAGE}`);
-          return answer({
-            stored_value: {
-              ContractPackage: {
-                versions: [
-                  { contract_hash: `contract-${"00".repeat(32)}`, contract_version: 1 },
-                  { contract_hash: `contract-${CONTRACT}`, contract_version: 2 },
-                ],
-                disabled_versions: [],
-              },
-            },
-          });
+          return answer({ stored_value: { ContractPackage: tokenPackage(disabledNewest) } });
         }
         assert.deepEqual(path, ["__events_length"]);
         assert.equal(request.params.key, `hash-${CONTRACT}`);
@@ -184,5 +187,16 @@ describe("CES settlement preemption checker", () => {
     for (const call of calls.filter(c2 => c2.method === "state_get_dictionary_item")) {
       assert.equal((call.params as { state_root_hash: string }).state_root_hash, "ff".repeat(32));
     }
+  });
+
+  it("never reads the events of a disabled contract version (the node lists them as [major, version] pairs)", async () => {
+    const c = createCesPreemptionChecker({
+      nodeUrl: "http://node.test/rpc",
+      tokenPackageHash: PACKAGE,
+      scanWindow: 8,
+      fetchImpl: fakeNode([REAL_AUTHORIZATION_USED, REAL_TRANSFER], [], true),
+    });
+    // The fake node asserts that every contract read targets the enabled version 2.
+    assert.deepEqual(await c.check(query), { kind: "paid", eventIndex: 0 });
   });
 });

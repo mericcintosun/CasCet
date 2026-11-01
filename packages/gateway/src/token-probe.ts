@@ -245,7 +245,7 @@ export function parseString(result: StoredValueEnvelope, what: string): string {
 /** A disabled version as nodes list it: a [protocol_version_major, contract_version] pair (older answers: an object). */
 type DisabledVersionJson = readonly unknown[] | { contract_version?: unknown; protocol_version_major?: unknown };
 
-interface ContractPackageJson {
+export interface ContractPackageJson {
   versions?: ReadonlyArray<{ contract_hash?: unknown; contract_version?: unknown; protocol_version_major?: unknown }>;
   disabled_versions?: readonly DisabledVersionJson[];
 }

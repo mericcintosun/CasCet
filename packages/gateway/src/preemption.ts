@@ -20,6 +20,8 @@
  * state_get_dictionary_item against one state root.
  */
 
+import { latestContractHash, type ContractPackageJson } from "./token-probe.js";
+
 export interface PreemptionQuery {
   /** Payer address, "00" + account hash. */
   payer: string;
@@ -225,18 +227,14 @@ export function createCesPreemptionChecker(opts: CesCheckerOptions): SettlementP
       const { state_root_hash: stateRoot } = await rpc.call<{ state_root_hash: string }>("chain_get_state_root_hash", {});
       const stateIdentifier = { StateRootHash: stateRoot };
 
-      const pkg = await rpc.call<{ stored_value: { ContractPackage?: { versions: Array<{ contract_hash: string; contract_version: number }>; disabled_versions?: Array<{ contract_version: number }> } } }>(
+      const pkg = await rpc.call<{ stored_value: { ContractPackage?: ContractPackageJson } }>(
         "query_global_state",
         { state_identifier: stateIdentifier, key: `hash-${packageHex}`, path: [] },
       );
       const contractPackage = pkg.stored_value.ContractPackage;
       if (!contractPackage) throw new Error("preemption check: token package is not a ContractPackage");
-      const disabled = new Set((contractPackage.disabled_versions ?? []).map(v => v.contract_version));
-      const latest = [...contractPackage.versions]
-        .filter(v => !disabled.has(v.contract_version))
-        .sort((a, b) => b.contract_version - a.contract_version)[0];
-      if (!latest) throw new Error("preemption check: token has no enabled contract version");
-      const contractKey = `hash-${latest.contract_hash.replace(/^contract-/, "")}`;
+      // The newest enabled version; nodes list disabled versions as [major, version] pairs.
+      const contractKey = `hash-${latestContractHash(contractPackage)}`;
 
       const lengthValue = await rpc.call<{ stored_value: { CLValue?: { parsed?: unknown } } }>("query_global_state", {
         state_identifier: stateIdentifier,
