@@ -80,12 +80,12 @@ export function withDeadline(fetchImpl: FetchLike, timeoutMs: number): FetchLike
   };
 }
 
-/** Read a response body as text, refusing bodies larger than `maxBytes`. */
-export async function readTextCapped(response: Response, maxBytes: number): Promise<string> {
+/** Read a response body as text, refusing bodies larger than `maxBytes`. `what` names the body in errors. */
+export async function readTextCapped(response: Response, maxBytes: number, what = "gateway response"): Promise<string> {
   const declared = Number(response.headers.get("content-length") ?? Number.NaN);
   if (Number.isFinite(declared) && declared > maxBytes) {
     await response.body?.cancel().catch(() => undefined);
-    throw new ResponseTooLargeError(`gateway response is ${declared} bytes, above the ${maxBytes}-byte limit`);
+    throw new ResponseTooLargeError(`${what} is ${declared} bytes, above the ${maxBytes}-byte limit`);
   }
   if (!response.body) return "";
   const reader = response.body.getReader();
@@ -97,7 +97,7 @@ export async function readTextCapped(response: Response, maxBytes: number): Prom
     total += value.byteLength;
     if (total > maxBytes) {
       await reader.cancel().catch(() => undefined);
-      throw new ResponseTooLargeError(`gateway response exceeds the ${maxBytes}-byte limit`);
+      throw new ResponseTooLargeError(`${what} exceeds the ${maxBytes}-byte limit`);
     }
     chunks.push(value);
   }

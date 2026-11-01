@@ -6,16 +6,24 @@ import { HEADER_CASCET_PARENT_ID, HEADER_PAYMENT_REQUIRED } from "@cascet/core";
 import {
   DEFAULT_TIMEOUT_MS,
   decodeBase64Json,
+  readTextCapped,
   RequestTimeoutError,
   validateTimeoutMs,
   withDeadline,
   type FetchLike,
 } from "./http.js";
-import { SpendPolicy } from "./policy.js";
+import { SpendPolicy, type SpendDecision } from "./policy.js";
 
 export type { FetchLike } from "./http.js";
 
 const { KeyAlgorithm } = casperSdk;
+
+/**
+ * Largest 402 body handed to @x402/fetch, which reads every 402 body whole
+ * (`response.text()`, no limit) before it looks at the PAYMENT-REQUIRED header.
+ * CasCet gateways send a few bytes.
+ */
+export const MAX_402_BODY_BYTES = 64 * 1024;
 
 /** What was authorized, as reported to `onPayment`. */
 export interface PaymentInfo {
@@ -173,19 +181,17 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
   const client = new x402Client();
   for (const network of policy.networks) client.register(network as `${string}:${string}`, scheme);
 
-  // Reservations made by the policy, keyed by the selected requirements object
-  // that x402 hands to the before, after and failure hooks of one payment.
-  const reservations = new WeakMap<object, { asset: string; amount: bigint; payTo: string; network: string }>();
+  // Budget reserved by the policy for each payment being signed, handed back if signing fails.
+  const reservations = new PendingReservations<Extract<SpendDecision, { ok: true }>>();
   client
     .onBeforePaymentCreation(async ctx => {
       const decision = policy.authorize(ctx.selectedRequirements);
       if (!decision.ok) return { abort: true as const, reason: decision.reason };
-      reservations.set(ctx.selectedRequirements, decision);
+      reservations.add(ctx.selectedRequirements, decision);
       return undefined;
     })
     .onAfterPaymentCreation(async ctx => {
-      const reserved = reservations.get(ctx.selectedRequirements);
-      reservations.delete(ctx.selectedRequirements);
+      const reserved = reservations.take(ctx.selectedRequirements);
       if (!reserved || !opts.onPayment) return;
       try {
         opts.onPayment({
@@ -200,8 +206,7 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
     })
     .onPaymentCreationFailure(async ctx => {
       // Signing failed after the budget was reserved; no authorization exists, so give it back.
-      const reserved = reservations.get(ctx.selectedRequirements);
-      reservations.delete(ctx.selectedRequirements);
+      const reserved = reservations.take(ctx.selectedRequirements);
       if (reserved) policy.release(reserved.asset, reserved.amount);
       return undefined;
     });
@@ -222,8 +227,14 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
     let offeredNetworks: string[] | undefined;
     const observed: FetchLike = async (i, n) => {
       const response = await baseFetch(i, n);
-      if (response.status === 402) offeredNetworks = networksOffered(response.headers);
-      return response;
+      if (response.status !== 402) return response;
+      offeredNetworks = networksOffered(response.headers);
+      // @x402/fetch would read an unbounded 402 body into memory (L117): give it a capped copy.
+      const text = await readTextCapped(response, MAX_402_BODY_BYTES, "the gateway's 402 response");
+      const headers = new Headers(response.headers);
+      headers.delete("content-length");
+      headers.delete("content-encoding");
+      return new Response(text, { status: 402, statusText: response.statusText, headers });
     };
     try {
       return await withDeadline(wrapFetchWithPayment(observed, httpClient), timeoutMs)(input, init);
@@ -238,6 +249,51 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
     spentRaw: () => policy.spentTotal().toString(),
     spentByAsset: () => policy.spentByAsset(),
   };
+}
+
+/**
+ * Budget reservations of payments being signed, keyed by the requirements
+ * object x402 hands to the before, after and failure hooks of one payment.
+ * @x402/core 2.17 passes the same object to all three hooks; a content key
+ * (network, payTo, asset, amount) still finds the reservation if a later
+ * version passes each hook a copy. Payments with the same content reserve the
+ * same amount of the same asset, so taking any one of them keeps the budget exact.
+ */
+export class PendingReservations<T> {
+  private readonly byKey = new Map<string, T[]>();
+  private readonly keyOf = new WeakMap<object, string>();
+
+  /** Remember the reservation made for these requirements. */
+  add(requirements: object, reservation: T): void {
+    const key = reservationKey(requirements);
+    this.keyOf.set(requirements, key);
+    const queue = this.byKey.get(key);
+    if (queue) queue.push(reservation);
+    else this.byKey.set(key, [reservation]);
+  }
+
+  /** Remove and return the reservation made for these requirements (or an identical copy of them). */
+  take(requirements: object): T | undefined {
+    const key = this.keyOf.get(requirements) ?? reservationKey(requirements);
+    this.keyOf.delete(requirements);
+    const queue = this.byKey.get(key);
+    const reservation = queue?.shift();
+    if (queue && queue.length === 0) this.byKey.delete(key);
+    return reservation;
+  }
+
+  /** Reservations not yet taken. */
+  get size(): number {
+    let size = 0;
+    for (const queue of this.byKey.values()) size += queue.length;
+    return size;
+  }
+}
+
+function reservationKey(requirements: object): string {
+  const req = requirements as Record<string, unknown>;
+  const text = (value: unknown) => (typeof value === "string" ? value.toLowerCase() : String(value));
+  return JSON.stringify([text(req.network), text(req.payTo), text(req.asset), text(req.amount)]);
 }
 
 /** Turn x402's generic errors into a PaymentRefusedError with a readable reason where possible. */

@@ -6,8 +6,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import casperSdk from "casper-js-sdk";
-import { createPayingFetch, PaymentRefusedError, type PayingFetchOptions } from "./paying-fetch.js";
-import { RequestTimeoutError } from "./http.js";
+import {
+  createPayingFetch,
+  MAX_402_BODY_BYTES,
+  PaymentRefusedError,
+  PendingReservations,
+  type PayingFetchOptions,
+} from "./paying-fetch.js";
+import { RequestTimeoutError, ResponseTooLargeError } from "./http.js";
 
 const { KeyAlgorithm, PrivateKey } = casperSdk;
 
@@ -43,7 +49,10 @@ function requirement(overrides: Record<string, unknown> = {}): Record<string, un
   };
 }
 
-/** A tiny x402 resource: 402 without PAYMENT-SIGNATURE, 200 with it. /hang never answers; /redirect redirects. */
+/**
+ * A tiny x402 resource: 402 without PAYMENT-SIGNATURE, 200 with it. /hang never answers; /redirect redirects;
+ * /big402 streams a 402 body larger than MAX_402_BODY_BYTES (chunked), /big402-declared declares one.
+ */
 async function startFakeGateway(): Promise<FakeGateway> {
   const hits: Hit[] = [];
   const state = { accepts: [requirement()] };
@@ -68,12 +77,23 @@ async function startFakeGateway(): Promise<FakeGateway> {
           resource: { url: `http://127.0.0.1${path}`, description: "paid tool", mimeType: "application/json" },
           accepts: state.accepts,
         };
-        res
-          .writeHead(402, {
-            "content-type": "application/json",
-            "payment-required": Buffer.from(JSON.stringify(paymentRequired)).toString("base64"),
-          })
-          .end("{}");
+        const headers = {
+          "content-type": "application/json",
+          "payment-required": Buffer.from(JSON.stringify(paymentRequired)).toString("base64"),
+        };
+        const big = "x".repeat(MAX_402_BODY_BYTES);
+        if (path === "/big402") {
+          res.writeHead(402, headers); // no content-length: chunked, so only the stream cap can stop it
+          res.write(big);
+          res.write(big);
+          res.end();
+          return;
+        }
+        if (path === "/big402-declared") {
+          res.writeHead(402, headers).end(`${big}${big}`);
+          return;
+        }
+        res.writeHead(402, headers).end("{}");
         return;
       }
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
@@ -284,6 +304,42 @@ describe("createPayingFetch", () => {
     );
   });
 
+  it("refuses an oversized 402 body before x402 reads it, and signs nothing (L117)", async () => {
+    gateway.accepts = [requirement()];
+    const paying = await make();
+    for (const path of ["/big402", "/big402-declared"]) {
+      const before = gateway.hits.length;
+      await assert.rejects(paying.fetch(gateway.url(path), { method: "POST", body: "{}" }), (err: Error) => {
+        assert.ok(err instanceof ResponseTooLargeError, `${path}: expected ResponseTooLargeError, got ${err.name}: ${err.message}`);
+        assert.match(err.message, new RegExp(`402 response .*${MAX_402_BODY_BYTES}-byte limit`));
+        return true;
+      });
+      assert.deepEqual(
+        gateway.hits.slice(before).map(hit => hit.signature),
+        [undefined],
+        `${path}: one unpaid request, no PAYMENT-SIGNATURE`,
+      );
+    }
+    assert.equal(paying.spentRaw(), "0");
+    // A normal 402 still works afterwards.
+    assert.equal((await paying.fetch(gateway.url(), { method: "POST", body: "{}" })).status, 200);
+  });
+
+  it("gives the reserved budget back when signing fails after the policy approved the payment", async () => {
+    const paying = await make({ budget: { maxPerCallRaw: "600", maxSessionRaw: "600" } });
+    // Without extra.name the scheme cannot build the EIP-712 domain, so it throws after the policy reserved 600.
+    gateway.accepts = [requirement({ amount: "600", extra: { version: "1" } })];
+    const before = gateway.hits.length;
+    await assert.rejects(paying.fetch(gateway.url(), { method: "POST", body: "{}" }), /missing_token_name/);
+    assert.ok(gateway.hits.slice(before).every(hit => hit.signature === undefined), "nothing was signed or sent");
+    assert.equal(paying.spentRaw(), "0");
+    assert.deepEqual(paying.spentByAsset?.(), {});
+    // The whole session budget is still available.
+    gateway.accepts = [requirement({ amount: "600" })];
+    assert.equal((await paying.fetch(gateway.url(), { method: "POST", body: "{}" })).status, 200);
+    assert.equal(paying.spentRaw(), "600");
+  });
+
   it("fetchUnpaid never answers a 402", async () => {
     gateway.accepts = [requirement()];
     const paying = await make();
@@ -294,3 +350,39 @@ describe("createPayingFetch", () => {
     assert.equal(paying.spentRaw(), "0");
   });
 });
+
+describe("PendingReservations", () => {
+  const req = (overrides: Record<string, unknown> = {}) => requirement(overrides);
+
+  it("finds a reservation by the same requirements object, even if it was mutated", () => {
+    const book = new PendingReservations<string>();
+    const selected = req();
+    book.add(selected, "r1");
+    selected.payTo = OTHER_SELLER;
+    assert.equal(book.take(selected), "r1");
+    assert.equal(book.size, 0);
+  });
+
+  it("finds a reservation by an identical copy (a later x402 may copy between hooks)", () => {
+    const book = new PendingReservations<string>();
+    const selected = req({ payTo: SELLER.toUpperCase() });
+    book.add(selected, "r1");
+    assert.equal(book.take({ ...selected, payTo: SELLER, extra: { name: "other" } }), "r1");
+    assert.equal(book.take(selected), undefined, "taken once only");
+  });
+
+  it("keeps identical concurrent payments apart by count", () => {
+    const book = new PendingReservations<string>();
+    const [a, b, c] = [req(), req(), req({ amount: "200" })];
+    book.add(a, "a");
+    book.add(b, "b");
+    book.add(c, "c");
+    assert.equal(book.size, 3);
+    assert.equal(book.take({ ...b }), "a", "identical payments are interchangeable");
+    assert.equal(book.take(a), "b");
+    assert.equal(book.take({ ...c }), "c");
+    assert.equal(book.size, 0);
+    assert.equal(book.take(req({ asset: ASSET_B })), undefined);
+  });
+});
+
