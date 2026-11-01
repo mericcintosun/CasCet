@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { cascetConfigSchema, type CascetConfig } from "@cascet/core";
 import { startGateway } from "@cascet/gateway";
 import { createPayingFetch, PaidMcpHttpClient } from "@cascet/client";
+import { NETWORKS, readFacilitatorEnv } from "./facilitator-env.js";
 import { startRealFacilitator } from "./real-facilitator.js";
 
 /**
@@ -10,37 +11,63 @@ import { startRealFacilitator } from "./real-facilitator.js";
  * Everything is live on mainnet:
  *  - Cep18X402 payment token (transfer_with_authorization), package below,
  *  - the 5 CasCet Odra contracts (ReceiptRegistry anchors this settle),
- *  - a self-hosted facilitator fee-sponsored by the CasCet mainnet deployer key.
+ *  - a self-hosted facilitator fee-sponsored by a DEDICATED fee-payer key.
  *
  * The agent (payer) holds the token on mainnet; it pays the seller (payTo) and
  * the facilitator settles the transfer on mainnet. Proof: a cspr.live (mainnet)
  * transaction.
+ *
+ * Keys come from the environment, one per role (M07; generate them offline with
+ * the key-roles script of this package):
+ *   CASCET_FACILITATOR_KEY      fee-payer PEM (required; must not be the owner or the seller)
+ *   CASCET_FACILITATOR_TOKEN    shared facilitator token (required, at least 32 characters)
+ *   CASCET_SELLER_ACCOUNT_HASH  payTo (default: the deployer account, as before)
+ *   CASCET_OWNER_ACCOUNT_HASH   contract owner (default: the deployer account)
+ *   CASCET_RECORDER_KEY         authorized ReceiptRegistry recorder PEM (optional; no anchoring without it)
  *
  * Run: pnpm --filter @cascet/e2e demo-real-mainnet
  */
 
 const ROOT = resolve(import.meta.dirname, "../../..");
 const KEYS = resolve(import.meta.dirname, "../keys");
-const FACILITATOR_PORT = 4501;
-const NODE_URL = "https://node.mainnet.casper.network/rpc";
-const MAINNET_KEY = resolve(ROOT, "contracts/keys/mainnet_deployer_secret_key.pem");
+const MAINNET = NETWORKS["casper:casper"];
+const NODE_URL = MAINNET.rpcUrl;
+
+// Facilitator roles and limits from the environment (throws with an actionable message).
+const fac = readFacilitatorEnv(process.env, ROOT, "casper:casper");
+for (const warning of fac.warnings) console.warn(`[demo] warning: ${warning}`);
 
 // Mainnet Cep18X402 payment token.
-const X402_TOKEN = "hash-8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41";
-// payTo (seller) = the mainnet deployer's serialized account-hash Key ("00" + hash).
-const SELLER = "00b9a38c827771d6bc510dd5f1e24fee61acdd4f97f758f4d68fe1dea13a7a140d";
+const X402_TOKEN = `hash-${MAINNET.token}`;
+// payTo (seller): a serialized account-hash Key ("00" + hash).
+const SELLER = fac.allowedPayTo[0]!;
 // Mainnet ReceiptRegistry (anchors the settled receipt).
-const RECEIPT_REGISTRY = "hash-f86bef35062e92d06b8171cf4131fdf557463589aca9112a348e5eb24159eb93";
+const RECEIPT_REGISTRY = MAINNET.receiptRegistry;
+// The anchoring recorder is its own key, never the fee payer.
+const recorderEnv = process.env.CASCET_RECORDER_KEY?.trim();
+const RECORDER_KEY = recorderEnv ? resolve(recorderEnv) : undefined;
+if (RECORDER_KEY && RECORDER_KEY === fac.keyPath) {
+  throw new Error("CASCET_RECORDER_KEY must not be the fee-payer key: use one key per role (docs/mainnet-readiness.md)");
+}
+if (!RECORDER_KEY) console.warn("[demo] CASCET_RECORDER_KEY not set: the receipt is not anchored on-chain");
 
-// Self-hosted mainnet facilitator, fee-sponsored by the deployer, allowlisted.
+// Self-hosted mainnet facilitator: dedicated fee payer, token-protected, allowlisted.
+// It refuses to start if the fee payer is the owner or the seller.
 const facilitator = await startRealFacilitator({
-  port: FACILITATOR_PORT,
+  port: fac.port,
   network: "casper:casper",
-  keyPath: MAINNET_KEY,
-  keyAlgo: "ed25519",
-  rpcUrl: NODE_URL,
-  allowedPayTo: [SELLER],
-  allowedAssets: [X402_TOKEN],
+  keyPath: fac.keyPath,
+  keyAlgo: fac.keyAlgo,
+  rpcUrl: fac.rpcUrl,
+  ...(fac.authToken ? { authToken: fac.authToken } : {}),
+  allowedPayTo: fac.allowedPayTo,
+  allowedAssets: fac.allowedAssets,
+  ...(fac.ownerAccountHash ? { ownerAccountHash: fac.ownerAccountHash } : {}),
+  paymentMotes: fac.paymentMotes,
+  dailyGasCapMotes: fac.dailyGasCapMotes,
+  settleWaitMs: fac.settleWaitMs,
+  preflight: fac.preflight,
+  tokenVersion: fac.tokenVersion,
 });
 
 const dataConfig: CascetConfig = cascetConfigSchema.parse({
@@ -49,14 +76,18 @@ const dataConfig: CascetConfig = cascetConfigSchema.parse({
   network: "casper:casper",
   payTo: SELLER,
   asset: { packageHash: X402_TOKEN, name: "CasCet X402 Token", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 50 },
-  facilitator: { url: facilitator.url },
-  anchoring: {
-    contractPackageHash: RECEIPT_REGISTRY,
-    keyPath: MAINNET_KEY,
-    keyAlgo: "ed25519",
-    nodeUrl: NODE_URL,
-    chainName: "casper",
-  },
+  facilitator: { url: facilitator.url, ...(fac.authToken ? { apiKey: fac.authToken } : {}) },
+  ...(RECORDER_KEY
+    ? {
+        anchoring: {
+          contractPackageHash: RECEIPT_REGISTRY,
+          keyPath: RECORDER_KEY,
+          keyAlgo: "ed25519",
+          nodeUrl: NODE_URL,
+          chainName: "casper",
+        },
+      }
+    : {}),
   pricing: { tools: { get_cspr_market_data: { price: "$0.01" } } },
   port: 4402,
 });
@@ -87,7 +118,7 @@ if (settled?.txHash) console.log(`  https://cspr.live/transaction/${settled.txHa
 if (!settled) throw new Error("MAINNET FAIL: no settled receipt");
 console.log(`\n✅ REAL x402 settlement succeeded on Casper MAINNET\n`);
 
-await new Promise(r => setTimeout(r, 14_000)); // let anchoring submit
+if (RECORDER_KEY) await new Promise(r => setTimeout(r, 14_000)); // let anchoring submit
 await gateway.close();
-facilitator.close();
+await facilitator.close();
 process.exit(0);
