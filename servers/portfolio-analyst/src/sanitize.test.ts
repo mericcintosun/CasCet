@@ -12,6 +12,13 @@ import { INTERNAL_ERRORS, LEAK_MARKERS } from "./test-fakes.js";
 
 const idle = () => ({ signal: new AbortController().signal, cancelled: new AbortController().signal });
 
+/** An error shaped like the ones the stricter buyer-side @cascet/client throws (matched by name). */
+function clientError(name: string, message: string, cause?: unknown): Error {
+  const err = new Error(message, cause === undefined ? undefined : { cause });
+  err.name = name;
+  return err;
+}
+
 describe("classifyPurchaseError", () => {
   const cases: Array<[string, unknown, string]> = [
     ["unreachable gateway", INTERNAL_ERRORS.unreachable(), REASONS.unreachable],
@@ -41,6 +48,32 @@ describe("classifyPurchaseError", () => {
     ["anything else", new Error("something odd at /srv/cascet/app.js:1:1"), REASONS.failed],
     ["a thrown string", "weird", REASONS.failed],
     ["a pre-classified failure", new PurchaseFailure(REASONS.malformed), REASONS.malformed],
+    // Errors of the stricter buyer-side client.
+    ["the client's own request deadline", clientError("RequestTimeoutError", "MCP tools/call timed out after 30000 ms"), REASONS.timedOut],
+    [
+      "a deadline further down the cause chain",
+      new Error("request failed", { cause: clientError("RequestTimeoutError", "request to http://10.0.0.7:4402/mcp timed out") }),
+      REASONS.timedOut,
+    ],
+    [
+      "an oversized gateway response",
+      clientError("ResponseTooLargeError", "gateway response exceeds the 16777216-byte limit"),
+      REASONS.malformed,
+    ],
+    ["a gateway body that is not JSON", new Error("MCP tools/call: the server returned invalid JSON"), REASONS.malformed],
+    [
+      "a refusal by the client's spending policy",
+      clientError(
+        "PaymentRefusedError",
+        "payment refused: the gateway asks for payment on casper:casper, but this client only pays on casper:casper-test",
+      ),
+      REASONS.policy,
+    ],
+    [
+      "HTTP 402 with the gateway's reason",
+      new Error('MCP request tools/call failed: HTTP 402 (insufficient_funds) {"error":"x"}'),
+      REASONS.paymentRejected,
+    ],
   ];
   for (const [name, err, expected] of cases) {
     it(`maps ${name}`, () => assert.equal(classifyPurchaseError(err, idle()), expected));

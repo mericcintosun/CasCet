@@ -49,6 +49,10 @@ export const POLICY_PREFIX = "analyst payment policy:";
  * CASCET_NETWORK (the client takes no network list yet and would pay on any
  * casper:* network a 402 names) and to refuse to sign once the analysis has
  * been aborted.
+ *
+ * The stricter client of the buyer-side fixes calls `onPayment` only after
+ * signing and ignores what it throws. With that client the network list goes
+ * to createPayingFetch's `networks` option and this hook only logs.
  */
 export function paymentGuard(opts: { networks: readonly string[]; signal: AbortSignal; log: (line: string) => void }) {
   return (info: { amountRaw: string; payTo: string; network: string }): void => {

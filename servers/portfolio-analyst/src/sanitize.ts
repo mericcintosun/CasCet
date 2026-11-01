@@ -57,8 +57,16 @@ export class PurchaseFailure extends Error {
 export function classifyPurchaseError(err: unknown, ctx: { signal: AbortSignal; cancelled: AbortSignal }): string {
   if (err instanceof PurchaseFailure) return err.reason;
   if (ctx.signal.aborted) return ctx.cancelled.aborted ? REASONS.cancelled : REASONS.timedOut;
-  const name = err instanceof Error ? err.name : "";
-  if (name === "TimeoutError" || name === "AbortError") return REASONS.timedOut;
+  // Error names, outermost first. RequestTimeoutError, PaymentRefusedError and
+  // ResponseTooLargeError are thrown by the stricter @cascet/client of the
+  // buyer-side fixes (its own request deadline, its spending policy, its
+  // response size cap); matching by name keeps this module free of that import.
+  const names = errorNames(err);
+  if (names[0] === "AbortError" || names.some(n => n === "TimeoutError" || n === "RequestTimeoutError")) {
+    return REASONS.timedOut;
+  }
+  if (names.includes("PaymentRefusedError")) return REASONS.policy;
+  if (names.includes("ResponseTooLargeError")) return REASONS.malformed;
 
   const text = errorText(err);
   if (/Payment creation aborted|analyst payment policy|No network\/scheme registered|filtered out by policies/i.test(text)) {
@@ -67,12 +75,19 @@ export function classifyPurchaseError(err: unknown, ctx: { signal: AbortSignal; 
   if (/Failed to create payment payload|Failed to parse payment requirements|Payment already attempted/i.test(text)) {
     return REASONS.paymentFailed;
   }
+  if (/returned invalid JSON/i.test(text)) return REASONS.malformed;
   const status = /MCP request [\w/]+ failed: HTTP (\d{3})\b/.exec(text)?.[1];
   if (status) return status === "402" ? REASONS.paymentRejected : httpReason(status);
   if (/MCP [\w/]+ error -?\d+/.test(text)) return REASONS.providerError;
   if (NETWORK_ERROR.test(text)) return REASONS.unreachable;
   if (err instanceof SyntaxError) return REASONS.malformed;
   return REASONS.failed;
+}
+
+/** Names of the errors in the cause chain of `err`, outermost first. */
+function errorNames(err: unknown, depth = 0): string[] {
+  if (depth > 4 || !(err instanceof Error)) return [];
+  return [err.name, ...errorNames(err.cause, depth + 1)];
 }
 
 /** Full error text (message, code and the cause chain) for classification and the operator log. */
