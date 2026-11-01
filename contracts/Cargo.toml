@@ -44,6 +44,9 @@ test = false
 [profile.release]
 codegen-units = 1
 lto = true
+# Integer overflow must trap (reverting the call) in the wasm we ship, as it
+# already does in tests; without this a u32/u64 overflow silently wraps.
+overflow-checks = true
 
 [profile.dev.package."*"]
 opt-level = 3
