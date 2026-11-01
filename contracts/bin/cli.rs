@@ -11,7 +11,8 @@
 //! Run against Casper Testnet with contracts/.env populated (see .env.sample):
 //!   cargo run --bin cascet_contracts_cli -- deploy
 //!   cargo run --bin cascet_contracts_cli -- scenario fund-split --amount 1000000000000
-//!   cargo run --bin cascet_contracts_cli -- scenario release --payee <public-key-hex>
+//!   cargo run --bin cascet_contracts_cli -- scenario release --payee account-hash-<64 hex>
+//!     (omit --payee to release to the caller; a public key is not accepted)
 
 use core::str::FromStr;
 
@@ -331,7 +332,10 @@ impl ScenarioMetadata for CascadeCloseCmd {
 
 pub fn main() {
     OdraCli::new()
-        .about("CasCet on-chain layer: ReceiptRegistry + CEP-18 + RevenueSplit + CascadeController")
+        .about(
+            "CasCet on-chain layer: ReceiptRegistry + CEP-18 + RevenueSplit + CascadeController \
+             + PaymentChannel",
+        )
         .deploy(CascetDeployScript)
         .contract::<ReceiptRegistry>()
         .contract::<DemoToken>()

@@ -24,6 +24,11 @@
 //! cascade must treat a `parent_id` that is not anchored (yet) as an
 //! unresolved link.
 //!
+//! For the same reason the links can form a cycle: `A` may name a parent `B`
+//! that is not anchored yet, and `B` may later name `A`. Only the one-receipt
+//! cycle (`SelfParent`) is rejected, so readers that walk parent links must
+//! remember the ids they have visited and stop at a repeat.
+//!
 //! # Ownership
 //!
 //! Ownership moves in two steps, as in odra-modules' `Ownable2Step`: the owner
