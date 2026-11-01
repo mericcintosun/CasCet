@@ -14,6 +14,7 @@ const BASE = {
   CASCET_ALLOWED_ASSETS: `hash-${TOKEN}`,
   CASCET_MAX_PER_CALL: "1000000000",
   CASCET_MAX_SESSION: "5000000000",
+  CASCET_MAX_TOTAL: "20000000000",
 };
 
 function problemsOf(env: Record<string, string | undefined>): string[] {
@@ -34,6 +35,7 @@ describe("loadAnalystConfig", () => {
       allowedAssets: [`hash-${TOKEN}`],
       maxPerCallRaw: "1000000000",
       maxSessionRaw: "5000000000",
+      maxTotalRaw: "20000000000",
       timeoutMs: DEFAULT_TIMEOUT_MS,
     });
     assert.deepEqual(r.warnings, []);
@@ -69,29 +71,57 @@ describe("loadAnalystConfig", () => {
     assert.equal(r.config.allowedAssets, undefined);
   });
 
-  it("requires both spending caps unless CASCET_ALLOW_UNLIMITED_BUDGET=1", () => {
-    const p = problemsOf({ ...BASE, CASCET_MAX_PER_CALL: undefined, CASCET_MAX_SESSION: "" });
+  it("requires all three spending caps unless CASCET_ALLOW_UNLIMITED_BUDGET=1", () => {
+    const p = problemsOf({ ...BASE, CASCET_MAX_PER_CALL: undefined, CASCET_MAX_SESSION: "", CASCET_MAX_TOTAL: " " });
     assert.ok(p.some(x => x.startsWith("CASCET_MAX_PER_CALL is required")));
     assert.ok(p.some(x => x.startsWith("CASCET_MAX_SESSION is required")));
+    assert.ok(p.some(x => x.startsWith("CASCET_MAX_TOTAL is required")));
+    assert.ok(problemsOf({ ...BASE, CASCET_MAX_TOTAL: undefined }).some(x => x.startsWith("CASCET_MAX_TOTAL is required")));
 
     const r = loadAnalystConfig({
       ...BASE,
       CASCET_MAX_PER_CALL: undefined,
       CASCET_MAX_SESSION: undefined,
+      CASCET_MAX_TOTAL: undefined,
       CASCET_ALLOW_UNLIMITED_BUDGET: "1",
     });
     assert.ok(r.ok);
     assert.equal(r.config.maxPerCallRaw, undefined);
     assert.equal(r.config.maxSessionRaw, undefined);
-    assert.equal(r.warnings.length, 2);
+    assert.equal(r.config.maxTotalRaw, undefined);
+    assert.equal(r.warnings.length, 3);
+  });
+
+  it("refuses CASCET_MAX_TOTAL when nothing bounds one analysis (L03)", () => {
+    const p = problemsOf({
+      ...BASE,
+      CASCET_MAX_PER_CALL: undefined,
+      CASCET_MAX_SESSION: undefined,
+      CASCET_ALLOW_UNLIMITED_BUDGET: "1",
+    });
+    assert.ok(p.some(x => x.startsWith("CASCET_MAX_TOTAL needs CASCET_MAX_PER_CALL or CASCET_MAX_SESSION")), JSON.stringify(p));
+    // One per-analysis bound is enough.
+    assert.ok(loadAnalystConfig({ ...BASE, CASCET_MAX_SESSION: undefined, CASCET_ALLOW_UNLIMITED_BUDGET: "1" }).ok);
+  });
+
+  it("warns when CASCET_MAX_TOTAL is below what one full analysis may authorize", () => {
+    // A full analysis makes 4 purchases: min(5e9 per analysis, 4 x 1e9 per call) = 4e9 raw.
+    const tight = loadAnalystConfig({ ...BASE, CASCET_MAX_TOTAL: "3999999999" });
+    assert.ok(tight.ok);
+    assert.ok(tight.warnings.some(w => w.includes("below what one full analysis may authorize (4000000000 raw)")));
+    const roomy = loadAnalystConfig({ ...BASE, CASCET_MAX_TOTAL: "4000000000" });
+    assert.ok(roomy.ok);
+    assert.deepEqual(roomy.warnings, []);
   });
 
   it("rejects caps that are not positive decimal integers", () => {
     for (const bad of ["-5", "0", "0x10", "1e9", "5.0", " 1 2", "1".repeat(41)]) {
-      assert.ok(
-        problemsOf({ ...BASE, CASCET_MAX_PER_CALL: bad }).some(p => p.startsWith("CASCET_MAX_PER_CALL must be a positive integer")),
-        `"${bad}" must be rejected`,
-      );
+      for (const name of ["CASCET_MAX_PER_CALL", "CASCET_MAX_SESSION", "CASCET_MAX_TOTAL"]) {
+        assert.ok(
+          problemsOf({ ...BASE, [name]: bad }).some(p => p.startsWith(`${name} must be a positive integer`)),
+          `${name}="${bad}" must be rejected`,
+        );
+      }
     }
     const r = loadAnalystConfig({ ...BASE, CASCET_MAX_SESSION: "  000123 " });
     assert.ok(r.ok);

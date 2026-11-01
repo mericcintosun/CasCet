@@ -6,9 +6,9 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDataBuyer, paymentGuard, withAbortSignal, type FetchLike } from "./buyer.js";
+import { createDataBuyer, paymentGuard, withAbortSignal, type BuyerContext, type FetchLike } from "./buyer.js";
 import { loadAnalystConfig, type AnalystConfig } from "./config.js";
-import { REASONS, classifyPurchaseError } from "./sanitize.js";
+import { REASONS, classifyPurchaseError, errorText } from "./sanitize.js";
 import { within } from "./test-fakes.js";
 
 describe("withAbortSignal", () => {
@@ -85,6 +85,11 @@ describe("paymentGuard", () => {
 // The real @cascet/client paying fetch against a local fake gateway that only
 // ever answers with a 402 challenge (or never answers). A throwaway key is
 // generated per run; no test reaches the signing step, nothing touches a chain.
+//
+// The assertions hold for the current client and for the stricter client of
+// the buyer-side fixes alike: each refusal must classify as the analyst's
+// payment policy and send no paid request. Where both clients word the reason
+// the same way, the reason is checked too.
 // ---------------------------------------------------------------------------
 
 const ACCOUNT = "881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36";
@@ -169,14 +174,19 @@ describe("createDataBuyer with the real paying fetch", { timeout: 15_000 }, () =
       CASCET_ALLOWED_ASSETS: `hash-${TOKEN}`,
       CASCET_MAX_PER_CALL: "1000000000",
       CASCET_MAX_SESSION: "5000000000",
+      CASCET_MAX_TOTAL: "50000000000",
       ...extra,
     });
     assert.ok(r.ok, JSON.stringify(r));
     return r.config;
   }
 
-  async function buyOnce(gateway: FakeGateway, cfg: AnalystConfig, signal = new AbortController().signal): Promise<unknown> {
-    const buyer = await createDataBuyer(cfg, { signal, log: () => {} });
+  async function buyOnce(
+    gateway: FakeGateway,
+    cfg: AnalystConfig,
+    ctx: Partial<Omit<BuyerContext, "log">> = {},
+  ): Promise<unknown> {
+    const buyer = await createDataBuyer(cfg, { signal: new AbortController().signal, ...ctx, log: () => {} });
     try {
       await buyer.callTool("get_cspr_market_data", {});
     } catch (err) {
@@ -185,48 +195,58 @@ describe("createDataBuyer with the real paying fetch", { timeout: 15_000 }, () =
     assert.fail("the purchase must not succeed");
   }
 
-  it("vetoes a 402 for a network outside CASCET_NETWORK before signing", async () => {
-    const gateway = await startFakeGateway({ challenge: challenge({ network: "casper:casper" }) });
+  /** The purchase was refused by the payment policy and nothing paid was sent. */
+  function assertRefused(err: unknown, gateway: FakeGateway, reason?: RegExp): void {
+    const idle = new AbortController().signal;
+    assert.equal(classifyPurchaseError(err, { signal: idle, cancelled: idle }), REASONS.policy, String(err));
+    if (reason) assert.match(errorText(err), reason);
+    assert.deepEqual(gateway.requests, [{ paid: false }], "no paid request was sent");
+  }
+
+  async function refusal(challengeOverrides: Record<string, unknown>, env: Record<string, string> = {}, ctx = {}) {
+    const gateway = await startFakeGateway({ challenge: challenge(challengeOverrides) });
     try {
-      const err = await buyOnce(gateway, configFor(gateway.url));
-      // Reaching the network veto proves the normalized payTo/asset allowlists
-      // and the budget all matched inside the real client first.
-      assert.match(String(err), /network casper:casper is not in CASCET_NETWORK/);
-      const idle = new AbortController().signal;
-      assert.equal(classifyPurchaseError(err, { signal: idle, cancelled: idle }), REASONS.policy);
-      assert.deepEqual(gateway.requests, [{ paid: false }], "no paid request was sent");
+      return { err: await buyOnce(gateway, configFor(gateway.url, env), ctx), gateway };
     } finally {
       await gateway.close();
     }
+  }
+
+  it("refuses a 402 for a network outside CASCET_NETWORK before signing", async () => {
+    const { err, gateway } = await refusal({ network: "casper:casper" });
+    assertRefused(err, gateway);
   });
 
   it("refuses a payee that is not allowlisted", async () => {
-    const gateway = await startFakeGateway({ challenge: challenge({ payTo: `00${"e".repeat(64)}` }) });
-    try {
-      const err = await buyOnce(gateway, configFor(gateway.url));
-      assert.match(String(err), /not allowlisted/);
-      assert.deepEqual(gateway.requests, [{ paid: false }]);
-    } finally {
-      await gateway.close();
-    }
+    const { err, gateway } = await refusal({ payTo: `00${"e".repeat(64)}` });
+    assertRefused(err, gateway, /payTo .* is not allowlisted/);
+  });
+
+  it("refuses an asset that is not allowlisted (CASCET_ALLOWED_ASSETS)", async () => {
+    const { err, gateway } = await refusal({ asset: "ee".repeat(32) });
+    assertRefused(err, gateway, /asset .* is not allowlisted/);
   });
 
   it("refuses a price above CASCET_MAX_PER_CALL", async () => {
-    const gateway = await startFakeGateway({ challenge: challenge({ amount: "1000000001" }) });
-    try {
-      const err = await buyOnce(gateway, configFor(gateway.url));
-      assert.match(String(err), /exceeds per-call budget/);
-      assert.deepEqual(gateway.requests, [{ paid: false }]);
-    } finally {
-      await gateway.close();
-    }
+    const { err, gateway } = await refusal({ amount: "1000000001" });
+    assertRefused(err, gateway, /exceeds (the )?per-call budget/);
+  });
+
+  it("refuses a price above CASCET_MAX_SESSION", async () => {
+    const { err, gateway } = await refusal({}, { CASCET_MAX_SESSION: "400000000" });
+    assertRefused(err, gateway, /would exceed (the )?session budget/);
+  });
+
+  it("applies the analysis' reserved budget when it is tighter than CASCET_MAX_SESSION (L03)", async () => {
+    const { err, gateway } = await refusal({}, {}, { maxSessionRaw: "400000000" });
+    assertRefused(err, gateway, /would exceed (the )?session budget/);
   });
 
   it("aborts an in-flight purchase when the analysis is aborted, and pays nothing", async () => {
     const gateway = await startFakeGateway({ hang: true });
     try {
       const inbound = new AbortController();
-      const pending = buyOnce(gateway, configFor(gateway.url), inbound.signal);
+      const pending = buyOnce(gateway, configFor(gateway.url), { signal: inbound.signal });
       await within(gateway.firstRequest, 5_000, "the probe to reach the gateway");
       inbound.abort();
       const err = await within(pending, 5_000, "the aborted purchase to settle");

@@ -11,6 +11,9 @@
  * bought) until the operator fixes the environment.
  */
 
+import { MAX_PURCHASES } from "./analysis.js";
+import { analysisBudget } from "./spend-ledger.js";
+
 export const DEFAULT_DATA_GATEWAY_URL = "http://localhost:4402/mcp";
 export const DEFAULT_NETWORK = "casper:casper-test";
 /** Below the 60 s a CasCet gateway (and the MCP SDK) waits for an upstream tool by default. */
@@ -34,6 +37,11 @@ export interface AnalystConfig {
   maxPerCallRaw?: string;
   /** Max raw token units for all purchases of one analysis (per asset). Same opt-out as above. */
   maxSessionRaw?: string;
+  /**
+   * Max raw token units ALL analyses of this process may authorize together
+   * (summed over assets), until restart. Same opt-out as above.
+   */
+  maxTotalRaw?: string;
   /** Deadline for the data purchases of one analysis. */
   timeoutMs: number;
 }
@@ -83,16 +91,30 @@ export function loadAnalystConfig(env: Env): ConfigResult {
 
   const maxPerCallRaw = parseRawAmount(env.CASCET_MAX_PER_CALL, "CASCET_MAX_PER_CALL", problems);
   const maxSessionRaw = parseRawAmount(env.CASCET_MAX_SESSION, "CASCET_MAX_SESSION", problems);
+  const maxTotalRaw = parseRawAmount(env.CASCET_MAX_TOTAL, "CASCET_MAX_TOTAL", problems);
   const unlimited = isFlagSet(env.CASCET_ALLOW_UNLIMITED_BUDGET);
   for (const [name, value] of [
     ["CASCET_MAX_PER_CALL", env.CASCET_MAX_PER_CALL],
     ["CASCET_MAX_SESSION", env.CASCET_MAX_SESSION],
+    ["CASCET_MAX_TOTAL", env.CASCET_MAX_TOTAL],
   ] as const) {
     if (value?.trim()) continue;
     if (unlimited) {
       warnings.push(`${name} is not set and CASCET_ALLOW_UNLIMITED_BUDGET=1: that spending cap is disabled`);
     } else {
       problems.push(`${name} is required (raw token units; or set CASCET_ALLOW_UNLIMITED_BUDGET=1 to opt out)`);
+    }
+  }
+  if (maxTotalRaw !== undefined && !env.CASCET_MAX_PER_CALL?.trim() && !env.CASCET_MAX_SESSION?.trim()) {
+    // Only reachable with CASCET_ALLOW_UNLIMITED_BUDGET=1: nothing would bound what ONE analysis may spend.
+    problems.push("CASCET_MAX_TOTAL needs CASCET_MAX_PER_CALL or CASCET_MAX_SESSION, which bound what one analysis may spend");
+  } else if (maxTotalRaw !== undefined) {
+    const fullAnalysis = analysisBudget({ maxPerCallRaw, maxSessionRaw, allowedAssets }, MAX_PURCHASES).worstCaseRaw;
+    if (fullAnalysis !== undefined && fullAnalysis > BigInt(maxTotalRaw)) {
+      warnings.push(
+        `CASCET_MAX_TOTAL (${maxTotalRaw}) is below what one full analysis may authorize (${fullAnalysis} raw): ` +
+          "analyses of larger portfolios will be refused",
+      );
     }
   }
 
@@ -111,6 +133,7 @@ export function loadAnalystConfig(env: Env): ConfigResult {
       allowedAssets,
       maxPerCallRaw,
       maxSessionRaw,
+      maxTotalRaw,
       timeoutMs,
     },
   };
@@ -122,7 +145,7 @@ export function describeConfig(cfg: AnalystConfig): string {
   return (
     `buying from ${cfg.dataGatewayUrl} on ${cfg.networks.join(",")}; ` +
     `payTo ${list(cfg.allowedPayTo)}, assets ${list(cfg.allowedAssets)}; ` +
-    `caps per-call=${cfg.maxPerCallRaw ?? "∞"} per-analysis=${cfg.maxSessionRaw ?? "∞"} raw; ` +
+    `caps per-call=${cfg.maxPerCallRaw ?? "∞"} per-analysis=${cfg.maxSessionRaw ?? "∞"} total=${cfg.maxTotalRaw ?? "∞"} raw; ` +
     `timeout ${cfg.timeoutMs} ms`
   );
 }

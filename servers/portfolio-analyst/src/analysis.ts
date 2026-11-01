@@ -55,7 +55,10 @@ export interface PlanItem {
   asset?: Asset;
 }
 
-/** Buy exactly the data this portfolio needs, in a stable order. */
+/** Most purchases one analysis makes: a price per held asset plus the CSPR staking yields. */
+export const MAX_PURCHASES = ASSETS.length + 1;
+
+/** Buy exactly the data this portfolio needs, in a stable order (at most MAX_PURCHASES items). */
 export function planPurchases(holdings: readonly Holding[]): PlanItem[] {
   const held = [...new Set(holdings.map(h => h.asset))];
   const plan: PlanItem[] = [];

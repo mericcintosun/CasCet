@@ -82,6 +82,7 @@ const analystConfig: CascetConfig = cascetConfigSchema.parse({
       CASCET_ALLOWED_ASSETS: X402_TOKEN,
       CASCET_MAX_PER_CALL: "1000000000", // $0.02 (the dearest data tool) at 50 tokens/USD, 9 decimals
       CASCET_MAX_SESSION: "5000000000", // one analysis never spends more than it earns ($0.10)
+      CASCET_MAX_TOTAL: "10000000000", // the analyst wallet authorizes at most $0.20 while the demo runs
     },
   },
   network: "casper:casper-test",

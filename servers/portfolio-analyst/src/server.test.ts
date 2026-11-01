@@ -15,7 +15,10 @@ const VALID_ENV = {
   CASCET_ALLOWED_ASSETS: `hash-${"b".repeat(64)}`,
   CASCET_MAX_PER_CALL: "1000000000",
   CASCET_MAX_SESSION: "5000000000",
+  CASCET_MAX_TOTAL: "50000000000",
 };
+
+const GOLD_ONLY = [{ asset: "gold" as const, amountUsd: 10 }];
 
 /** The operator log, observable so a test can wait for a line without polling. */
 class LineLog {
@@ -236,6 +239,123 @@ describe("analyze_portfolio over MCP", { timeout: 15_000 }, () => {
       });
       assert.equal(h.contexts[0]?.parentId, parent);
       assert.equal(h.contexts[1]?.parentId, undefined);
+    } finally {
+      await h.close();
+    }
+  });
+
+  // Every FakeBuyer purchase costs 5e8 raw. With CASCET_MAX_PER_CALL=1e9 and CASCET_MAX_SESSION=5e9 a
+  // full analysis (4 purchases) may authorize up to 4e9 raw, a gold-only one (1 purchase) up to 1e9.
+  it("refuses an analysis that no longer fits CASCET_MAX_TOTAL, before building a buyer (L03)", async () => {
+    let built = 0;
+    const h = await start({
+      config: loadAnalystConfig({ ...VALID_ENV, CASCET_MAX_TOTAL: "5000000000" }),
+      buyer: () => {
+        built++;
+        return new FakeBuyer();
+      },
+    });
+    try {
+      const first = await h.client.callTool({ name: "analyze_portfolio", arguments: { holdings: PORTFOLIO } });
+      assert.notEqual(first.isError, true);
+      // 2e9 authorized + a 4e9 worst case > 5e9: the second full analysis buys nothing.
+      const second = await h.client.callTool({ name: "analyze_portfolio", arguments: { holdings: PORTFOLIO } });
+      assert.equal(second.isError, true);
+      assert.equal(textOf(second), "analysis unavailable: the analyst has reached its spending limit");
+      assert.equal(built, 1);
+      // A smaller analysis still fits: 2e9 + 1e9 <= 5e9.
+      const small = await h.client.callTool({ name: "analyze_portfolio", arguments: { holdings: GOLD_ONLY } });
+      assert.notEqual(small.isError, true);
+      assert.equal(built, 2);
+      assert.ok(h.lines.some(l => l.includes("refused: CASCET_MAX_TOTAL")));
+      assert.ok(h.lines.some(l => l.includes("analyst total 2500000000 of 5000000000 raw")));
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("keeps room for running analyses and frees it when they finish (L03)", async () => {
+    let calls = 0;
+    let onGated: (b: GatedBuyer) => void = () => {};
+    const gated = new Promise<GatedBuyer>(resolve => (onGated = resolve));
+    const h = await start({
+      config: loadAnalystConfig({ ...VALID_ENV, CASCET_MAX_TOTAL: "7000000000" }),
+      buyer: ctx => {
+        calls++;
+        if (calls > 1) return new FakeBuyer();
+        const b = new GatedBuyer(ctx.signal);
+        onGated(b);
+        return b;
+      },
+    });
+    try {
+      const running = h.client.callTool({ name: "analyze_portfolio", arguments: { holdings: PORTFOLIO } });
+      const first = await within(gated, 5_000, "the first analysis to start");
+      await within(first.whenStarted(4), 5_000, "its four purchases to start");
+      // 4e9 reserved by the running analysis + 4e9 > 7e9, but it would fit once that one ends.
+      const blocked = await h.client.callTool({ name: "analyze_portfolio", arguments: { holdings: PORTFOLIO } });
+      assert.equal(blocked.isError, true);
+      assert.match(textOf(blocked), /until running analyses finish; retry shortly$/);
+      assert.equal(calls, 1);
+      first.release();
+      assert.notEqual((await running).isError, true);
+      // The running analysis committed 2e9: 2e9 + 4e9 <= 7e9.
+      const later = await h.client.callTool({ name: "analyze_portfolio", arguments: { holdings: PORTFOLIO } });
+      assert.notEqual(later.isError, true);
+      assert.equal(calls, 2);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("releases the reservation of an analysis that failed before buying", async () => {
+    let calls = 0;
+    const h = await start({
+      // Room for exactly one full analysis.
+      config: loadAnalystConfig({ ...VALID_ENV, CASCET_MAX_TOTAL: "4000000000" }),
+      buyer: () => {
+        calls++;
+        if (calls === 1) throw new Error("ENOENT: no such file or directory, open '/srv/cascet/keys/analyst.pem'");
+        return new FakeBuyer();
+      },
+    });
+    try {
+      const failed = await h.client.callTool({ name: "analyze_portfolio", arguments: { holdings: PORTFOLIO } });
+      assert.match(textOf(failed), /^analysis failed: internal error/);
+      const next = await h.client.callTool({ name: "analyze_portfolio", arguments: { holdings: PORTFOLIO } });
+      assert.notEqual(next.isError, true);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("counts the whole reservation when the buyer's spend cannot be read", async () => {
+    const h = await start({
+      config: loadAnalystConfig({ ...VALID_ENV, CASCET_MAX_TOTAL: "5000000000" }),
+      buyer: () =>
+        Object.assign(new FakeBuyer(), {
+          spentRaw: () => "not a number",
+        }),
+    });
+    try {
+      await h.client.callTool({ name: "analyze_portfolio", arguments: { holdings: PORTFOLIO } });
+      // 4e9 counted: a second full analysis (4e9) no longer fits, a gold-only one (1e9) still does.
+      const full = await h.client.callTool({ name: "analyze_portfolio", arguments: { holdings: PORTFOLIO } });
+      assert.equal(full.isError, true);
+      const small = await h.client.callTool({ name: "analyze_portfolio", arguments: { holdings: GOLD_ONLY } });
+      assert.notEqual(small.isError, true);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("gives each analysis' paying fetch the budget it reserved", async () => {
+    const h = await start({ buyer: () => new FakeBuyer() });
+    try {
+      await h.client.callTool({ name: "analyze_portfolio", arguments: { holdings: PORTFOLIO } });
+      await h.client.callTool({ name: "analyze_portfolio", arguments: { holdings: GOLD_ONLY } });
+      assert.equal(h.contexts[0]?.maxSessionRaw, "4000000000");
+      assert.equal(h.contexts[1]?.maxSessionRaw, "1000000000");
     } finally {
       await h.close();
     }

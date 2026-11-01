@@ -1,6 +1,7 @@
 import { createPayingFetch, PaidMcpHttpClient } from "@cascet/client";
 import type { DataBuyer } from "./analysis.js";
 import type { AnalystConfig } from "./config.js";
+import { minRaw } from "./spend-ledger.js";
 
 export type FetchLike = (input: Parameters<typeof fetch>[0], init?: RequestInit) => Promise<Response>;
 
@@ -9,6 +10,11 @@ export interface BuyerContext {
   parentId?: string;
   /** Aborts every purchase of this analysis (inbound cancellation + purchase deadline). */
   signal: AbortSignal;
+  /**
+   * Session budget (per asset, raw units) of this analysis' paying fetch, as
+   * reserved against CASCET_MAX_TOTAL. The tighter of it and CASCET_MAX_SESSION applies.
+   */
+  maxSessionRaw?: string;
   log: (line: string) => void;
 }
 
@@ -58,15 +64,17 @@ export function paymentGuard(opts: { networks: readonly string[]; signal: AbortS
  * The production buyer: the analyst's own wallet behind a paying fetch with
  * explicit allowlists, network list and budget. One buyer per inbound call,
  * because the cascade parent id is per call; CASCET_MAX_SESSION therefore caps
- * what ONE analysis may spend.
+ * what ONE analysis may spend, and the server's spend ledger enforces
+ * CASCET_MAX_TOTAL across analyses.
  */
 export async function createDataBuyer(cfg: AnalystConfig, ctx: BuyerContext): Promise<DataBuyer> {
+  const sessionCap = minRaw(optionalRaw(cfg.maxSessionRaw), optionalRaw(ctx.maxSessionRaw));
   const paying = await createPayingFetch({
     privateKeyPath: cfg.keyPath,
     keyAlgorithm: cfg.keyAlgorithm,
     allowedPayTo: cfg.allowedPayTo,
     allowedAssets: cfg.allowedAssets,
-    budget: { maxPerCallRaw: cfg.maxPerCallRaw, maxSessionRaw: cfg.maxSessionRaw },
+    budget: { maxPerCallRaw: cfg.maxPerCallRaw, maxSessionRaw: sessionCap?.toString() },
     parentId: ctx.parentId,
     onPayment: paymentGuard({ networks: cfg.networks, signal: ctx.signal, log: ctx.log }),
   });
@@ -75,4 +83,8 @@ export async function createDataBuyer(cfg: AnalystConfig, ctx: BuyerContext): Pr
     callTool: (name, args) => client.callTool(name, args),
     spentRaw: () => paying.spentRaw(),
   };
+}
+
+function optionalRaw(value: string | undefined): bigint | undefined {
+  return value === undefined ? undefined : BigInt(value);
 }

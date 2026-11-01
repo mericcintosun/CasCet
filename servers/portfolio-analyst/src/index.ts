@@ -26,8 +26,13 @@ import { createAnalystServer } from "./server.js";
  *   CASCET_ALLOWED_ASSETS          comma list of CEP-18 package hashes it may pay in (hash-<64 hex>)
  *                                  -> both allowlists are required unless CASCET_ALLOW_ANY_SELLER=1
  *   CASCET_MAX_PER_CALL            max raw token units for ONE data purchase
- *   CASCET_MAX_SESSION             max raw token units for ALL purchases of ONE analysis (per asset)
- *                                  -> both caps are required unless CASCET_ALLOW_UNLIMITED_BUDGET=1
+ *   CASCET_MAX_SESSION             max raw token units for ALL purchases of ONE analysis (per asset); for
+ *                                  the analyst a session is one analysis, unlike `cascet connect`, where
+ *                                  it is the whole process
+ *   CASCET_MAX_TOTAL               max raw token units ALL analyses of this process may authorize together
+ *                                  (summed over assets) until it restarts; an analysis whose worst case
+ *                                  does not fit is refused before it buys anything
+ *                                  -> all three caps are required unless CASCET_ALLOW_UNLIMITED_BUDGET=1
  *   CASCET_TIMEOUT_MS              deadline for the purchases of one analysis (default 45000); keep it
  *                                  below the inbound gateway's upstream timeout (60 s by default) so a
  *                                  partial analysis is still returned in time
