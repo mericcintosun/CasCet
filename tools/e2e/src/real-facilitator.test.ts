@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import casperSdk from "casper-js-sdk";
-import type { SettleResponse, VerifyResponse } from "@x402/core/types";
+import { toClientCasperSigner } from "@make-software/casper-x402";
+import { ExactCasperScheme as ClientScheme } from "@make-software/casper-x402/exact/client";
+import type { PaymentRequirements, SettleResponse, VerifyResponse } from "@x402/core/types";
 import type { CoreResult, FacilitatorCore, FacilitatorLogger, ParsedPayment } from "./facilitator-core.js";
 import { NETWORKS } from "./facilitator-env.js";
 import {
@@ -17,6 +19,7 @@ import {
 } from "./real-facilitator.js";
 import * as fx from "./rpc-fixtures.js";
 import { startFakeRpcServer, type FakeRpcServer } from "./test-helpers.js";
+import { balanceItemKey, dictionaryAddress } from "./token-state.js";
 
 const { PrivateKey, KeyAlgorithm } = casperSdk;
 
@@ -424,5 +427,172 @@ describe("startRealFacilitator start-up rules (M07)", () => {
     });
     await fac.close();
     assert.ok(warnings.some(w => w.includes("seller")));
+  });
+});
+
+describe("startRealFacilitator end to end against a local fake node (no network)", () => {
+  const TOKEN_PKG = "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
+  const TOKEN_CONTRACT = "36e657e60199d91d9ace288e573ada1d4c1ab58b1ec6bcd31ae2c0dc62531bd8";
+  const SELLER = `00${"88".repeat(32)}`;
+  const PRICE = "500000000";
+  const namedKey = (name: string) =>
+    fx.testnetContractResponse.result.stored_value.Contract.named_keys.find(k => k.name === name)!.key;
+  const u256 = (v: bigint) => {
+    const le: number[] = [];
+    for (let x = v; x > 0n; x >>= 8n) le.push(Number(x & 0xffn));
+    return [le.length, ...le].map(b => b.toString(16).padStart(2, "0")).join("");
+  };
+  const u64 = (n: number) => {
+    const b = Buffer.alloc(8);
+    b.writeBigUInt64LE(BigInt(n));
+    return b.toString("hex");
+  };
+  /** "4m 57s" → ms (the node's duration format for whole seconds). */
+  const durationMs = (text: string) =>
+    [...text.matchAll(/(\d+)(h|m|s)\b/g)].reduce((ms, [, n, unit]) => ms + Number(n) * { h: 3_600_000, m: 60_000, s: 1_000 }[unit as "h" | "m" | "s"], 0);
+
+  let dir: string;
+  let feePayer: InstanceType<typeof PrivateKey>;
+  let feePayerPem: string;
+  let payer: InstanceType<typeof PrivateKey>;
+  let node: FakeRpcServer;
+  const submitted: Array<{ Version1: Record<string, any> }> = [];
+
+  before(async () => {
+    dir = mkdtempSync(join(tmpdir(), "cascet-wiring-"));
+    feePayer = PrivateKey.generate(KeyAlgorithm.ED25519);
+    feePayerPem = join(dir, "fee-payer_secret_key.pem");
+    writeFileSync(feePayerPem, feePayer.toPem(), { mode: 0o600 });
+    payer = PrivateKey.generate(KeyAlgorithm.ED25519);
+    const payerKey = `00${payer.publicKey.accountHash().toHex()}`;
+    node = await startFakeRpcServer({
+      [`query_global_state hash-${TOKEN_PKG}`]: fx.testnetPackageResponse,
+      [`query_global_state hash-${TOKEN_CONTRACT}`]: fx.testnetContractResponse,
+      [`query_global_state ${namedKey("name")}`]: fx.testnetNameResponse,
+      [`query_global_state ${dictionaryAddress(namedKey("balances"), balanceItemKey(payerKey))}`]: {
+        jsonrpc: "2.0",
+        id: 1,
+        result: { api_version: "2.0.0", block_header: null, stored_value: { CLValue: { cl_type: "U256", bytes: u256(100_000_000_000n), parsed: "100000000000" } } },
+      },
+      // Every other key (the payer's nonces) does not exist yet: unused.
+      query_global_state: fx.testnetUnusedNonceResponse,
+      account_put_transaction: (params: Record<string, unknown>) => {
+        const tx = params["transaction"] as { Version1: Record<string, any> };
+        submitted.push(tx);
+        return { jsonrpc: "2.0", id: 1, result: { api_version: "2.0.0", transaction_hash: { Version1: tx.Version1["hash"] } } };
+      },
+      info_get_transaction: {
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          api_version: "2.0.0",
+          transaction: {},
+          execution_info: {
+            block_height: 9_000_000,
+            execution_result: { Version2: { error_message: null, limit: "4000000000", cost: "4000000000", refund: "990000000" } },
+          },
+        },
+      },
+    });
+  });
+  after(async () => {
+    rmSync(dir, { recursive: true, force: true });
+    await node.close();
+  });
+
+  const requirements = (extra: Record<string, unknown> = { name: "CasCet X402 Token", version: "1" }) => ({
+    scheme: "exact",
+    network: NETWORK,
+    asset: TOKEN_PKG,
+    amount: PRICE,
+    payTo: SELLER,
+    maxTimeoutSeconds: 300,
+    extra,
+  });
+
+  /** A payment signed exactly as a buyer's casper-x402 client signs it. */
+  async function signedBody(reqs = requirements()) {
+    // casper-x402 types its own casper-js-sdk copy; the signer only calls publicKey and signAndAddAlgorithmBytes.
+    const client = new ClientScheme(toClientCasperSigner(payer as unknown as Parameters<typeof toClientCasperSigner>[0]));
+    const result = await client.createPaymentPayload(2, reqs as unknown as PaymentRequirements);
+    return { x402Version: 2, paymentPayload: { x402Version: 2, accepted: reqs, payload: result.payload }, paymentRequirements: reqs };
+  }
+
+  async function post(url: string, path: string, body: unknown) {
+    const res = await fetch(`${url}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: (await res.json()) as Record<string, any> };
+  }
+
+  test("verify, settle, replay, tampered nonce and wrong domain name, with the real scheme, reader and chain", async () => {
+    const fac = await startRealFacilitator({
+      port: 0,
+      network: NETWORK,
+      keyPath: feePayerPem,
+      rpcUrl: node.url,
+      authToken: TOKEN,
+      allowedPayTo: [SELLER],
+      allowedAssets: [`hash-${TOKEN_PKG}`],
+      logger: quiet,
+    });
+    try {
+      const good = await signedBody();
+      const auth = (good.paymentPayload.payload as { authorization: Record<string, string> }).authorization;
+      const payerKey = `00${payer.publicKey.accountHash().toHex()}`;
+
+      const verified = await post(fac.url, "/verify", good);
+      assert.deepEqual([verified.status, verified.body], [200, { isValid: true, payer: payerKey }]);
+
+      const settled = await post(fac.url, "/settle", good);
+      assert.equal(settled.status, 200);
+      assert.equal(settled.body["success"], true);
+      assert.deepEqual(settled.body["extra"], { settlementStatus: "success", gasCostMotes: "3010000000" });
+      assert.equal(submitted.length, 1);
+
+      // The transaction that went to the node.
+      const tx = submitted[0]!.Version1;
+      assert.equal(settled.body["transaction"], tx["hash"]);
+      const payload = tx["payload"];
+      assert.equal(payload.chain_name, "casper-test");
+      assert.equal(payload.initiator_addr.PublicKey, feePayer.publicKey.toHex());
+      assert.equal(tx["approvals"][0].signer, feePayer.publicKey.toHex());
+      assert.equal(payload.pricing_mode.PaymentLimited.payment_amount, 4_000_000_000);
+      assert.equal(payload.fields.entry_point.Custom, "transfer_with_authorization");
+      assert.equal(payload.fields.target.Stored.id.ByPackageHash.addr, TOKEN_PKG);
+      const ttl = durationMs(payload.ttl);
+      const expiresAt = Date.parse(payload.timestamp) + ttl;
+      assert.ok(ttl > 0 && ttl % 1000 === 0, `whole-second TTL, got ${payload.ttl}`);
+      assert.ok(expiresAt <= Number(auth["validBefore"]) * 1000 - 2_000, "the transaction expires before the authorization");
+      const args = Object.fromEntries(payload.fields.args.Named as Array<[string, { bytes: string; cl_type: unknown }]>);
+      assert.deepEqual([args["from"]!.cl_type, args["from"]!.bytes], ["Key", payerKey], "Key::Account(payer)");
+      assert.deepEqual([args["to"]!.cl_type, args["to"]!.bytes], ["Key", SELLER], "Key::Account(seller), tag 00");
+      assert.deepEqual([args["amount"]!.cl_type, args["amount"]!.bytes], ["U256", u256(BigInt(PRICE))], "argument `amount`, not `value`");
+      assert.equal(args["valid_after"]!.bytes, u64(Number(auth["validAfter"])));
+      assert.equal(args["valid_before"]!.bytes, u64(Number(auth["validBefore"])));
+      assert.equal(args["nonce"]!.bytes, `20000000${auth["nonce"]}`);
+      assert.equal(args["public_key"]!.bytes, payer.publicKey.toHex());
+      assert.equal(args["signature"]!.bytes, `41000000${(good.paymentPayload.payload as { signature: string }).signature}`);
+
+      // The same authorization again: 409 with the earlier hash, nothing submitted.
+      const replay = await post(fac.url, "/settle", good);
+      assert.deepEqual([replay.status, replay.body["errorReason"], replay.body["transaction"]], [409, "duplicate_nonce", tx["hash"]]);
+      assert.deepEqual(replay.body["extra"], { settlementStatus: "duplicate" });
+
+      // A tampered nonce breaks the signature (casper-x402's check).
+      const tampered = structuredClone(await signedBody());
+      (tampered.paymentPayload.payload as { authorization: { nonce: string } }).authorization.nonce = "77".repeat(32);
+      const bad = await post(fac.url, "/verify", tampered);
+      assert.deepEqual([bad.body["isValid"], bad.body["invalidReason"]], [false, "invalid_exact_casper_facilitator_invalid_signature"]);
+
+      // Signed with another EIP-712 name: refused by the on-chain name check, before any submission.
+      const wrongName = await post(fac.url, "/settle", await signedBody(requirements({ name: "Wrapped CSPR", version: "1" })));
+      assert.deepEqual([wrongName.status, wrongName.body["errorReason"]], [200, "token_domain_mismatch"]);
+      assert.equal(submitted.length, 1, "nothing else reached the node");
+    } finally {
+      await fac.close();
+    }
   });
 });
