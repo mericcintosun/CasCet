@@ -62,9 +62,10 @@ export async function startGateway(cfg: CascetConfig): Promise<RunningGateway> {
   function anchorAsync(receipt: PaymentReceipt): void {
     if (!anchorer || receipt.status !== "settled") return;
     anchorer.enqueue(receipt, anchoredTxHash => {
-      // Mutates the same object already held in the store's in-memory list;
+      // Persist the anchored version (the log keeps the last line per id) and
       // re-push so the dashboard updates the row with its on-chain anchor.
       receipt.anchoredTxHash = anchoredTxHash;
+      store.update(receipt);
       pushEvent({ type: "receipt", receipt });
     });
   }
