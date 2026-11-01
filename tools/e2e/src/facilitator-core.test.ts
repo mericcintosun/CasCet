@@ -13,7 +13,7 @@ import {
   type ParsedPayment,
 } from "./facilitator-core.js";
 import { DailyGasBudget } from "./gas-budget.js";
-import type { ExecutionOutcome, SettlementChain, SubmitOutcome } from "./settlement.js";
+import type { ExecutionOutcome, SettlementChain, SettlementSettings, SubmitOutcome } from "./settlement.js";
 import { FakeClock } from "./test-helpers.js";
 
 const NETWORK = "casper:casper-test" as const;
@@ -68,7 +68,7 @@ interface Harness {
   clock: FakeClock;
   ledger: AuthorizationLedger;
   gas: DailyGasBudget;
-  chain: SettlementChain & { submits: number; builds: number; ttls: number[] };
+  chain: SettlementChain & { submits: number; builds: number; ttls: number[]; settings: SettlementSettings[] };
   signatureChecks: { count: number };
   /** `readDelayMs`: how far each nonce read moves the clock (a slow node). */
   state: { balance: bigint; used: Set<string>; name: string; fail?: boolean; readDelayMs: number; deadlines: Array<number | undefined> };
@@ -103,9 +103,11 @@ function harness(opts: {
     submits: 0,
     builds: 0,
     ttls: [] as number[],
-    build(_input: unknown, _paymentMotes: bigint, ttlMs: number) {
+    settings: [] as SettlementSettings[],
+    build(_input: unknown, settings: SettlementSettings) {
       chain.builds++;
-      chain.ttls.push(ttlMs);
+      chain.ttls.push(settings.ttlMs);
+      chain.settings.push(settings);
       txCounter++;
       return { hash: txCounter.toString(16).padStart(64, "0"), json: {} };
     },
@@ -299,6 +301,7 @@ describe("/settle", () => {
     assert.equal(r.body.success, true);
     assert.equal(r.body.transaction, "1".padStart(64, "0"));
     assert.deepEqual(r.body.extra, { settlementStatus: "success", gasCostMotes: "3010000000" });
+    assert.deepEqual(h.chain.settings.map(s => [s.style, s.paymentMotes]), [["legacy-amount", 4n * CSPR]]);
     assert.equal(h.gas.snapshot().spentMotes, 3_010_000_000n);
     assert.equal(h.signatureChecks.count, 2, "full verification runs again at settle (M21)");
 

@@ -578,7 +578,8 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
 
     let tx: BuiltTransaction;
     try {
-      tx = deps.chain.build(a, config.paymentMotes, ttlMs);
+      // CasCet's x402 token takes `amount` (legacy-amount).
+      tx = deps.chain.build(a, { style: "legacy-amount", paymentMotes: config.paymentMotes, ttlMs });
     } catch (err) {
       deps.ledger.release(id);
       deps.log.error(`building the settlement failed: ${logText(err)}`);

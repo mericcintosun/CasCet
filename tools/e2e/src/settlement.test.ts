@@ -2,62 +2,142 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import casperSdk from "casper-js-sdk";
 import { createCasperRpc } from "@cascet/gateway";
+import type { AuthorizationStyle } from "@cascet/core";
 import * as fx from "./rpc-fixtures.js";
 import {
+  AMOUNT_ARGUMENT_BY_STYLE,
+  amountArgumentName,
   buildSettlementTransaction,
   createCasperSettlementChain,
   netCostMotes,
   parseExecutionInfo,
+  transferWithAuthorizationArgs,
   type SettlementInput,
 } from "./settlement.js";
 import { FakeClock, replayFetch, rpcError, rpcResult } from "./test-helpers.js";
 
 const { PrivateKey, KeyAlgorithm, TransactionWrapper } = casperSdk;
 
-const recorded = fx.testnetSettledTransaction;
-const recordedArgs = Object.fromEntries(recorded.payload.fields.args.Named.map(([name, v]) => [name, v])) as Record<
-  string,
-  { cl_type: unknown; bytes: string; parsed: unknown }
->;
-
-/** The authorization settled by testnet tx 04e54a95…, as the facilitator receives it. */
-const settledInput: SettlementInput = {
-  asset: recorded.payload.fields.target.Stored.id.ByPackageHash.addr,
-  from: recordedArgs["from"]!.bytes,
-  to: recordedArgs["to"]!.bytes,
-  value: BigInt(recordedArgs["amount"]!.parsed as string),
-  validAfter: recordedArgs["valid_after"]!.parsed as number,
-  validBefore: recordedArgs["valid_before"]!.parsed as number,
-  nonce: recordedArgs["nonce"]!.bytes.slice(8), // strip the Vec<u8> length prefix
-  publicKey: recordedArgs["public_key"]!.bytes,
-  signature: recordedArgs["signature"]!.bytes.slice(8),
+type RecordedArg = { cl_type: unknown; bytes: string; parsed: unknown };
+type RecordedTx = {
+  hash: string;
+  payload: {
+    initiator_addr: { PublicKey: string };
+    timestamp: string;
+    chain_name: string;
+    pricing_mode: { PaymentLimited: { payment_amount: number } };
+    fields: { args: { Named: ReadonlyArray<readonly [string, RecordedArg]> }; target: { Stored: { id: { ByPackageHash: { addr: string } } } } };
+  };
 };
+type TxJson = { Version1: { hash: string; payload: { fields: { args: { Named: Array<[string, { bytes: string; cl_type: unknown }]> } } } } };
 
-describe("settlement transaction builder", () => {
-  test("rebuilds settled testnet tx 04e54a95 byte for byte (same payload hash)", () => {
-    const tx = buildSettlementTransaction(settledInput, {
-      feePayerPublicKey: recorded.payload.initiator_addr.PublicKey,
-      chainName: recorded.payload.chain_name,
-      paymentMotes: BigInt(recorded.payload.pricing_mode.PaymentLimited.payment_amount),
-      ttlMs: 30 * 60_000,
-      timestamp: new Date(recorded.payload.timestamp),
-    });
+const argsOf = (tx: RecordedTx) => Object.fromEntries(tx.payload.fields.args.Named.map(([name, v]) => [name, v])) as Record<string, RecordedArg>;
+
+/** The authorization a recorded settlement carried (in either style), as the facilitator receives it. */
+function inputOf(tx: RecordedTx): SettlementInput {
+  const args = argsOf(tx);
+  const amount = args["amount"] ?? args["value"];
+  return {
+    asset: tx.payload.fields.target.Stored.id.ByPackageHash.addr,
+    from: args["from"]!.bytes,
+    to: args["to"]!.bytes,
+    value: BigInt(amount!.parsed as string),
+    validAfter: args["valid_after"]!.parsed as number,
+    validBefore: args["valid_before"]!.parsed as number,
+    nonce: args["nonce"]!.bytes.slice(8), // strip the Vec<u8> length prefix
+    publicKey: args["public_key"]!.bytes,
+    signature: args["signature"]!.bytes.slice(8),
+  };
+}
+
+/** Rebuild a recorded settlement in `style` with its own fee payer, chain, limit, timestamp and TTL. */
+function rebuild(tx: RecordedTx, style: AuthorizationStyle, ttlMs: number) {
+  return buildSettlementTransaction(inputOf(tx), {
+    feePayerPublicKey: tx.payload.initiator_addr.PublicKey,
+    chainName: tx.payload.chain_name,
+    style,
+    paymentMotes: BigInt(tx.payload.pricing_mode.PaymentLimited.payment_amount),
+    ttlMs,
+    timestamp: new Date(tx.payload.timestamp),
+  });
+}
+
+const recorded = fx.testnetSettledTransaction;
+const recordedArgs = argsOf(recorded);
+/** The authorization settled by testnet tx 04e54a95… (legacy-amount). */
+const settledInput = inputOf(recorded);
+const hosted = fx.testnetHostedValueTransaction;
+
+describe("settlement transaction builder: one path, two styles", () => {
+  test("legacy-amount rebuilds settled testnet tx 04e54a95 byte for byte (casper-x402 1.0.0, `amount`)", () => {
+    const tx = rebuild(recorded, "legacy-amount", 30 * 60_000);
     assert.equal(tx.hash.toHex(), recorded.hash);
 
-    const json = TransactionWrapper.toJSON(tx.getTransactionWrapper()) as {
-      Version1: { payload: { fields: { args: { Named: Array<[string, { bytes: string; cl_type: unknown }]> } } } };
-    };
-    const rebuilt = Object.fromEntries(json.Version1.payload.fields.args.Named);
+    const json = TransactionWrapper.toJSON(tx.getTransactionWrapper()) as TxJson;
+    const rebuilt = json.Version1.payload.fields.args.Named;
+    assert.deepEqual(
+      rebuilt.map(([name]) => name),
+      ["from", "to", "amount", "valid_after", "valid_before", "nonce", "public_key", "signature"],
+    );
+    const byName = Object.fromEntries(rebuilt);
     for (const name of ["from", "to", "amount", "valid_after", "valid_before", "nonce", "public_key", "signature"]) {
-      assert.equal(rebuilt[name]?.bytes, recordedArgs[name]!.bytes, `arg ${name}`);
-      assert.deepEqual(rebuilt[name]?.cl_type, recordedArgs[name]!.cl_type, `arg ${name} type`);
+      assert.equal(byName[name]?.bytes, recordedArgs[name]!.bytes, `arg ${name}`);
+      assert.deepEqual(byName[name]?.cl_type, recordedArgs[name]!.cl_type, `arg ${name} type`);
     }
+  });
+
+  test("cep3009-value rebuilds the hosted facilitator's testnet tx 9fe35eed byte for byte (@x402/casper, `value`)", () => {
+    const hostedArgs = argsOf(hosted);
+    const tx = rebuild(hosted, "cep3009-value", 15 * 60_000);
+    assert.equal(tx.hash.toHex(), hosted.hash, "same payload hash as the official builder's transaction");
+
+    const json = TransactionWrapper.toJSON(tx.getTransactionWrapper()) as TxJson;
+    const rebuilt = json.Version1.payload.fields.args.Named;
+    assert.deepEqual(
+      rebuilt.map(([name]) => name),
+      ["from", "to", "value", "valid_after", "valid_before", "nonce", "public_key", "signature"],
+    );
+    for (const [name, arg] of rebuilt) {
+      assert.equal(arg.bytes, hostedArgs[name]!.bytes, `arg ${name}`);
+      assert.deepEqual(arg.cl_type, hostedArgs[name]!.cl_type, `arg ${name} type`);
+    }
+  });
+
+  test("the style decides only the amount argument's name", () => {
+    const named = (style: AuthorizationStyle) =>
+      (
+        TransactionWrapper.toJSON(rebuild(recorded, style, 30 * 60_000).getTransactionWrapper()) as TxJson
+      ).Version1.payload.fields.args.Named;
+    const legacy = named("legacy-amount");
+    const value = named("cep3009-value");
+    assert.deepEqual(
+      legacy.map(([name]) => (name === "amount" ? "<amount>" : name)),
+      value.map(([name]) => (name === "value" ? "<amount>" : name)),
+    );
+    assert.deepEqual(
+      legacy.map(([, arg]) => arg),
+      value.map(([, arg]) => arg),
+      "identical CLTypes and bytes",
+    );
+    assert.equal(legacy.find(([n]) => n === "value"), undefined);
+    assert.equal(value.find(([n]) => n === "amount"), undefined);
+    // A transaction of the wrong style is a different transaction.
+    assert.notEqual(rebuild(recorded, "cep3009-value", 30 * 60_000).hash.toHex(), recorded.hash);
+  });
+
+  test("unknown styles are refused instead of guessed", () => {
+    assert.deepEqual(AMOUNT_ARGUMENT_BY_STYLE, { "legacy-amount": "amount", "cep3009-value": "value" });
+    assert.ok(Object.isFrozen(AMOUNT_ARGUMENT_BY_STYLE));
+    assert.deepEqual([amountArgumentName("legacy-amount"), amountArgumentName("cep3009-value")], ["amount", "value"]);
+    assert.throws(() => amountArgumentName("value" as AuthorizationStyle), /unknown authorization style/);
+    assert.throws(() => transferWithAuthorizationArgs(settledInput, "cep3009" as AuthorizationStyle), /unknown authorization style/);
   });
 
   test("uses the requested gas limit (4 CSPR default path)", () => {
     const tx = buildSettlementTransaction(settledInput, {
       feePayerPublicKey: recorded.payload.initiator_addr.PublicKey,
       chainName: "casper-test",
+      style: "legacy-amount",
       paymentMotes: 4_000_000_000n,
       ttlMs: 10 * 60_000,
     });
@@ -76,6 +156,12 @@ describe("execution results", () => {
     // 7 CSPR limit, 2.7066 CSPR consumed, 75% of the unused part refunded.
     assert.equal(outcome?.kind === "success" ? outcome.costMotes : undefined, 7_000_000_000n - 3_220_079_032n);
     assert.equal(outcome?.blockHeight, 8_591_707);
+  });
+
+  test("recorded revert of the wrong style: User error 64658, the whole limit is charged", () => {
+    // The hosted facilitator sent `value` to CasCet's `amount` token: Odra MissingArg.
+    const outcome = parseExecutionInfo(hosted.execution_info);
+    assert.deepEqual(outcome, { kind: "failure", errorMessage: "User error: 64658", costMotes: 6_000_000_000n, blockHeight: 8_594_884 });
   });
 
   test("an error_message is a failure; missing execution info is not final", () => {
@@ -107,6 +193,8 @@ function chainWith(routes: Record<string, unknown>, clock = new FakeClock(1_000_
   return { chain, privateKey, clock, slept };
 }
 
+const LEGACY = { style: "legacy-amount", paymentMotes: 4_000_000_000n } as const;
+
 describe("submission", () => {
   test("signs with the fee payer and reports the locally computed hash", async () => {
     const { chain, privateKey } = chainWith({
@@ -115,7 +203,7 @@ describe("submission", () => {
         return rpcResult({ api_version: "2.0.0", transaction_hash: { Version1: tx.hash } });
       },
     });
-    const built = chain.build(settledInput, 4_000_000_000n, 600_000);
+    const built = chain.build(settledInput, { ...LEGACY, ttlMs: 600_000 });
     const json = built.json as { Version1: { hash: string; approvals: Array<{ signer: string }> } };
     assert.equal(json.Version1.hash, built.hash);
     assert.equal(json.Version1.approvals[0]?.signer, privateKey.publicKey.toHex());
@@ -123,14 +211,31 @@ describe("submission", () => {
     assert.deepEqual(await chain.submit(built), { kind: "accepted", hash: built.hash });
   });
 
+  test("each settlement carries its asset's style and gas limit", () => {
+    const { chain } = chainWith({});
+    const payloadOf = (settings: { style: AuthorizationStyle; paymentMotes: bigint }) =>
+      (
+        chain.build(settledInput, { ...settings, ttlMs: 600_000 }).json as {
+          Version1: { payload: { pricing_mode: { PaymentLimited: { payment_amount: number } }; fields: { args: { Named: Array<[string, unknown]> } } } };
+        }
+      ).Version1.payload;
+    const legacy = payloadOf(LEGACY);
+    const value = payloadOf({ style: "cep3009-value", paymentMotes: 3_500_000_000n });
+    assert.deepEqual(legacy.fields.args.Named.map(([n]) => n).slice(0, 3), ["from", "to", "amount"]);
+    assert.deepEqual(value.fields.args.Named.map(([n]) => n).slice(0, 3), ["from", "to", "value"]);
+    assert.equal(legacy.pricing_mode.PaymentLimited.payment_amount, 4_000_000_000);
+    assert.equal(value.pricing_mode.PaymentLimited.payment_amount, 3_500_000_000);
+    assert.throws(() => chain.build(settledInput, { style: "legacy-amount", paymentMotes: 0n, ttlMs: 600_000 }), /gas limit out of range/);
+  });
+
   test("the TTL is capped at the chain maximum and rounded down to whole seconds", () => {
     const { chain } = chainWith({});
     const ttlOf = (requested: number) =>
-      (chain.build(settledInput, 4_000_000_000n, requested).json as { Version1: { payload: { ttl: string } } }).Version1.payload.ttl;
+      (chain.build(settledInput, { ...LEGACY, ttlMs: requested }).json as { Version1: { payload: { ttl: string } } }).Version1.payload.ttl;
     assert.equal(ttlOf(297_345), "4m 57s", "never a fractional duration the node cannot parse");
     assert.equal(ttlOf(3_600_000), "10m", "capped at the chain's maximum TTL");
     assert.equal(ttlOf(18_000), "18s");
-    assert.throws(() => chain.build(settledInput, 4_000_000_000n, 999), /at least 1 s/);
+    assert.throws(() => chain.build(settledInput, { ...LEGACY, ttlMs: 999 }), /at least 1 s/);
   });
 
   test("only proof of rejection counts as 'not submitted'", async () => {
@@ -143,7 +248,7 @@ describe("submission", () => {
     ];
     for (const [response, kind] of cases) {
       const { chain } = chainWith({ account_put_transaction: response });
-      const built = chain.build(settledInput, 4_000_000_000n, 600_000);
+      const built = chain.build(settledInput, { ...LEGACY, ttlMs: 600_000 });
       const outcome = await chain.submit(built);
       assert.equal(outcome.kind, kind);
       if (outcome.kind === "unknown") assert.equal(outcome.hash, built.hash);
