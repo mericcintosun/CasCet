@@ -20,7 +20,7 @@ import {
 } from "@cascet/core";
 import { expressAdapter, withoutPaymentHeader } from "./adapter.js";
 import { Anchorer, chainNameForNetwork, createCasperAnchorChain, type AnchorChain, type AnchoringHealth } from "./anchor.js";
-import { parseCasperAuthorization, type CasperAuthorization } from "./authorization.js";
+import { normalizeAccountAddress, parseCasperAuthorization, type CasperAuthorization } from "./authorization.js";
 import { buildDiscovery } from "./discovery.js";
 import { classifySettleFailure, SettlementIndeterminateError } from "./facilitator.js";
 import {
@@ -199,7 +199,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   const store = new ReceiptStore(options.receiptsPath ?? `.cascet/${slug(cfg.name)}.receipts.jsonl`);
   const pushEvent = makeEventPusher(cfg.eventsUrl);
   const replay = new ReplayGuard();
-  seedReplayGuard(replay, store.list(), rail.maxTimeoutSeconds);
+  seedReplayGuard(replay, store, rail.maxTimeoutSeconds);
 
   let table: ToolTable = buildToolTable(cfg, rail, []);
   let listening = false;
@@ -494,12 +494,20 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   }
 
   function receiptFor(call: PaidCall, outcome: SettleOutcome): PaymentReceipt {
+    // The receipt (and the replay guard after a restart) keys on the payer the gateway
+    // verified itself, never on however the facilitator chose to spell it.
+    if (outcome.payer !== undefined && normalizeAccountAddress(outcome.payer) !== call.authorization.from) {
+      log.warn(
+        `[x402] facilitator reported payer ${logSafe(outcome.payer, 80)} for an authorization from ` +
+          `${logSafe(call.authorization.from)}; the receipt records the authorization's payer`,
+      );
+    }
     return recordReceipt({
       id: call.paymentId,
       tool: call.name,
       started: call.started,
       status: outcome.status,
-      payer: outcome.payer ?? call.authorization.from,
+      payer: call.authorization.from,
       nonce: call.authorization.nonce,
       amountRaw: call.policy.amount,
       priceUsd: call.policy.price.price,
@@ -732,6 +740,28 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       res.status(402).set(headers).json(rpcError(id, RPC_PAYMENT_REQUIRED, `payment rejected: ${mismatch}`, paymentRequired));
       return;
     }
+
+    // 3. Write ahead: once this record is on disk a restart keeps refusing the authorization,
+    //    even if the process dies before the receipt is written. No record, no execution.
+    const paymentId = uuidv4();
+    try {
+      store.appendAuthorization({
+        kind: "authorization",
+        payer: authorization.from,
+        nonce: authorization.nonce,
+        validBefore: authorization.validBefore,
+        paymentId,
+        tool: name,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      replay.release(reservation);
+      log.error(`[receipts] cannot record a paid call to ${logSafe(name, 80)} (${logSafe(err)}); refusing to run it`);
+      res
+        .status(503)
+        .json(rpcError(id, RPC_INTERNAL_ERROR, "gateway cannot record payments right now; the tool was not run and nothing was charged"));
+      return;
+    }
     replay.commit(reservation);
 
     const call: PaidCall = {
@@ -743,7 +773,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       context,
       verified: processed,
       authorization,
-      paymentId: uuidv4(),
+      paymentId,
       parentId: parentIdOf(req),
       started,
     };
@@ -985,12 +1015,17 @@ function parentIdOf(req: Request): string | undefined {
 }
 
 /** Refuse replays of authorizations recorded before a restart. */
-function seedReplayGuard(replay: ReplayGuard, receipts: PaymentReceipt[], maxTimeoutSeconds: number): void {
+function seedReplayGuard(replay: ReplayGuard, store: ReceiptStore, maxTimeoutSeconds: number): void {
+  // Write-ahead records: written by the gateway itself, before execution, with the exact validBefore.
+  for (const record of store.authorizations()) {
+    replay.markUsed(replayKey(normalizeAccountAddress(record.payer), record.nonce), (record.validBefore + MAX_CLOCK_SKEW_SECONDS) * 1_000);
+  }
+  // Receipts, including those written before write-ahead records existed.
   const horizonMs = (maxTimeoutSeconds + MAX_CLOCK_SKEW_SECONDS) * 1_000;
-  for (const receipt of receipts) {
+  for (const receipt of store.list()) {
     if (!receipt.nonce || !receipt.payer) continue;
     const created = Date.parse(receipt.createdAt);
-    if (Number.isFinite(created)) replay.markUsed(replayKey(receipt.payer, receipt.nonce), created + horizonMs);
+    if (Number.isFinite(created)) replay.markUsed(replayKey(normalizeAccountAddress(receipt.payer), receipt.nonce), created + horizonMs);
   }
 }
 

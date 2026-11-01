@@ -4,24 +4,72 @@ import type { CascetEvent, PaymentReceipt } from "@cascet/core";
 import { log, logSafe } from "./log.js";
 
 /**
+ * Write-ahead record of a paid call that is about to run. It is appended after
+ * the facilitator verified the authorization and before the tool runs or the
+ * payment settles, so a restarted gateway still refuses that authorization
+ * even if the process died before the call's receipt was written.
+ */
+export interface AuthorizationRecord {
+  kind: "authorization";
+  /** Payer account: "00" + account hash, as the gateway parsed it from the authorization. */
+  payer: string;
+  /** Authorization nonce, 64 lowercase hex. */
+  nonce: string;
+  /** Unix seconds; after this the token refuses the authorization anyway. */
+  validBefore: number;
+  /** Payment id of the call (its receipt carries the same id). */
+  paymentId: string;
+  tool: string;
+  createdAt: string;
+}
+
+/** Loaded authorization records older than this past their validBefore are dropped. */
+const AUTHORIZATION_RETENTION_SECONDS = 3_600;
+
+function isAuthorizationRecord(value: unknown): value is AuthorizationRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const r = value as Record<string, unknown>;
+  return (
+    r.kind === "authorization" &&
+    typeof r.payer === "string" &&
+    typeof r.nonce === "string" &&
+    typeof r.validBefore === "number" &&
+    Number.isFinite(r.validBefore)
+  );
+}
+
+/**
  * Append-only JSONL receipt store with an in-memory index.
  *
  * A receipt can be written more than once (for example when its on-chain
  * anchor lands after the payment settled); the log keeps every version and the
- * last line for an id wins when the file is loaded again.
+ * last line for an id wins when the file is loaded again. The same log holds
+ * the write-ahead authorization records (lines with `kind: "authorization"`
+ * and no `id`, which older loaders skip).
  */
 export class ReceiptStore {
   private readonly receipts = new Map<string, PaymentReceipt>();
+  private readonly loadedAuthorizations: AuthorizationRecord[] = [];
 
-  constructor(private readonly filePath: string) {
+  constructor(
+    private readonly filePath: string,
+    now: () => number = Date.now,
+  ) {
     if (existsSync(filePath)) {
+      const oldest = Math.floor(now() / 1_000) - AUTHORIZATION_RETENTION_SECONDS;
       for (const line of readFileSync(filePath, "utf8").split("\n")) {
         if (!line.trim()) continue;
+        let value: unknown;
         try {
-          const receipt = JSON.parse(line) as PaymentReceipt;
-          if (receipt && typeof receipt.id === "string") this.receipts.set(receipt.id, receipt);
+          value = JSON.parse(line);
         } catch {
-          // skip a corrupt line
+          continue; // skip a corrupt line
+        }
+        if (isAuthorizationRecord(value)) {
+          if (value.validBefore >= oldest) this.loadedAuthorizations.push(value);
+        } else if (typeof value === "object" && value !== null && typeof (value as PaymentReceipt).id === "string") {
+          const receipt = value as PaymentReceipt;
+          this.receipts.set(receipt.id, receipt);
         }
       }
     } else {
@@ -29,6 +77,7 @@ export class ReceiptStore {
     }
   }
 
+  /** Add a receipt. It is indexed in memory even when writing the log throws. */
   add(receipt: PaymentReceipt): void {
     this.receipts.set(receipt.id, receipt);
     appendFileSync(this.filePath, `${JSON.stringify(receipt)}\n`);
@@ -39,8 +88,18 @@ export class ReceiptStore {
     this.add(receipt);
   }
 
+  /** Append a write-ahead authorization record. Throws when the log cannot be written. */
+  appendAuthorization(record: AuthorizationRecord): void {
+    appendFileSync(this.filePath, `${JSON.stringify(record)}\n`);
+  }
+
   list(): PaymentReceipt[] {
     return [...this.receipts.values()];
+  }
+
+  /** Authorization records found in the log at startup (recent ones only). */
+  authorizations(): AuthorizationRecord[] {
+    return [...this.loadedAuthorizations];
   }
 }
 

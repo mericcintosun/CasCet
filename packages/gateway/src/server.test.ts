@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync, writeFileSync } from "node:fs";
 import { describe, it, mock } from "node:test";
 import { decodePaymentResponseHeader } from "@x402/core/http";
 import { x402HTTPResourceServer } from "@x402/core/server";
@@ -12,6 +13,7 @@ import {
   PRICE_RAW,
   callPaid,
   challengeOf,
+  eventually,
   payFor,
   receipts,
   startHarness,
@@ -238,6 +240,59 @@ describe("replay protection (M18)", () => {
         assert.equal(second.facilitator.count("verify"), 0);
       });
     } finally {
+      await first.close();
+    }
+  });
+
+  it("records the payer it verified and still refuses the replay after a restart when the facilitator spells the payer differently", async () => {
+    const first = await startHarness();
+    try {
+      first.facilitator.onSettle = () => ({
+        json: { success: true, transaction: SETTLE_TX, network: "casper:casper-test", payer: `account-hash-${PAYER.slice(2).toUpperCase()}` },
+      });
+      const { header } = await payFor(first, "paid_tool");
+      assert.equal((await callPaid(first, "paid_tool", header)).status, 200);
+      assert.equal((await receipts(first))[0]?.payer, PAYER, "the receipt carries the verified payer");
+      await first.gateway.close();
+      // Drop the write-ahead record to prove the receipt alone is enough.
+      const receiptLines = readFileSync(first.receiptsPath, "utf8")
+        .split("\n")
+        .filter(line => line && !line.includes('"kind":"authorization"'));
+      writeFileSync(first.receiptsPath, `${receiptLines.join("\n")}\n`);
+      await withHarness({ gateway: { receiptsPath: first.receiptsPath } }, async second => {
+        const replay = await callPaid(second, "paid_tool", header);
+        assert.equal(replay.status, 402);
+        assert.match(replay.body.error?.message ?? "", /duplicate_payment/);
+        assert.equal(second.facilitator.count("verify"), 0);
+      });
+    } finally {
+      await first.close();
+    }
+  });
+
+  it("refuses the replay after a restart even when the first gateway never wrote a receipt (write-ahead record)", async () => {
+    let release!: () => void;
+    const running = new Promise<void>(resolve => (release = resolve));
+    const slow = [{ name: "paid_tool", handler: async () => (await running, { content: [{ type: "text" as const, text: "late" }] }) }];
+    const first = await startHarness({ tools: slow });
+    try {
+      const { header, nonce } = await payFor(first, "paid_tool");
+      const pending = callPaid(first, "paid_tool", header);
+      await eventually(() => first.upstream.calls.length === 1, 3_000, "the tool to start");
+      // The tool is running and nothing has settled: as if the process died right now.
+      const log = readFileSync(first.receiptsPath, "utf8");
+      assert.match(log, new RegExp(`"kind":"authorization","payer":"${PAYER}","nonce":"${nonce}"`));
+      assert.equal(await receipts(first).then(list => list.length), 0);
+      await withHarness({ gateway: { receiptsPath: first.receiptsPath } }, async second => {
+        const replay = await callPaid(second, "paid_tool", header);
+        assert.equal(replay.status, 402);
+        assert.match(replay.body.error?.message ?? "", /duplicate_payment/);
+        assert.equal(second.facilitator.count("verify"), 0);
+      });
+      release();
+      assert.equal((await pending).status, 200);
+    } finally {
+      release();
       await first.close();
     }
   });

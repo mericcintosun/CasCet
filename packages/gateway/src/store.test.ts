@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -41,6 +41,34 @@ describe("ReceiptStore", () => {
       assert.deepEqual(reloaded.map(r => r.id), ["r1", "r2"]);
       assert.equal(reloaded[0]?.anchoredTxHash, "ab".repeat(32));
       assert.equal(reloaded[1]?.status, "unknown");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps write-ahead authorization records apart from receipts and drops long-expired ones on load", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cascet-store-test-"));
+    try {
+      const path = join(dir, "receipts.jsonl");
+      const nowMs = 1_800_000_000_000;
+      const store = new ReceiptStore(path, () => nowMs);
+      const record = (nonce: string, validBefore: number) => ({
+        kind: "authorization" as const,
+        payer: `00${"aa".repeat(32)}`,
+        nonce,
+        validBefore,
+        paymentId: `p-${nonce}`,
+        tool: "t",
+        createdAt: "2027-01-15T08:00:00.000Z",
+      });
+      store.add(receipt("r1"));
+      store.appendAuthorization(record("live", nowMs / 1_000 + 60));
+      store.appendAuthorization(record("old", nowMs / 1_000 - 7_200));
+      appendFileSync(path, "{corrupt\n");
+      const reloaded = new ReceiptStore(path, () => nowMs);
+      assert.deepEqual(reloaded.list().map(r => r.id), ["r1"], "authorization records are not receipts");
+      assert.deepEqual(reloaded.authorizations().map(r => r.nonce), ["live"]);
+      assert.deepEqual(store.authorizations(), [], "records appended by this process are not re-read");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
