@@ -13,7 +13,7 @@ export {
   type PaidMcpHttpClientOptions,
   type ToolCallOutcome,
 } from "./mcp-http-client.js";
-export { runBridge } from "./bridge.js";
+export { runBridge, type BridgeOptions } from "./bridge.js";
 export {
   DEFAULT_MAX_AUTHORIZATION_SECONDS,
   normalizeAssetHash,
@@ -24,6 +24,15 @@ export {
   type SpendDecision,
   type SpendPolicyOptions,
 } from "./policy.js";
+export {
+  defaultToolPinsPath,
+  PinFileError,
+  ToolPinGuard,
+  toolDigest,
+  type ToolPinGuardOptions,
+  type ToolPinOptions,
+  type ToolTrust,
+} from "./tool-pins.js";
 export { accountHashFromPublicKey } from "./account-hash.js";
 export {
   DEFAULT_MAX_RESPONSE_BYTES,
