@@ -57,6 +57,23 @@ describe("casper-rpc error classification", () => {
     }
   });
 
+  test("a per-call timeout can only shorten the client's timeout", async () => {
+    const hang: FetchLike = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(init.signal.reason));
+      });
+    const rpc = createCasperRpc("http://rpc.invalid", { fetchImpl: hang, timeoutMs: 5_000 });
+    const started = Date.now();
+    const err = await rpc.call("query_global_state", {}, { timeoutMs: 30 }).catch(e => e);
+    assert.ok(err instanceof RpcTransportError && err.kind === "timeout");
+    assert.ok(Date.now() - started < 2_000, "the shorter per-call timeout applied");
+
+    const short = createCasperRpc("http://rpc.invalid", { fetchImpl: hang, timeoutMs: 30 });
+    const begun = Date.now();
+    await short.call("query_global_state", {}, { timeoutMs: 60_000 }).catch(e => e);
+    assert.ok(Date.now() - begun < 2_000, "a longer per-call timeout is ignored");
+  });
+
   test("sends a well-formed JSON-RPC 2.0 request", async () => {
     let sent: { jsonrpc: string; id: number; method: string; params: unknown } | undefined;
     const rpc = createCasperRpc("http://rpc.invalid", {

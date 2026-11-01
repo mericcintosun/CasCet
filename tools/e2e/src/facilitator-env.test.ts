@@ -89,6 +89,7 @@ describe("facilitator environment", () => {
     assert.equal(cfg.dailyGasCapMotes, 500_000_000_000n);
     assert.equal(cfg.settleWaitMs, 60_000);
     assert.equal(cfg.preflight, true);
+    assert.equal(cfg.preflightDeadlineMs, 10_000);
     assert.equal(cfg.tokenVersion, "1");
     assert.equal(cfg.host, "127.0.0.1");
     assert.equal(cfg.port, 4501);
@@ -108,6 +109,7 @@ describe("facilitator environment", () => {
         CASCET_DAILY_GAS_CAP_MOTES: "50_000_000_000",
         CASCET_SETTLE_WAIT_MS: "20000",
         CASCET_PREFLIGHT: "off",
+        CASCET_PREFLIGHT_DEADLINE_MS: "5000",
         PORT: "8080",
         CASCET_FACILITATOR_HOST: "0.0.0.0",
       },
@@ -120,6 +122,7 @@ describe("facilitator environment", () => {
     assert.equal(cfg.dailyGasCapMotes, 50_000_000_000n);
     assert.equal(cfg.settleWaitMs, 20_000);
     assert.equal(cfg.preflight, false);
+    assert.equal(cfg.preflightDeadlineMs, 5_000);
     assert.equal(cfg.port, 8080);
     assert.equal(cfg.host, "0.0.0.0");
     assert.ok(cfg.warnings.some(w => w.includes("CASCET_PREFLIGHT=off")));
@@ -144,6 +147,7 @@ describe("facilitator environment", () => {
     assert.throws(() => readFacilitatorEnv({ PORT: "70000" }, ROOT), /PORT/);
     assert.throws(() => readFacilitatorEnv({ CASCET_SELLER_ACCOUNT_HASH: `01${"aa".repeat(32)}` }, ROOT), /CASCET_SELLER_ACCOUNT_HASH/);
     assert.throws(() => readFacilitatorEnv({ CASCET_PREFLIGHT: "maybe" }, ROOT), /CASCET_PREFLIGHT/);
+    assert.throws(() => readFacilitatorEnv({ CASCET_PREFLIGHT_DEADLINE_MS: "100" }, ROOT), /CASCET_PREFLIGHT_DEADLINE_MS/);
     assert.throws(() => readFacilitatorEnv({ CASCET_FACILITATOR_KEY_ALGO: "rsa" }, ROOT), /ed25519 or secp256k1/);
     assert.throws(() => readFacilitatorEnv({ CASCET_RPC_URL: "node.testnet.casper.network/rpc" }, ROOT), /CASCET_RPC_URL/);
     assert.throws(() => readFacilitatorEnv({ CASCET_RPC_URL: "ftp://node.example/rpc" }, ROOT), /CASCET_RPC_URL/);

@@ -74,6 +74,7 @@ const facilitator = await startRealFacilitator({
   dailyGasCapMotes: fac.dailyGasCapMotes,
   settleWaitMs: fac.settleWaitMs,
   preflight: fac.preflight,
+  preflightDeadlineMs: fac.preflightDeadlineMs,
   tokenVersion: fac.tokenVersion,
 });
 

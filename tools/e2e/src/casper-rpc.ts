@@ -50,9 +50,14 @@ export type FetchLike = (
   init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal },
 ) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
 
+export interface RpcCallOptions {
+  /** Shorter timeout for this call (e.g. what is left of a caller's deadline); never longer than the client's. */
+  timeoutMs?: number;
+}
+
 export interface CasperRpc {
   readonly url: string;
-  call<T = unknown>(method: string, params: unknown): Promise<T>;
+  call<T = unknown>(method: string, params: unknown, opts?: RpcCallOptions): Promise<T>;
 }
 
 export interface CasperRpcOptions {
@@ -75,9 +80,11 @@ export function createCasperRpc(url: string, opts: CasperRpcOptions = {}): Caspe
 
   return {
     url,
-    async call<T>(method: string, params: unknown): Promise<T> {
+    async call<T>(method: string, params: unknown, callOpts?: RpcCallOptions): Promise<T> {
       const id = nextId++;
-      const signal = AbortSignal.timeout(timeoutMs);
+      const limit = callOpts?.timeoutMs;
+      const effectiveTimeoutMs = limit !== undefined && limit < timeoutMs ? Math.max(1, Math.floor(limit)) : timeoutMs;
+      const signal = AbortSignal.timeout(effectiveTimeoutMs);
       const isTimeout = (err: unknown) =>
         signal.aborted || (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError"));
 

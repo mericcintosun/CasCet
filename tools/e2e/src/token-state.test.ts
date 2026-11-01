@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { createCasperRpc } from "./casper-rpc.js";
+import { createCasperRpc, RpcTransportError, type CasperRpc, type RpcCallOptions } from "./casper-rpc.js";
 import * as fx from "./rpc-fixtures.js";
 import { FakeClock, replayFetch, rpcError } from "./test-helpers.js";
 import {
@@ -8,6 +8,7 @@ import {
   balanceItemKey,
   dictionaryAddress,
   latestContractHash,
+  MIN_RETRY_BUDGET_MS,
   parseU256,
   TokenStateError,
   TokenStateReader,
@@ -194,6 +195,91 @@ describe("TokenStateReader (recorded RPC fixtures)", () => {
     clock.advance(60_001);
     await reader.balanceOf(TESTNET_TOKEN, PAYER);
     assert.equal(calls.filter(c => c.endsWith(TESTNET_TOKEN)).length, 2);
+  });
+});
+
+/**
+ * A CasperRpc stand-in on a fake clock: answers from the recorded fixtures,
+ * records each call's timeout, and can make chosen keys slow or failing.
+ */
+function clockedRpc(clock: FakeClock, behave: (key: string, attempt: number) => { delayMs?: number; fail?: boolean } = () => ({})) {
+  const usedSeed = namedKey(fx.testnetContractResponse, "used_nonces");
+  const balSeed = namedKey(fx.testnetContractResponse, "balances");
+  const answers: Record<string, unknown> = {
+    [`hash-${TESTNET_TOKEN}`]: fx.testnetPackageResponse,
+    [`hash-${TESTNET_CONTRACT}`]: fx.testnetContractResponse,
+    [dictionaryAddress(usedSeed, usedNonceItemKey(PAYER, TESTNET_NONCE))]: fx.testnetUsedNonceResponse,
+    [dictionaryAddress(balSeed, balanceItemKey(PAYER))]: fx.testnetBalanceResponse,
+    [namedKey(fx.testnetContractResponse, "name")]: fx.testnetNameResponse,
+  };
+  const calls: Array<{ key: string; timeoutMs?: number }> = [];
+  const attempts = new Map<string, number>();
+  const rpc: CasperRpc = {
+    url: "http://rpc.invalid",
+    async call<T>(_method: string, params: unknown, opts?: RpcCallOptions): Promise<T> {
+      const key = (params as { key: string }).key;
+      calls.push({ key, ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}) });
+      const n = (attempts.get(key) ?? 0) + 1;
+      attempts.set(key, n);
+      const b = behave(key, n);
+      clock.advance(b.delayMs ?? 0);
+      if (b.fail) throw new RpcTransportError("query_global_state", "timeout", "slow node");
+      const answer = answers[key] as { result?: T } | undefined;
+      if (!answer?.result) throw new Error(`unexpected key ${key}`);
+      return answer.result;
+    },
+  };
+  return { rpc, calls };
+}
+
+describe("TokenStateReader deadline (one budget per preflight)", () => {
+  const nonceAddr = () => dictionaryAddress(namedKey(fx.testnetContractResponse, "used_nonces"), usedNonceItemKey(PAYER, TESTNET_NONCE));
+
+  test("each call's timeout is cut to what is left of the deadline", async () => {
+    const clock = new FakeClock(1_000_000);
+    const { rpc, calls } = clockedRpc(clock, () => ({ delayMs: 1_000 }));
+    const reader = new TokenStateReader(rpc, { now: clock.now });
+    assert.equal(await reader.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE, { deadlineMs: 1_000_000 + 10_000 }), true);
+    // package, contract, item: 1 s each, so 10 s, 9 s and 8 s were left.
+    assert.deepEqual(calls.map(c => c.timeoutMs), [10_000, 9_000, 8_000]);
+  });
+
+  test("a spent budget fails fast, without calling the node and without a retry", async () => {
+    const clock = new FakeClock(1_000_000);
+    const { rpc, calls } = clockedRpc(clock, key => (key === nonceAddr() ? { delayMs: 9_700, fail: true } : {}));
+    const reader = new TokenStateReader(rpc, { now: clock.now });
+    await assert.rejects(reader.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE, { deadlineMs: 1_000_000 + 10_000 }), TokenStateError);
+    assert.equal(calls.filter(c => c.key === nonceAddr()).length, 1, `no retry with less than ${MIN_RETRY_BUDGET_MS} ms left`);
+
+    const late = clockedRpc(clock);
+    const reader2 = new TokenStateReader(late.rpc, { now: clock.now });
+    await assert.rejects(reader2.balanceOf(TESTNET_TOKEN, PAYER, { deadlineMs: clock.now() }), /deadline exceeded/);
+    assert.equal(late.calls.length, 0);
+  });
+
+  test("a failed read is retried when the budget allows it", async () => {
+    const clock = new FakeClock(1_000_000);
+    const { rpc, calls } = clockedRpc(clock, (key, n) => (key === nonceAddr() && n === 1 ? { delayMs: 3_000, fail: true } : {}));
+    const reader = new TokenStateReader(rpc, { now: clock.now });
+    assert.equal(await reader.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE, { deadlineMs: 1_000_000 + 10_000 }), true);
+    assert.deepEqual(
+      calls.filter(c => c.key === nonceAddr()).map(c => c.timeoutMs),
+      [10_000, 7_000],
+      "the retry only gets what is left",
+    );
+  });
+
+  test("concurrent reads on a cold cache share one package and contract lookup", async () => {
+    const clock = new FakeClock(1_000_000);
+    const { rpc, calls } = clockedRpc(clock);
+    const reader = new TokenStateReader(rpc, { now: clock.now });
+    await Promise.all([
+      reader.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE),
+      reader.balanceOf(TESTNET_TOKEN, PAYER),
+      reader.tokenName(TESTNET_TOKEN),
+    ]);
+    assert.equal(calls.filter(c => c.key === `hash-${TESTNET_TOKEN}`).length, 1);
+    assert.equal(calls.filter(c => c.key === `hash-${TESTNET_CONTRACT}`).length, 1);
   });
 });
 

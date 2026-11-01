@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { normalizeAsset, normalizePayTo } from "./facilitator-core.js";
+import { DEFAULT_PREFLIGHT_DEADLINE_MS, normalizeAsset, normalizePayTo } from "./facilitator-core.js";
 import { normalizeAccountHash } from "./facilitator-roles.js";
 
 /**
@@ -18,6 +18,8 @@ import { normalizeAccountHash } from "./facilitator-roles.js";
  *   CASCET_SETTLE_WAIT_MS         time /settle waits for execution before answering "pending" (default 60000;
  *                                 keep it below the gateway's timeouts.settleMs, 90 s by default)
  *   CASCET_PREFLIGHT              on (default) | off — on-chain nonce/balance/name checks
+ *   CASCET_PREFLIGHT_DEADLINE_MS  total time one request's preflight may take (default 10000; keep it below
+ *                                 the gateway's verify timeout, timeouts.facilitatorMs, 15 s by default)
  *   CASCET_TOKEN_VERSION          pinned EIP-712 domain version (default "1")
  *   CASCET_RPC_URL                Casper node JSON-RPC URL (default: the public node of the network);
  *                                 use ONE node, not a load balancer, so balance reads follow settlements
@@ -154,6 +156,7 @@ export interface FacilitatorEnvConfig {
   dailyGasCapMotes: bigint;
   settleWaitMs: number;
   preflight: boolean;
+  preflightDeadlineMs: number;
   tokenVersion: string;
   /** Non-fatal notes for the operator (never contain secrets). */
   warnings: string[];
@@ -257,6 +260,7 @@ export function readFacilitatorEnv(env: Env, repoRoot: string, forceNetwork?: Ca
     dailyGasCapMotes,
     settleWaitMs: integer(env, "CASCET_SETTLE_WAIT_MS", DEFAULT_SETTLE_WAIT_MS, 3_000, 300_000),
     preflight,
+    preflightDeadlineMs: integer(env, "CASCET_PREFLIGHT_DEADLINE_MS", DEFAULT_PREFLIGHT_DEADLINE_MS, 1_000, 60_000),
     tokenVersion: value(env, "CASCET_TOKEN_VERSION") ?? "1",
     warnings,
   };

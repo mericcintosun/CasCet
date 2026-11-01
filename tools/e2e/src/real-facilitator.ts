@@ -11,6 +11,7 @@ import { assertUsableToken, authorizationMatches, MIN_MAINNET_TOKEN_LENGTH } fro
 import {
   createFacilitatorCore,
   DEFAULT_MIN_SETTLE_WINDOW_SECONDS,
+  DEFAULT_PREFLIGHT_DEADLINE_MS,
   logText,
   normalizeAsset,
   normalizePayTo,
@@ -110,6 +111,11 @@ export interface RealFacilitatorOptions {
   settleWaitMs?: number;
   /** On-chain nonce / balance / token-name checks before verifying and settling. Default true. */
   preflight?: boolean;
+  /**
+   * Total time one request's preflight may take (all reads and retries). Default
+   * 10 s; keep it below the gateway's verify timeout (timeouts.facilitatorMs, 15 s).
+   */
+  preflightDeadlineMs?: number;
   /** Pinned EIP-712 domain version (`extra.version`) of the token. Default "1". */
   tokenVersion?: string;
   /** Reject authorizations that stay valid longer than this. Default 3600 s. */
@@ -361,6 +367,10 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   if (!Number.isSafeInteger(minSettleWindowSeconds) || minSettleWindowSeconds < 6 || minSettleWindowSeconds >= maxValiditySeconds) {
     throw new Error(`minSettleWindowSeconds must be a whole number from 6 to ${maxValiditySeconds - 1}`);
   }
+  const preflightDeadlineMs = opts.preflightDeadlineMs ?? DEFAULT_PREFLIGHT_DEADLINE_MS;
+  if (!Number.isSafeInteger(preflightDeadlineMs) || preflightDeadlineMs < 1_000 || preflightDeadlineMs > 60_000) {
+    throw new Error("preflightDeadlineMs must be a whole number of milliseconds from 1000 to 60000");
+  }
   const ownerAccountHash = opts.ownerAccountHash ? normalizeAccountHash(opts.ownerAccountHash) : undefined;
 
   // --- fee payer and key-role separation (M07) ---
@@ -414,6 +424,7 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
       settleWaitMs: opts.settleWaitMs ?? DEFAULT_SETTLE_WAIT_MS,
       maxValiditySeconds,
       minSettleWindowSeconds,
+      preflightDeadlineMs,
     },
     {
       verifySignature: (payload, requirements) => scheme.verify(payload, requirements),

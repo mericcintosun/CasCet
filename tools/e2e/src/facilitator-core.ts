@@ -116,7 +116,20 @@ export interface FacilitatorCoreConfig {
    * /settle. Default {@link DEFAULT_MIN_SETTLE_WINDOW_SECONDS}.
    */
   minSettleWindowSeconds?: number;
+  /**
+   * Total time the on-chain preflight of one request may take (all its reads,
+   * retries included). Default {@link DEFAULT_PREFLIGHT_DEADLINE_MS}.
+   */
+  preflightDeadlineMs?: number;
 }
+
+/**
+ * The gateway gives /verify 15 s by default (timeouts.facilitatorMs). Without
+ * one overall deadline, three sequential reads (package, contract, item) with an
+ * 8 s timeout and one retry each could take about 48 s, and the verify would
+ * finish (and hold the payer's value as in flight) after the gateway gave up.
+ */
+export const DEFAULT_PREFLIGHT_DEADLINE_MS = 10_000;
 
 /**
  * casper-x402 1.0.0 settles an authorization that is valid for 6 more seconds.
@@ -151,7 +164,7 @@ const MIN_TX_TTL_MS = 1_000;
 export interface FacilitatorCoreDeps {
   /** casper-x402 cryptographic verification (EIP-712 digest, signature, pubkey ↔ payer). */
   verifySignature(payload: PaymentPayload, requirements: PaymentRequirements): Promise<VerifyResponse>;
-  /** On-chain reads; undefined disables the preflight. */
+  /** On-chain reads; undefined disables the preflight. Its clock must be `now` (deadlines are absolute). */
   tokenState?: Pick<TokenStateReader, "balanceOf" | "isNonceUsed" | "tokenName">;
   chain: SettlementChain;
   ledger: AuthorizationLedger;
@@ -402,14 +415,16 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
   const preflight = async (a: CheckedAuthorization, extra: Record<string, unknown>): Promise<Preflight> => {
     const reader = deps.tokenState;
     if (!reader) return { ok: true };
+    // One budget for every read of this preflight, retries included.
+    const opts = { deadlineMs: deps.now() + (config.preflightDeadlineMs ?? DEFAULT_PREFLIGHT_DEADLINE_MS) };
     let used: boolean;
     let balance: bigint;
     let name: string | undefined;
     try {
       [used, balance, name] = await Promise.all([
-        reader.isNonceUsed(a.asset, a.from, a.nonce),
-        reader.balanceOf(a.asset, a.from),
-        config.tokenName === undefined ? reader.tokenName(a.asset) : Promise.resolve(undefined),
+        reader.isNonceUsed(a.asset, a.from, a.nonce, opts),
+        reader.balanceOf(a.asset, a.from, opts),
+        config.tokenName === undefined ? reader.tokenName(a.asset, opts) : Promise.resolve(undefined),
       ]);
     } catch (err) {
       const detail = err instanceof TokenStateError ? err.message : "unexpected error";

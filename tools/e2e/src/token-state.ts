@@ -177,6 +177,19 @@ export interface TokenStateReaderOptions {
   now?: () => number;
 }
 
+export interface TokenReadOptions {
+  /**
+   * Absolute time (ms, on the reader's clock) by which every RPC call of this
+   * read must be done. Each call's timeout is cut to what is left, the retry is
+   * skipped when too little is left, and a spent budget throws
+   * {@link TokenStateError} without calling the node.
+   */
+  deadlineMs?: number;
+}
+
+/** A transport failure is retried only when at least this much of the deadline is left. */
+export const MIN_RETRY_BUDGET_MS = 500;
+
 /**
  * Reads balances, used nonces and the token name of a CEP-18/CEP-3009 token.
  * Any RPC failure or unexpected shape throws {@link TokenStateError}; only the
@@ -186,6 +199,8 @@ export class TokenStateReader {
   private readonly ttlMs: number;
   private readonly now: () => number;
   private readonly handles = new Map<string, { value: TokenHandles; expiresAt: number }>();
+  /** Resolutions in progress, shared by concurrent reads of the same token. */
+  private readonly resolving = new Map<string, Promise<TokenHandles>>();
   private readonly names = new Map<string, { value: string; expiresAt: number }>();
 
   constructor(
@@ -199,50 +214,66 @@ export class TokenStateReader {
   /**
    * `query_global_state` for one key. Reads are idempotent, so a transport
    * failure (timeout, network, HTTP error, garbage) is retried once before the
-   * caller has to answer "unavailable"; an answer from the node is never retried.
+   * caller has to answer "unavailable", if the deadline leaves time for it; an
+   * answer from the node is never retried.
    */
-  private async read(key: string): Promise<StoredValueEnvelope> {
+  private async read(key: string, opts: TokenReadOptions): Promise<StoredValueEnvelope> {
     const params = { key, path: [] };
+    const left = () => (opts.deadlineMs === undefined ? undefined : opts.deadlineMs - this.now());
+    const attempt = () => {
+      const budget = left();
+      if (budget !== undefined && budget <= 0) throw new TokenStateError("preflight deadline exceeded");
+      return this.rpc.call<StoredValueEnvelope>("query_global_state", params, budget !== undefined ? { timeoutMs: budget } : undefined);
+    };
     try {
-      return await this.rpc.call<StoredValueEnvelope>("query_global_state", params);
+      return await attempt();
     } catch (err) {
       if (!(err instanceof RpcTransportError)) throw err;
-      return await this.rpc.call<StoredValueEnvelope>("query_global_state", params);
+      const budget = left();
+      if (budget !== undefined && budget < MIN_RETRY_BUDGET_MS) throw err;
+      return await attempt();
     }
   }
 
-  private async query(key: string, what: string): Promise<StoredValueEnvelope> {
+  private async query(key: string, what: string, opts: TokenReadOptions): Promise<StoredValueEnvelope> {
     try {
-      return await this.read(key);
+      return await this.read(key, opts);
     } catch (err) {
       throw new TokenStateError(`${what}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
   }
 
   /** Query a dictionary item; `undefined` when the node says it does not exist. */
-  private async queryItem(address: string, what: string): Promise<StoredValueEnvelope | undefined> {
+  private async queryItem(address: string, what: string, opts: TokenReadOptions): Promise<StoredValueEnvelope | undefined> {
     try {
-      return await this.read(address);
+      return await this.read(address, opts);
     } catch (err) {
       if (isValueNotFound(err)) return undefined;
       throw new TokenStateError(`${what}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
   }
 
-  /** Resolve the token's current contract and its named dictionaries (cached). */
-  async resolve(asset: string): Promise<TokenHandles> {
+  /** Resolve the token's current contract and its named dictionaries (cached; concurrent calls share one lookup). */
+  async resolve(asset: string, opts: TokenReadOptions = {}): Promise<TokenHandles> {
     const packageHash = barePackageHash(asset);
     const cached = this.handles.get(packageHash);
     if (cached && cached.expiresAt > this.now()) return cached.value;
+    const inProgress = this.resolving.get(packageHash);
+    if (inProgress) return inProgress;
+    const lookup = this.lookup(packageHash, opts).finally(() => this.resolving.delete(packageHash));
+    this.resolving.set(packageHash, lookup);
+    return lookup;
+  }
 
-    const pkgResult = await this.query(`hash-${packageHash}`, "token package");
+  private async lookup(packageHash: string, opts: TokenReadOptions): Promise<TokenHandles> {
+    const pkgResult = await this.query(`hash-${packageHash}`, "token package", opts);
     const pkg = pkgResult.stored_value?.["ContractPackage"];
     if (typeof pkg !== "object" || pkg === null) {
       throw new TokenStateError("token package: not a ContractPackage (unsupported storage layout)");
     }
     const contractHash = latestContractHash(pkg as ContractPackageJson);
 
-    const contractResult = await this.query(`hash-${contractHash}`, "token contract");
+    const contractResult = await this.query(`hash-${contractHash}`, "token contract", opts);
     const contract = contractResult.stored_value?.["Contract"] as { named_keys?: Array<{ name?: unknown; key?: unknown }> } | undefined;
     const namedKeys = new Map<string, string>();
     for (const nk of contract?.named_keys ?? []) {
@@ -266,26 +297,26 @@ export class TokenStateReader {
   }
 
   /** CEP-18 balance of an account (0 when it has no entry). */
-  async balanceOf(asset: string, accountHash: string): Promise<bigint> {
-    const h = await this.resolve(asset);
-    const item = await this.queryItem(dictionaryAddress(h.balancesURef, balanceItemKey(accountHash)), "balance");
+  async balanceOf(asset: string, accountHash: string, opts: TokenReadOptions = {}): Promise<bigint> {
+    const h = await this.resolve(asset, opts);
+    const item = await this.queryItem(dictionaryAddress(h.balancesURef, balanceItemKey(accountHash)), "balance", opts);
     return item ? parseU256(item, "balance") : 0n;
   }
 
   /** Whether the CEP-3009 authorization nonce of `accountHash` was already used. */
-  async isNonceUsed(asset: string, accountHash: string, nonce: string): Promise<boolean> {
-    const h = await this.resolve(asset);
-    const item = await this.queryItem(dictionaryAddress(h.usedNoncesURef, usedNonceItemKey(accountHash, nonce)), "nonce");
+  async isNonceUsed(asset: string, accountHash: string, nonce: string, opts: TokenReadOptions = {}): Promise<boolean> {
+    const h = await this.resolve(asset, opts);
+    const item = await this.queryItem(dictionaryAddress(h.usedNoncesURef, usedNonceItemKey(accountHash, nonce)), "nonce", opts);
     return item ? parseBool(item, "nonce") : false;
   }
 
   /** The token's on-chain `name` (used as the EIP-712 domain name), cached. */
-  async tokenName(asset: string): Promise<string | undefined> {
-    const h = await this.resolve(asset);
+  async tokenName(asset: string, opts: TokenReadOptions = {}): Promise<string | undefined> {
+    const h = await this.resolve(asset, opts);
     if (!h.nameURef) return undefined;
     const cached = this.names.get(h.packageHash);
     if (cached && cached.expiresAt > this.now()) return cached.value;
-    const value = parseString(await this.query(h.nameURef, "token name"), "token name");
+    const value = parseString(await this.query(h.nameURef, "token name", opts), "token name");
     this.names.set(h.packageHash, { value, expiresAt: this.now() + this.ttlMs });
     return value;
   }

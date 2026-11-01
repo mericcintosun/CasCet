@@ -71,7 +71,7 @@ interface Harness {
   chain: SettlementChain & { submits: number; builds: number; ttls: number[] };
   signatureChecks: { count: number };
   /** `readDelayMs`: how far each nonce read moves the clock (a slow node). */
-  state: { balance: bigint; used: Set<string>; name: string; fail?: boolean; readDelayMs: number };
+  state: { balance: bigint; used: Set<string>; name: string; fail?: boolean; readDelayMs: number; deadlines: Array<number | undefined> };
   logs: string[];
 }
 
@@ -85,7 +85,14 @@ function harness(opts: {
   const clock = new FakeClock(T0);
   const ledger = new AuthorizationLedger({ now: clock.now });
   const gas = new DailyGasBudget({ capMotes: 12n * CSPR, now: clock.now });
-  const state = { balance: 10n * CSPR, used: new Set<string>(), name: "CasCet X402 Token" as string, fail: false, readDelayMs: 0 };
+  const state = {
+    balance: 10n * CSPR,
+    used: new Set<string>(),
+    name: "CasCet X402 Token" as string,
+    fail: false,
+    readDelayMs: 0,
+    deadlines: [] as Array<number | undefined>,
+  };
   const signatureChecks = { count: 0 };
   const logs: string[] = [];
   let txCounter = 0;
@@ -130,16 +137,21 @@ function harness(opts: {
         ? {}
         : {
             tokenState: {
-              isNonceUsed: async (_asset: string, _from: string, nonce: string) => {
+              isNonceUsed: async (_asset: string, _from: string, nonce: string, readOpts?: { deadlineMs?: number }) => {
+                state.deadlines.push(readOpts?.deadlineMs);
                 clock.advance(state.readDelayMs);
                 if (state.fail) throw new TokenStateError("node unreachable");
                 return state.used.has(nonce);
               },
-              balanceOf: async () => {
+              balanceOf: async (_asset: string, _from: string, readOpts?: { deadlineMs?: number }) => {
+                state.deadlines.push(readOpts?.deadlineMs);
                 if (state.fail) throw new TokenStateError("node unreachable");
                 return state.balance;
               },
-              tokenName: async () => state.name,
+              tokenName: async (_asset: string, readOpts?: { deadlineMs?: number }) => {
+                state.deadlines.push(readOpts?.deadlineMs);
+                return state.name;
+              },
             },
           }),
       chain,
@@ -251,6 +263,15 @@ describe("/verify", () => {
     const down = await h.core.verify(parsed({ nonce: "03".repeat(32) }));
     assert.deepEqual([down.status, down.body.invalidReason], [503, Reason.preflightUnavailable]);
     assert.equal(h.ledger.size, 0, "nothing is marked when a check fails");
+  });
+
+  test("every preflight read shares one deadline (default 10 s, configurable)", async () => {
+    const h = harness();
+    await h.core.verify(parsed());
+    assert.deepEqual(h.state.deadlines, [T0 + 10_000, T0 + 10_000, T0 + 10_000]);
+    const custom = harness({ config: { preflightDeadlineMs: 4_000 } });
+    await custom.core.settle(parsed());
+    assert.deepEqual(custom.state.deadlines, [T0 + 4_000, T0 + 4_000, T0 + 4_000]);
   });
 
   test("one balance cannot back several in-flight authorizations", async () => {

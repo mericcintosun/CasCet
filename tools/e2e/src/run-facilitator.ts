@@ -47,6 +47,7 @@ try {
     dailyGasCapMotes: cfg.dailyGasCapMotes,
     settleWaitMs: cfg.settleWaitMs,
     preflight: cfg.preflight,
+    preflightDeadlineMs: cfg.preflightDeadlineMs,
     tokenVersion: cfg.tokenVersion,
   });
   console.log(`facilitator up at ${fac.url} (net=${fac.network})`);
