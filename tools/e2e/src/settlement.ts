@@ -17,7 +17,9 @@ type PrivateKeyT = InstanceType<typeof casperSdk.PrivateKey>;
  *    means it may or may not have been accepted (outcome unknown);
  *  - polling never turns a transient RPC error or a "no such transaction" from
  *    a lagging node into a failure: it retries with backoff until a deadline
- *    and then reports the transaction as pending, with its hash.
+ *    and then reports the transaction as pending, with its hash;
+ *  - the transaction's TTL is set per settlement so that it expires before the
+ *    authorization does (it cannot execute, revert and burn gas after validBefore).
  */
 
 /** Validated authorization fields needed to build the settlement. */
@@ -59,9 +61,14 @@ export type ExecutionOutcome =
 export interface SettlementChain {
   readonly feePayerAccountHash: string;
   readonly feePayerPublicKey: string;
-  /** How long a submitted transaction may still be included (its TTL). */
+  /** Maximum TTL of a settlement transaction (how long it may still be included). */
   readonly txTtlMs: number;
-  build(input: SettlementInput, paymentMotes: bigint): BuiltTransaction;
+  /**
+   * Build and sign a settlement. `ttlMs` is this transaction's TTL: the core
+   * caps it so the transaction expires before the authorization does; it is
+   * capped again at {@link txTtlMs} and rounded down to whole seconds.
+   */
+  build(input: SettlementInput, paymentMotes: bigint, ttlMs: number): BuiltTransaction;
   submit(tx: BuiltTransaction): Promise<SubmitOutcome>;
   waitForExecution(hash: string, deadlineMs: number): Promise<ExecutionOutcome>;
 }
@@ -156,7 +163,10 @@ export interface CasperSettlementChainOptions {
   rpc: CasperRpc;
   privateKey: PrivateKeyT;
   chainName: string;
-  /** Transaction TTL. Default 10 minutes (bounds how long a pending settle can still land). */
+  /**
+   * Maximum transaction TTL. Default 10 minutes. Each settlement's TTL is also
+   * capped at its authorization's validBefore (see `build`).
+   */
   ttlMs?: number;
   /** Backoff schedule between polls; the last value repeats. */
   pollDelaysMs?: number[];
@@ -188,8 +198,11 @@ export function createCasperSettlementChain(opts: CasperSettlementChainOptions):
     feePayerPublicKey,
     txTtlMs: ttlMs,
 
-    build(input, paymentMotes) {
-      const tx = buildSettlementTransaction(input, { feePayerPublicKey, chainName: opts.chainName, paymentMotes, ttlMs });
+    build(input, paymentMotes, requestedTtlMs) {
+      // Whole seconds: the node parses the TTL as a duration string ("4m 57s").
+      const txTtl = Math.floor(Math.min(requestedTtlMs, ttlMs) / 1000) * 1000;
+      if (!(txTtl >= 1000)) throw new Error(`settlement TTL must be at least 1 s, got ${requestedTtlMs} ms`);
+      const tx = buildSettlementTransaction(input, { feePayerPublicKey, chainName: opts.chainName, paymentMotes, ttlMs: txTtl });
       tx.sign(opts.privateKey);
       return { hash: tx.hash.toHex(), json: TransactionWrapper.toJSON(tx.getTransactionWrapper()) };
     },

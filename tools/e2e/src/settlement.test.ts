@@ -115,12 +115,22 @@ describe("submission", () => {
         return rpcResult({ api_version: "2.0.0", transaction_hash: { Version1: tx.hash } });
       },
     });
-    const built = chain.build(settledInput, 4_000_000_000n);
+    const built = chain.build(settledInput, 4_000_000_000n, 600_000);
     const json = built.json as { Version1: { hash: string; approvals: Array<{ signer: string }> } };
     assert.equal(json.Version1.hash, built.hash);
     assert.equal(json.Version1.approvals[0]?.signer, privateKey.publicKey.toHex());
     assert.equal(chain.feePayerAccountHash, privateKey.publicKey.accountHash().toHex());
     assert.deepEqual(await chain.submit(built), { kind: "accepted", hash: built.hash });
+  });
+
+  test("the TTL is capped at the chain maximum and rounded down to whole seconds", () => {
+    const { chain } = chainWith({});
+    const ttlOf = (requested: number) =>
+      (chain.build(settledInput, 4_000_000_000n, requested).json as { Version1: { payload: { ttl: string } } }).Version1.payload.ttl;
+    assert.equal(ttlOf(297_345), "4m 57s", "never a fractional duration the node cannot parse");
+    assert.equal(ttlOf(3_600_000), "10m", "capped at the chain's maximum TTL");
+    assert.equal(ttlOf(18_000), "18s");
+    assert.throws(() => chain.build(settledInput, 4_000_000_000n, 999), /at least 1 s/);
   });
 
   test("only proof of rejection counts as 'not submitted'", async () => {
@@ -133,7 +143,7 @@ describe("submission", () => {
     ];
     for (const [response, kind] of cases) {
       const { chain } = chainWith({ account_put_transaction: response });
-      const built = chain.build(settledInput, 4_000_000_000n);
+      const built = chain.build(settledInput, 4_000_000_000n, 600_000);
       const outcome = await chain.submit(built);
       assert.equal(outcome.kind, kind);
       if (outcome.kind === "unknown") assert.equal(outcome.hash, built.hash);

@@ -16,9 +16,11 @@ import { TokenStateError, type TokenStateReader } from "./token-state.js";
  * that still leaves time to settle before validBefore, the casper-x402
  * signature check, the in-flight nonce ledger (M09), and an on-chain preflight
  * (nonce not used, balance covers the value plus everything already in flight,
- * EIP-712 domain name equals the token's on-chain name). /settle then reserves
- * gas only right before submission (M08) and never reports a failure for a
- * transaction whose outcome is merely unknown (M22).
+ * EIP-712 domain name equals the token's on-chain name). The validity window is
+ * checked again after the preflight, because the reads can take seconds.
+ * /settle then caps the transaction's TTL at the authorization's validBefore,
+ * reserves gas only right before submission (M08) and never reports a failure
+ * for a transaction whose outcome is merely unknown (M22).
  */
 
 /** Machine-readable reasons returned in `invalidReason` / `errorReason`. */
@@ -113,6 +115,28 @@ export interface FacilitatorCoreConfig {
  */
 export const DEFAULT_MIN_SETTLE_WINDOW_SECONDS = 20;
 
+/**
+ * A settlement transaction expires (TTL) at least this long before its
+ * authorization does. A Casper block may only include a transaction while
+ * block time ≤ transaction timestamp + TTL, so the transfer can never execute
+ * at or after validBefore: the node drops a late transaction instead of
+ * executing it, reverting, and burning the gas limit.
+ */
+export const TX_EXPIRY_MARGIN_MS = 2_000;
+
+/**
+ * TTL for a settlement transaction built at `nowMs`: the chain's maximum, but
+ * never past validBefore − {@link TX_EXPIRY_MARGIN_MS}. Whole seconds, because
+ * the node parses the TTL as a duration string ("4m 57s", not "4m 57.345s").
+ */
+export function settlementTtlMs(validBeforeSec: number, nowMs: number, maxTtlMs: number): number {
+  const untilExpiry = validBeforeSec * 1000 - nowMs - TX_EXPIRY_MARGIN_MS;
+  return Math.max(0, Math.floor(Math.min(maxTtlMs, untilExpiry) / 1000) * 1000);
+}
+
+/** Below this TTL a settlement is not worth submitting (less than one block). */
+const MIN_TX_TTL_MS = 1_000;
+
 export interface FacilitatorCoreDeps {
   /** casper-x402 cryptographic verification (EIP-712 digest, signature, pubkey ↔ payer). */
   verifySignature(payload: PaymentPayload, requirements: PaymentRequirements): Promise<VerifyResponse>;
@@ -159,6 +183,19 @@ const U256_MAX = (1n << 256n) - 1n;
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isShortString = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= MAX_FIELD;
 const short = (hex: string) => `${logText(hex).slice(0, 10)}…`;
+
+/** Is there still time to settle an authorization that expires at `validBefore`? */
+function windowRejection(validBefore: number, nowSec: number, minWindowSeconds: number): Rejection | undefined {
+  if (validBefore <= nowSec) return { status: 200, reason: Reason.expired, message: "authorization expired" };
+  if (validBefore - nowSec < minWindowSeconds) {
+    return {
+      status: 200,
+      reason: Reason.expiresTooSoon,
+      message: `authorization must stay valid for at least ${minWindowSeconds}s to be settled in time`,
+    };
+  }
+  return undefined;
+}
 
 /** Single-line, bounded text for log lines (no CR/LF from remote data). */
 export function logText(value: unknown): string {
@@ -267,11 +304,8 @@ export function checkAuthorization(
   const validAfter = Number(a.validAfter);
   const validBefore = Number(a.validBefore);
   if (validAfter >= validBefore) return reject(200, Reason.invalidValidity, "validAfter must be before validBefore");
-  if (validBefore <= nowSec) return reject(200, Reason.expired, "authorization expired");
-  const minWindow = config.minSettleWindowSeconds ?? DEFAULT_MIN_SETTLE_WINDOW_SECONDS;
-  if (validBefore - nowSec < minWindow) {
-    return reject(200, Reason.expiresTooSoon, `authorization must stay valid for at least ${minWindow}s to be settled in time`);
-  }
+  const late = windowRejection(validBefore, nowSec, config.minSettleWindowSeconds ?? DEFAULT_MIN_SETTLE_WINDOW_SECONDS);
+  if (late) return { ok: false, rejection: late };
   if (validBefore - nowSec > config.maxValiditySeconds) {
     return reject(200, Reason.validityTooLong, `authorization must expire within ${config.maxValiditySeconds}s`);
   }
@@ -311,6 +345,9 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
   const network = config.network;
   const nowSec = () => Math.floor(deps.now() / 1000);
   const idOf = (a: CheckedAuthorization): AuthorizationId => ({ network, asset: a.asset, from: a.from, nonce: a.nonce });
+  const minWindowSeconds = config.minSettleWindowSeconds ?? DEFAULT_MIN_SETTLE_WINDOW_SECONDS;
+  /** The on-chain preflight can take seconds: re-check the window after it, with the clock as it is now. */
+  const stillInTime = (a: CheckedAuthorization): Rejection | undefined => windowRejection(a.validBefore, nowSec(), minWindowSeconds);
 
   const verificationRejected = (r: Rejection, payer?: string): CoreResult<VerifyResponse> => {
     deps.log.warn(`verify rejected: ${logText(r.reason)}${payer ? ` payer=${short(payer)}` : ""}`);
@@ -408,6 +445,8 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
 
     const pre = await preflight(a, p.requirements.extra ?? {});
     if (!pre.ok) return verificationRejected(pre.rejection, a.from);
+    const late = stillInTime(a);
+    if (late) return verificationRejected(late, a.from);
 
     // Atomic section: the funds check and the ledger mark run without an await.
     const noFunds = fundsCheck(a, pre.balance);
@@ -461,9 +500,25 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
       return settlementRejected(noFunds, a.from);
     }
 
+    // The checks above can take seconds (a slow read plus its retry). Check the
+    // window again right before building: a transfer that would execute after
+    // validBefore reverts and burns the whole gas limit.
+    const late = stillInTime(a);
+    const builtAtMs = deps.now();
+    // The transaction must not outlive the authorization: with its TTL capped,
+    // the node drops it instead of executing it after validBefore.
+    const ttlMs = settlementTtlMs(a.validBefore, builtAtMs, deps.chain.txTtlMs);
+    if (late || ttlMs < MIN_TX_TTL_MS) {
+      deps.ledger.release(id);
+      return settlementRejected(
+        late ?? { status: 200, reason: Reason.expiresTooSoon, message: "authorization expires before a settlement could be included" },
+        a.from,
+      );
+    }
+
     let tx: BuiltTransaction;
     try {
-      tx = deps.chain.build(a, config.paymentMotes);
+      tx = deps.chain.build(a, config.paymentMotes, ttlMs);
     } catch (err) {
       deps.ledger.release(id);
       deps.log.error(`building the settlement failed: ${logText(err)}`);
@@ -486,7 +541,8 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
     }
 
     const hash = submitted.hash;
-    deps.ledger.markSubmitted(id, hash, deps.now() + deps.chain.txTtlMs);
+    // The transaction can be included until its timestamp + TTL, never after validBefore.
+    deps.ledger.markSubmitted(id, hash, builtAtMs + ttlMs);
     const outcome = await waitSafely(hash, startedMs + config.settleWaitMs);
     const payer = a.from;
 

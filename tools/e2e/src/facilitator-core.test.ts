@@ -68,9 +68,10 @@ interface Harness {
   clock: FakeClock;
   ledger: AuthorizationLedger;
   gas: DailyGasBudget;
-  chain: SettlementChain & { submits: number; builds: number };
+  chain: SettlementChain & { submits: number; builds: number; ttls: number[] };
   signatureChecks: { count: number };
-  state: { balance: bigint; used: Set<string>; name: string; fail?: boolean };
+  /** `readDelayMs`: how far each nonce read moves the clock (a slow node). */
+  state: { balance: bigint; used: Set<string>; name: string; fail?: boolean; readDelayMs: number };
   logs: string[];
 }
 
@@ -84,7 +85,7 @@ function harness(opts: {
   const clock = new FakeClock(T0);
   const ledger = new AuthorizationLedger({ now: clock.now });
   const gas = new DailyGasBudget({ capMotes: 12n * CSPR, now: clock.now });
-  const state = { balance: 10n * CSPR, used: new Set<string>(), name: "CasCet X402 Token" as string, fail: false };
+  const state = { balance: 10n * CSPR, used: new Set<string>(), name: "CasCet X402 Token" as string, fail: false, readDelayMs: 0 };
   const signatureChecks = { count: 0 };
   const logs: string[] = [];
   let txCounter = 0;
@@ -94,8 +95,10 @@ function harness(opts: {
     txTtlMs: 600_000,
     submits: 0,
     builds: 0,
-    build() {
+    ttls: [] as number[],
+    build(_input: unknown, _paymentMotes: bigint, ttlMs: number) {
       chain.builds++;
+      chain.ttls.push(ttlMs);
       txCounter++;
       return { hash: txCounter.toString(16).padStart(64, "0"), json: {} };
     },
@@ -128,6 +131,7 @@ function harness(opts: {
         : {
             tokenState: {
               isNonceUsed: async (_asset: string, _from: string, nonce: string) => {
+                clock.advance(state.readDelayMs);
                 if (state.fail) throw new TokenStateError("node unreachable");
                 return state.used.has(nonce);
               },
@@ -318,6 +322,44 @@ describe("/settle", () => {
     assert.equal(h.chain.submits, 0);
     const s = h.gas.snapshot();
     assert.equal(s.reservedMotes + s.spentMotes, 0n);
+  });
+
+  test("the window is checked again after a slow preflight: nothing is built or submitted", async () => {
+    const h = harness();
+    const now = Math.floor(T0 / 1000);
+    // 30 s left when /settle starts (a gateway's settle headroom). One timed-out
+    // read plus its retry takes 16 s, which leaves 14 s: below the 20 s window.
+    h.state.readDelayMs = 16_000;
+    const r = await h.core.settle(parsed({ validBefore: now + 30 }));
+    assert.deepEqual([r.status, r.body.errorReason, r.body.transaction], [200, Reason.expiresTooSoon, ""]);
+    assert.deepEqual(r.body.extra, { settlementStatus: "not_submitted" });
+    assert.deepEqual([h.chain.builds, h.chain.submits], [0, 0]);
+    const s = h.gas.snapshot();
+    assert.equal(s.reservedMotes + s.spentMotes, 0n);
+    assert.equal(h.ledger.size, 0, "the settle claim is released");
+  });
+
+  test("a slow preflight at /verify does not approve an authorization that is about to expire", async () => {
+    const h = harness();
+    const now = Math.floor(T0 / 1000);
+    h.state.readDelayMs = 16_000;
+    const r = await h.core.verify(parsed({ validBefore: now + 30 }));
+    assert.deepEqual([r.status, r.body.invalidReason], [200, Reason.expiresTooSoon]);
+    assert.equal(h.ledger.size, 0);
+  });
+
+  test("the settlement TTL ends before validBefore (whole seconds), so a late transaction is dropped, not executed", async () => {
+    const h = harness({ outcome: () => ({ kind: "pending", seen: true }) });
+    const now = Math.floor(T0 / 1000);
+    h.clock.advance(250); // not on a second boundary
+    await h.core.settle(parsed({ nonce: "01".repeat(32), validBefore: now + 300 }));
+    await h.core.settle(parsed({ nonce: "02".repeat(32), validBefore: now + 3_000 }));
+    // 300 s − 0.25 s − 2 s margin, rounded down; the second is capped at the chain's 10-minute TTL.
+    assert.deepEqual(h.chain.ttls, [297_000, 600_000]);
+    // A pending settle locks its nonce only until it can no longer execute: validBefore + grace.
+    const first = h.ledger.peek({ network: NETWORK, asset: ASSET, from: PAYER, nonce: "01".repeat(32) });
+    assert.equal(first?.state, "submitted");
+    assert.equal(first?.expiresAtMs, (now + 300) * 1000 + 60_000);
   });
 
   test("gas is reserved only right before submission (M08)", async () => {
