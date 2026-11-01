@@ -187,6 +187,37 @@ test("layout: edges that skip a layer run on lanes that clear every node; no lab
   }
 });
 
+test("layout: in random payment DAGs no edge ever runs through a node that is not one of its ends", () => {
+  // Seeded LCG so a failure is reproducible.
+  let seed = 42;
+  const rand = (n: number) => {
+    seed = (seed * 1103515245 + 12345) % 2 ** 31;
+    return seed % n;
+  };
+  for (let round = 0; round < 60; round++) {
+    const count = 3 + rand(8);
+    const ids = Array.from({ length: count }, (_, i) => (i < 2 ? `agent:${i}` : `server:${i}`));
+    const edges: Edge[] = [];
+    // Only "forward" edges (lower index pays higher index), like real payment chains: no cycles.
+    for (let k = 0; k < count * 2; k++) {
+      const a = rand(count - 1);
+      const b = a + 1 + rand(count - a - 1);
+      if (!ids[b]!.startsWith("server:")) continue;
+      edges.push(edge({ from: ids[a]!, to: ids[b]!, tool: `t${rand(3)}` }));
+    }
+    const nodes = ids.map((id) => ({ id, kind: id.startsWith("agent:") ? ("agent" as const) : ("server" as const), label: id }));
+    const layout = layoutNodes({ nodes, edges });
+    for (const g of layoutEdges(aggregateEdges(edges), layout.byId, lines)) {
+      const pts = samplePath(g.d);
+      for (const n of layout.nodes) {
+        if (n.id === g.edge.from || n.id === g.edge.to) continue;
+        const crossing = pts.find((p) => inside(p, nodeBox(n)));
+        assert.equal(crossing, undefined, `round ${round}: ${g.edge.key} runs through ${n.id}`);
+      }
+    }
+  }
+});
+
 test("layout: the highlighted edge's label is placed first, so it keeps its spot on the edge", () => {
   // Two crossing edges whose midpoints (and so their preferred label spots) coincide.
   const nodes = [
