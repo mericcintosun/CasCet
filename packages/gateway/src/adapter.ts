@@ -14,3 +14,11 @@ export function expressAdapter(req: Request): HTTPAdapter {
     getQueryParam: name => req.query[name] as string | string[] | undefined,
   };
 }
+
+/** The same request as seen without any payment header (used to issue a fresh 402 challenge). */
+export function withoutPaymentHeader(adapter: HTTPAdapter): HTTPAdapter {
+  return {
+    ...adapter,
+    getHeader: name => (/^(payment-signature|x-payment)$/i.test(name) ? undefined : adapter.getHeader(name)),
+  };
+}
