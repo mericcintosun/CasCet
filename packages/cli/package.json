@@ -17,7 +17,7 @@
     "cascet": "./dist/cli.js"
   },
   "main": "./dist/cli.js",
-  "files": ["dist", "README.md"],
+  "files": ["dist", "!dist/**/*.test.*", "README.md"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
