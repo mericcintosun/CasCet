@@ -123,24 +123,35 @@ describe("TimeoutFacilitatorClient.getSupported", () => {
 
 describe("classifySettleFailure", () => {
   const settleFailed = "invalid_exact_casper_facilitator_settle_failed";
-  const cases: Array<[string | undefined, string | undefined, "failed" | "unknown", boolean]> = [
+  const tx = "ef".repeat(32);
+  const cases: Array<[string | undefined, string | undefined, string | undefined, "failed" | "unknown", boolean]> = [
     // Rejected before anything was submitted.
-    ["invalid_exact_casper_facilitator_expired", "validBefore=1 < now=2", "failed", false],
-    ["invalid_exact_casper_facilitator_invalid_signature", undefined, "failed", false],
-    ["facilitator_http_429", "rate limit", "failed", false],
+    ["invalid_exact_casper_facilitator_expired", "validBefore=1 < now=2", undefined, "failed", false],
+    ["invalid_exact_casper_facilitator_invalid_signature", undefined, "", "failed", false],
+    ["facilitator_http_429", "rate limit", undefined, "failed", false],
+    // Definite rejections whose names contain words like "network" or "unknown".
+    ["unsupported_network", undefined, "", "failed", true],
+    ["invalid_network", "network mismatch", "", "failed", true],
+    ["unknown_asset", "unknown asset 22…", "", "failed", true],
+    ["invalid_exact_casper_facilitator_network_mismatch", "payload=casper:casper requirements=casper:casper-test", "", "failed", false],
     // Submitted and reverted on-chain: final, but the nonce may have been used by someone else.
-    [settleFailed, "transaction execution failed: User error: 64658", "failed", true],
+    [settleFailed, "transaction execution failed: User error: 64658", undefined, "failed", true],
+    ["settle_failed", "transaction execution failed: Out of gas", tx, "failed", true],
     // Submitted (or maybe submitted) and then lost track of.
-    [settleFailed, "Timed out waiting for transaction 1234", "unknown", true],
-    [settleFailed, "HttpError: RPC error: transaction not found", "unknown", true],
-    ["settle_pending", undefined, "unknown", true],
-    [undefined, "socket hang up", "unknown", true],
+    [settleFailed, "Timed out waiting for transaction 1234", undefined, "unknown", true],
+    [settleFailed, "HttpError: RPC error: transaction not found", undefined, "unknown", true],
+    ["settle_pending", undefined, undefined, "unknown", true],
+    [undefined, "socket hang up", undefined, "unknown", true],
+    ["rpc_error", "network error while polling", undefined, "unknown", true],
+    // A transaction hash means the transfer was submitted: it may still execute.
+    ["insufficient_balance", undefined, tx, "unknown", true],
+    ["unsupported_network", "lost the node after submitting", tx, "unknown", true],
     // Anything else from another facilitator: failed, but worth an on-chain look.
-    ["insufficient_balance", undefined, "failed", true],
+    ["insufficient_balance", undefined, "", "failed", true],
   ];
-  for (const [reason, message, kind, checkChain] of cases) {
-    it(`${reason ?? "(no reason)"} / ${message ?? "(no message)"} → ${kind}`, () => {
-      assert.deepEqual(classifySettleFailure(reason, message), { kind, checkChain });
+  for (const [reason, message, transaction, kind, checkChain] of cases) {
+    it(`${reason ?? "(no reason)"} / ${message ?? "(no message)"}${transaction ? " / with tx" : ""} → ${kind}`, () => {
+      assert.deepEqual(classifySettleFailure(reason, message, transaction), { kind, checkChain });
     });
   }
 });

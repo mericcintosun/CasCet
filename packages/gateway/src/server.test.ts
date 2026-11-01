@@ -388,6 +388,33 @@ describe("indeterminate settlement (M35)", () => {
     });
   });
 
+  it("treats a definite rejection that mentions the network as failed, not unknown", async () => {
+    await withHarness({}, async h => {
+      h.facilitator.onSettle = () => ({
+        json: { success: false, errorReason: "unsupported_network", transaction: "", network: "casper:casper-test" },
+      });
+      const { header } = await payFor(h, "paid_tool");
+      const res = await callPaid(h, "paid_tool", header);
+      assert.equal(res.status, 402);
+      assert.equal(res.body.error?.code, -32002);
+      assert.equal((await receipts(h))[0]?.status, "failed");
+    });
+  });
+
+  it("treats an unsuccessful answer that carries a transaction hash as unknown (the transfer was submitted)", async () => {
+    await withHarness({}, async h => {
+      h.facilitator.onSettle = () => ({
+        json: { success: false, errorReason: "rpc_unavailable", transaction: SETTLE_TX, network: "casper:casper-test" },
+      });
+      const { header } = await payFor(h, "paid_tool");
+      const res = await callPaid(h, "paid_tool", header);
+      assert.equal(res.body.error?.code, -32003);
+      const [receipt] = await receipts(h);
+      assert.equal(receipt?.status, "unknown");
+      assert.equal(receipt?.txHash, SETTLE_TX);
+    });
+  });
+
   it("answers a facilitator verify timeout with a 402 and charges nothing", async () => {
     await withHarness({ config: { timeouts: { facilitatorMs: 200 } } }, async h => {
       h.facilitator.onVerify = () => ({ hang: true });

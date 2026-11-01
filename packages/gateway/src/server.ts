@@ -423,7 +423,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       result.errorMessage && result.errorMessage !== result.errorReason
         ? `${result.errorReason}: ${result.errorMessage}`
         : result.errorReason;
-    const classified = classifySettleFailure(result.errorReason, result.errorMessage);
+    const classified = classifySettleFailure(result.errorReason, result.errorMessage, result.transaction);
     const outcome: SettleOutcome = {
       status: classified.kind,
       reason,

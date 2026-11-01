@@ -245,28 +245,40 @@ export interface SettleFailureClass {
 // Reasons @make-software/casper-x402 returns before anything is submitted.
 const CASPER_PRE_SUBMISSION = /^invalid_exact_casper_facilitator_(?!settle_failed$)/;
 const CASPER_SETTLE_FAILED = "invalid_exact_casper_facilitator_settle_failed";
+// The transfer was submitted and then reverted: final.
+const REVERTED = /^transaction execution failed/i;
+// Transport-level trouble while the facilitator talked to the chain: the transfer may
+// still execute. Deliberately no bare words like "network" or "unknown", which also
+// appear in definite rejections (unsupported_network, invalid_network, unknown_asset).
 const INDETERMINATE_HINT =
-  /timed?[\s_-]?out|timeout|pending|indeterminate|unknown|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|fetch failed|network/i;
+  /timed?[\s_-]?out|timeout|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up|fetch failed|network error|pending|indeterminate/i;
 
 /**
  * Classify an unsuccessful settle answer.
  *
- * casper-x402 1.0.0 reports every problem after it built the transaction as
- * `invalid_exact_casper_facilitator_settle_failed`; only "transaction execution
- * failed" means the transfer reverted on-chain. Anything else under that reason
- * (RPC errors while submitting or polling, "Timed out waiting for transaction")
- * can hide a transfer that still executes, so it is treated as unknown.
+ * - A transaction hash in the answer means the transfer was submitted, so
+ *   unless it reverted ("transaction execution failed") it may still execute:
+ *   unknown.
+ * - casper-x402 1.0.0 reports every problem after it built the transaction as
+ *   `invalid_exact_casper_facilitator_settle_failed` (and drops the hash);
+ *   only "transaction execution failed" means the transfer reverted on-chain.
+ *   Anything else under that reason (RPC errors while submitting or polling,
+ *   "Timed out waiting for transaction") can hide a transfer that still
+ *   executes, so it is unknown.
+ * - Other answers are definite failures unless they name transport trouble.
  */
-export function classifySettleFailure(errorReason: string | undefined, errorMessage: string | undefined): SettleFailureClass {
+export function classifySettleFailure(
+  errorReason: string | undefined,
+  errorMessage: string | undefined,
+  transaction?: string,
+): SettleFailureClass {
   const reason = errorReason ?? "";
   const message = errorMessage ?? "";
+  const reverted = REVERTED.test(message);
   if (/^facilitator_http_4\d\d$/.test(reason)) return { kind: "failed", checkChain: false };
+  if (transaction && !reverted) return { kind: "unknown", checkChain: true };
   if (CASPER_PRE_SUBMISSION.test(reason)) return { kind: "failed", checkChain: false };
-  if (reason === CASPER_SETTLE_FAILED) {
-    return /^transaction execution failed/i.test(message)
-      ? { kind: "failed", checkChain: true }
-      : { kind: "unknown", checkChain: true };
-  }
+  if (reason === CASPER_SETTLE_FAILED) return reverted ? { kind: "failed", checkChain: true } : { kind: "unknown", checkChain: true };
   if (INDETERMINATE_HINT.test(reason) || INDETERMINATE_HINT.test(message)) return { kind: "unknown", checkChain: true };
   return { kind: "failed", checkChain: true };
 }
