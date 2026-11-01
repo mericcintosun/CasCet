@@ -6,7 +6,7 @@ import { ModeToggle } from "@/components/mode-toggle";
 import { WalletConnectButton } from "@/components/wallet-connect-button";
 import { Logo } from "@/components/logo";
 import { OnchainStatusBadge } from "@/components/onchain-status";
-import { MobileMenuButton, MobileMenuPanel, mobileMenuLinkClass, useMobileMenu } from "@/components/mobile-menu";
+import { MobileMenuButton, MobileMenuItem, MobileMenuPanel, useMobileMenu } from "@/components/mobile-menu";
 import type { OnchainStatus } from "@/lib/onchain";
 import { cn } from "@/lib/utils";
 
@@ -65,15 +65,11 @@ export function SiteHeader({ status, showWallet }: { status?: OnchainStatus; sho
         {NAV.map((item) => {
           const active = pathname === item.href;
           return (
-            <Link
-              key={item.href}
-              href={item.href}
-              aria-current={active ? "page" : undefined}
-              className={mobileMenuLinkClass(active)}
-              onClick={() => menu.setOpen(false)}
-            >
-              {item.label}
-            </Link>
+            <MobileMenuItem key={item.href} menu={menu} active={active}>
+              <Link href={item.href} aria-current={active ? "page" : undefined}>
+                {item.label}
+              </Link>
+            </MobileMenuItem>
           );
         })}
       </MobileMenuPanel>

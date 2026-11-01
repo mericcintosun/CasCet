@@ -7,10 +7,12 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 /**
- * Mobile navigation as a WAI-ARIA disclosure: a shadcn Button (aria-expanded /
- * aria-controls) toggles a panel of links under the header row. Escape closes
- * it and returns focus to the button; a click outside, a route change or
- * growing past the breakpoint closes it. No dialog dependency needed.
+ * Mobile navigation as a WAI-ARIA disclosure, built from shadcn/ui Buttons: an
+ * icon Button (aria-expanded / aria-controls) toggles a panel under the header
+ * row whose links are Buttons too (asChild). Escape closes it and returns focus
+ * to the toggle; a click outside, a route change or growing past the
+ * breakpoint closes it. A disclosure needs no focus trap, so no dialog
+ * dependency is added.
  */
 type Breakpoint = "md" | "lg";
 
@@ -107,9 +109,28 @@ export function MobileMenuPanel({
   );
 }
 
-/** One link row inside the mobile panel. */
-export const mobileMenuLinkClass = (active: boolean): string =>
-  cn(
-    "rounded-md px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-    active ? "bg-secondary text-secondary-foreground" : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground",
+/**
+ * One row of the mobile panel: a shadcn Button rendered as its link child
+ * (asChild), "secondary" for the current page. Selecting it closes the menu.
+ */
+export function MobileMenuItem({
+  menu,
+  active = false,
+  children,
+}: {
+  menu: MobileMenu;
+  active?: boolean;
+  /** The link element (next/link or <a>). */
+  children: React.ReactElement;
+}) {
+  return (
+    <Button
+      asChild
+      variant={active ? "secondary" : "ghost"}
+      className={cn("h-10 w-full justify-start px-3", !active && "text-muted-foreground hover:text-foreground")}
+      onClick={() => menu.setOpen(false)}
+    >
+      {children}
+    </Button>
   );
+}

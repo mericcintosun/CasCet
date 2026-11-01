@@ -6,7 +6,7 @@ import { ArrowUpRight, Github } from "lucide-react";
 import { Logo } from "@/components/logo";
 import { ModeToggle } from "@/components/mode-toggle";
 import { Button } from "@/components/ui/button";
-import { MobileMenuButton, MobileMenuPanel, mobileMenuLinkClass, useMobileMenu } from "@/components/mobile-menu";
+import { MobileMenuButton, MobileMenuItem, MobileMenuPanel, useMobileMenu } from "@/components/mobile-menu";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -18,17 +18,12 @@ const NAV = [
   { href: "#roadmap", label: "Roadmap" },
 ];
 
-/** In-page anchors stay plain <a>; routes go through next/link (no full reload, I29). */
-function NavLink({ href, className, onClick, children }: { href: string; className: string; onClick?: () => void; children: React.ReactNode }) {
-  return href.startsWith("#") ? (
-    <a href={href} className={className} onClick={onClick}>
-      {children}
-    </a>
-  ) : (
-    <Link href={href} className={className} onClick={onClick}>
-      {children}
-    </Link>
-  );
+/**
+ * In-page anchors stay plain <a>; routes go through next/link (no full reload, I29).
+ * Extra props (className, onClick from a Button rendered asChild) reach the element.
+ */
+function NavLink({ href, ...props }: { href: string } & Omit<React.AnchorHTMLAttributes<HTMLAnchorElement>, "href">) {
+  return href.startsWith("#") ? <a href={href} {...props} /> : <Link href={href} {...props} />;
 }
 
 export function MarketingHeader() {
@@ -87,9 +82,9 @@ export function MarketingHeader() {
       </div>
       <MobileMenuPanel menu={menu} label="Sections">
         {NAV.map((item) => (
-          <NavLink key={item.href} href={item.href} className={mobileMenuLinkClass(false)} onClick={() => menu.setOpen(false)}>
-            {item.label}
-          </NavLink>
+          <MobileMenuItem key={item.href} menu={menu}>
+            <NavLink href={item.href}>{item.label}</NavLink>
+          </MobileMenuItem>
         ))}
       </MobileMenuPanel>
     </header>
