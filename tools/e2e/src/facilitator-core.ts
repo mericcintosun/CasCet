@@ -52,6 +52,7 @@ export const Reason = {
   insufficientFunds: "insufficient_funds",
   preflightUnavailable: "preflight_unavailable",
   busy: "facilitator_busy",
+  shuttingDown: "facilitator_shutting_down",
   gasCapReached: "daily_gas_cap_reached",
   buildFailed: "settlement_build_failed",
   rejectedByNode: "settlement_rejected",

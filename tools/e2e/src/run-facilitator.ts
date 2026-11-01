@@ -53,8 +53,21 @@ try {
     ...(cfg.tokenName ? { tokenName: cfg.tokenName } : {}),
   });
   console.log(`facilitator up at ${fac.url} (net=${fac.network})`);
-  const stop = () => {
-    void fac.close().then(() => process.exit(0));
+  // A running /settle may already have submitted a transaction: the first
+  // signal lets running requests finish and answer (new ones get 503); a
+  // second one exits at once. Give a process manager about 90 s to stop it.
+  let stopping = false;
+  const stop = (signal: NodeJS.Signals) => {
+    if (stopping) {
+      console.warn(`[run-facilitator] ${signal} again: exiting now; reconcile unfinished settlements by transaction hash or nonce`);
+      process.exit(1);
+    }
+    stopping = true;
+    console.log(`[run-facilitator] ${signal}: finishing running /verify and /settle requests, then exiting (repeat to exit at once)`);
+    fac.close().then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);

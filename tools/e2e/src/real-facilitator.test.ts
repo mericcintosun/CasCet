@@ -8,7 +8,13 @@ import casperSdk from "casper-js-sdk";
 import type { SettleResponse, VerifyResponse } from "@x402/core/types";
 import type { CoreResult, FacilitatorCore, FacilitatorLogger, ParsedPayment } from "./facilitator-core.js";
 import { NETWORKS } from "./facilitator-env.js";
-import { createFacilitatorApp, startRealFacilitator, type FacilitatorAppOptions } from "./real-facilitator.js";
+import {
+  closeGracefully,
+  createFacilitatorApp,
+  InFlightRequests,
+  startRealFacilitator,
+  type FacilitatorAppOptions,
+} from "./real-facilitator.js";
 import * as fx from "./rpc-fixtures.js";
 import { startFakeRpcServer, type FakeRpcServer } from "./test-helpers.js";
 
@@ -91,6 +97,7 @@ async function serve(core: FacilitatorCore, over: Partial<FacilitatorAppOptions>
   return {
     base,
     post,
+    server,
     close: () => new Promise<void>(r => server.close(() => r())),
   };
 }
@@ -219,6 +226,69 @@ describe("HTTP surface: rate limits (CodeQL js/missing-rate-limiting)", () => {
     } finally {
       await s.close();
     }
+  });
+});
+
+describe("graceful shutdown", () => {
+  /** A core whose settle blocks until released (a settle that already submitted and is polling). */
+  function slowCore() {
+    const core = new FakeCore();
+    let release!: () => void;
+    const gate = new Promise<void>(r => (release = r));
+    let entered!: () => void;
+    const started = new Promise<void>(r => (entered = r));
+    core.settle = async (p: ParsedPayment) => {
+      entered();
+      await gate;
+      return { status: 200, body: { success: true, transaction: "bb".repeat(32), network: NETWORK, payer: p.authorization.from } };
+    };
+    return { core, release, started };
+  }
+
+  test("close waits for a running /settle to finish and answer", async () => {
+    const { core, release, started } = slowCore();
+    const inFlight = new InFlightRequests();
+    const s = await serve(core, { inFlight });
+    const pending = s.post("/settle", requestBody());
+    await started;
+    assert.equal(inFlight.size, 1);
+    let closed = false;
+    const closing = closeGracefully(s.server, inFlight, 10_000, quiet).then(() => (closed = true));
+    await new Promise(r => setTimeout(r, 100));
+    assert.equal(closed, false, "the running settle keeps the facilitator open");
+    release();
+    const answer = await pending;
+    assert.deepEqual([answer.status, answer.body["transaction"]], [200, "bb".repeat(32)]);
+    await closing;
+    assert.equal(closed, true);
+  });
+
+  test("while shutting down, new requests get 503 and never reach the core", async () => {
+    const core = new FakeCore();
+    const inFlight = new InFlightRequests();
+    inFlight.close();
+    const s = await serve(core, { inFlight });
+    try {
+      const st = await s.post("/settle", requestBody());
+      assert.deepEqual([st.status, st.body["errorReason"]], [503, "facilitator_shutting_down"]);
+      assert.deepEqual(st.body["extra"], { settlementStatus: "not_submitted" });
+      assert.equal((await s.post("/verify", requestBody())).status, 503);
+      assert.equal(core.calls.length, 0);
+    } finally {
+      await s.close();
+    }
+  });
+
+  test("a settle that outlives the drain timeout is cut off with a warning", async () => {
+    const { core, started } = slowCore();
+    const inFlight = new InFlightRequests();
+    const warnings: string[] = [];
+    const s = await serve(core, { inFlight });
+    const pending = s.post("/settle", requestBody()).catch((e: unknown) => e);
+    await started;
+    await closeGracefully(s.server, inFlight, 50, { ...quiet, warn: m => warnings.push(m) });
+    assert.ok((await pending) instanceof Error, "the connection was closed");
+    assert.ok(warnings.some(w => w.includes("still running")));
   });
 });
 

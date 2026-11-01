@@ -148,6 +148,10 @@ export interface RealFacilitatorOptions {
 }
 
 export interface RealFacilitatorHandle {
+  /**
+   * Stop accepting requests (new ones get 503), wait for running /verify and
+   * /settle requests to finish and answer, then close. Idempotent.
+   */
   close: () => Promise<void>;
   /** Base URL to point the gateway's `facilitator.url` at. */
   url: string;
@@ -177,6 +181,92 @@ export interface FacilitatorAppOptions {
   maxRequestsPerPayerPerMinute: number;
   maxRequestsPerIpPerMinute: number;
   logger: FacilitatorLogger;
+  /** Tracks running /verify and /settle work so a shutdown can wait for it. */
+  inFlight?: InFlightRequests;
+}
+
+/**
+ * Counts /verify and /settle requests whose core work is still running. A
+ * settle may already have submitted a transaction: a shutdown waits for it
+ * (see {@link closeGracefully}) instead of cutting the connection, which would
+ * leave the gateway with an indeterminate outcome and lose the ledger entry.
+ */
+export class InFlightRequests {
+  private count = 0;
+  private closing = false;
+  private readonly idleWaiters = new Set<() => void>();
+
+  get size(): number {
+    return this.count;
+  }
+
+  /** True once shutting down: new /verify and /settle requests get 503. */
+  get isClosing(): boolean {
+    return this.closing;
+  }
+
+  close(): void {
+    this.closing = true;
+  }
+
+  enter(): void {
+    this.count++;
+  }
+
+  leave(): void {
+    if (this.count > 0) this.count--;
+    if (this.count === 0) for (const wake of [...this.idleWaiters]) wake();
+  }
+
+  /** Resolves true once nothing is in flight, or false after `timeoutMs`. */
+  whenIdle(timeoutMs: number): Promise<boolean> {
+    if (this.count === 0) return Promise.resolve(true);
+    return new Promise(resolve => {
+      const done = (idle: boolean) => {
+        clearTimeout(timer);
+        this.idleWaiters.delete(wake);
+        resolve(idle);
+      };
+      const wake = () => done(true);
+      const timer = setTimeout(() => done(false), timeoutMs);
+      this.idleWaiters.add(wake);
+    });
+  }
+}
+
+/**
+ * Stop accepting connections, let running /verify and /settle requests finish
+ * and answer (up to `drainTimeoutMs`), then close every remaining connection.
+ */
+export async function closeGracefully(
+  server: Server,
+  inFlight: InFlightRequests,
+  drainTimeoutMs: number,
+  logger: FacilitatorLogger,
+): Promise<void> {
+  inFlight.close();
+  let closed = false;
+  const serverClosed = new Promise<void>(resolve =>
+    server.close(() => {
+      closed = true;
+      resolve();
+    }),
+  );
+  if (!(await inFlight.whenIdle(drainTimeoutMs))) {
+    logger.warn(
+      `shutting down with ${inFlight.size} /verify or /settle request(s) still running after ${drainTimeoutMs} ms; ` +
+        "reconcile their settlements by transaction hash or nonce",
+    );
+  }
+  // Answers are written as soon as the core returns: close keep-alive sockets
+  // as they become idle, then whatever is left.
+  const deadline = Date.now() + 1_000;
+  while (!closed && Date.now() < deadline) {
+    server.closeIdleConnections();
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  server.closeAllConnections();
+  await serverClosed;
 }
 
 type RouteKind = "verify" | "settle" | "other";
@@ -222,6 +312,7 @@ function sendRejection(
  */
 export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorAppOptions): express.Express {
   const { network, logger } = opts;
+  const inFlight = opts.inFlight ?? new InFlightRequests();
   const app = express();
   app.disable("x-powered-by");
 
@@ -293,14 +384,30 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     res.json({ status: "ok", network });
   });
 
-  app.post("/verify", requireToken, parsePayment, allCallersLimiter, perPayerLimiter, async (_req, res) => {
-    const result = await core.verify(res.locals["payment"] as ParsedPayment);
-    res.status(result.status).json(result.body);
+  const refuseWhenClosing = (req: Request, res: Response, next: NextFunction): void => {
+    if (!inFlight.isClosing) return next();
+    res.set("connection", "close");
+    sendRejection(req, res, network, 503, Reason.shuttingDown, "the facilitator is shutting down; retry later");
+  };
+
+  app.post("/verify", refuseWhenClosing, requireToken, parsePayment, allCallersLimiter, perPayerLimiter, async (_req, res) => {
+    inFlight.enter();
+    try {
+      const result = await core.verify(res.locals["payment"] as ParsedPayment);
+      res.status(result.status).json(result.body);
+    } finally {
+      inFlight.leave();
+    }
   });
 
-  app.post("/settle", requireToken, parsePayment, allCallersLimiter, perPayerLimiter, settleLimiter, async (_req, res) => {
-    const result = await core.settle(res.locals["payment"] as ParsedPayment);
-    res.status(result.status).json(result.body);
+  app.post("/settle", refuseWhenClosing, requireToken, parsePayment, allCallersLimiter, perPayerLimiter, settleLimiter, async (_req, res) => {
+    inFlight.enter();
+    try {
+      const result = await core.settle(res.locals["payment"] as ParsedPayment);
+      res.status(result.status).json(result.body);
+    } finally {
+      inFlight.leave();
+    }
   });
 
   app.use((req: Request, res: Response) => {
@@ -418,7 +525,9 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   for (const w of roles.warnings) logger.warn(`key roles: ${w}`);
   if (roles.errors.length > 0) throw new Error(`refusing to start on mainnet: ${roles.errors.join("; ")}`);
 
-  const rpc = createCasperRpc(rpcUrl, { timeoutMs: opts.rpcTimeoutMs ?? 8_000 });
+  const rpcTimeoutMs = opts.rpcTimeoutMs ?? 8_000;
+  const settleWaitMs = opts.settleWaitMs ?? DEFAULT_SETTLE_WAIT_MS;
+  const rpc = createCasperRpc(rpcUrl, { timeoutMs: rpcTimeoutMs });
   if (mainnet) {
     // Account comparisons cannot see associated keys: if the fee-payer key were
     // added to the owner or a seller account, its leak would let an attacker
@@ -474,7 +583,7 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
       tokenVersion: opts.tokenVersion ?? "1",
       ...(tokenName !== undefined ? { tokenName } : {}),
       paymentMotes: BigInt(paymentMotes),
-      settleWaitMs: opts.settleWaitMs ?? DEFAULT_SETTLE_WAIT_MS,
+      settleWaitMs,
       maxValiditySeconds,
       minSettleWindowSeconds,
       preflightDeadlineMs,
@@ -490,6 +599,7 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     },
   );
 
+  const inFlight = new InFlightRequests();
   const app = createFacilitatorApp(core, {
     network,
     ...(opts.authToken ? { authToken: opts.authToken } : {}),
@@ -498,6 +608,7 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     maxRequestsPerPayerPerMinute: opts.maxRequestsPerPayerPerMinute ?? 30,
     maxRequestsPerIpPerMinute: opts.maxRequestsPerIpPerMinute ?? 600,
     logger,
+    inFlight,
   });
 
   const server = await listen(app, opts.port, host);
@@ -514,13 +625,16 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
       `preflight=${preflight ? "on" : "off"}, gasLimit=${paymentMotes} motes)`,
   );
 
+  // Longest a settle can run: its preflight, submission and polling (until
+  // settleWaitMs after it started) plus one last RPC call.
+  const drainTimeoutMs = settleWaitMs + preflightDeadlineMs + 2 * rpcTimeoutMs;
+  let closing: Promise<void> | undefined;
   return {
-    close: () =>
-      new Promise<void>(resolveClose => {
-        clearInterval(sweeper);
-        server.close(() => resolveClose());
-        server.closeAllConnections?.();
-      }),
+    close: () => {
+      clearInterval(sweeper);
+      closing ??= closeGracefully(server, inFlight, drainTimeoutMs, logger);
+      return closing;
+    },
     url: `http://${urlHost}:${port}`,
     feePayer,
     network,
