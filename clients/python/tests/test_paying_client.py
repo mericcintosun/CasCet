@@ -670,6 +670,24 @@ class TestRealHttp(unittest.TestCase):
         payload = x402.decode_payment_signature_header(retry["headers"][x402.HEADER_PAYMENT_SIGNATURE])
         self.assertEqual(payload["accepted"], make_requirements())
 
+    def test_a_large_402_body_is_not_downloaded(self):
+        # Only the first 64 KiB of a 402 body are read: a gateway cannot make the buyer download a huge
+        # 402. The connection is dropped instead of drained, so the paid retry goes out on a new one.
+        def app(handler, srv):
+            if handler.headers.get(x402.HEADER_PAYMENT_SIGNATURE) is None:
+                challenge_header = x402._b64_json_encode(make_payment_required())
+                send(handler, 402, {"PAYMENT-REQUIRED": challenge_header}, b" " * (256 * 1024))
+            else:
+                send(handler, 200, {"Content-Type": "application/json"}, b'{"jsonrpc":"2.0","id":1,"result":{}}')
+
+        with LocalServer(app) as gateway:
+            client = self.client()
+            response = client.post(gateway.url + "/mcp", json={"jsonrpc": "2.0", "id": 1})
+            self.assertEqual(response.status_code, 200)
+            first, retry = gateway.requests
+        self.assertNotEqual(first["port"], retry["port"])
+        self.assertEqual(client.spent_raw(TOKEN), PRICE)
+
     def test_redirect_of_the_paid_retry_is_not_followed(self):
         # Reproduces the review finding: the retry got a 307 to another origin, which then received
         # PAYMENT-SIGNATURE and the body and answered in the gateway's name.

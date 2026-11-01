@@ -152,6 +152,12 @@ class LocalServer:
 
             do_GET = do_POST = answer
 
+            def handle_one_request(self) -> None:
+                try:
+                    super().handle_one_request()
+                except (BrokenPipeError, ConnectionResetError):  # the client hung up between requests
+                    self.close_connection = True
+
             def log_message(self, format: str, *args: Any) -> None:  # keep the test output clean
                 pass
 
