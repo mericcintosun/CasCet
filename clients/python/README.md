@@ -81,8 +81,9 @@ Every refusal raises `PaymentAborted` before anything is signed.
 
 Pass `stream=True` to `request()` to read a large body yourself; the deadline
 then ends when the response headers arrive. The exact cut-off of a dripping
-body needs urllib3 2.3 or newer (`requirements-lock.txt` pins 2.8). With an
-older urllib3 the deadline is checked between chunks.
+body uses `HTTPResponse.shutdown()` from urllib3 2.3, which `requirements.txt`
+requires (`requirements-lock.txt` pins 2.8). In an environment with an older
+urllib3 the deadline is only checked between chunks.
 
 `PayingClient.from_env()` reads the same environment variables as
 `npx @cascet/cli connect`, and reports an invalid value with the name of its
@@ -193,6 +194,7 @@ difference.
 | `cryptography` | ed25519 PEM keys and signing. |
 | `pycryptodome` | keccak-256. |
 | `requests` | `PayingClient` and the examples. The signing functions don't need it. |
+| `urllib3` 2.3 or newer | Installed with `requests`. `PayingClient` calls its `HTTPResponse.shutdown()` to cut off a body read at the deadline. |
 
 The Python client signs with ed25519 keys only. secp256k1 payer keys are
 supported by the TypeScript client.

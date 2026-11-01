@@ -3,3 +3,5 @@
 cryptography>=44
 pycryptodome>=3.20
 requests>=2.31
+# HTTPResponse.shutdown() (2.3+): PayingClient uses it to cut off a body read at the deadline
+urllib3>=2.3
