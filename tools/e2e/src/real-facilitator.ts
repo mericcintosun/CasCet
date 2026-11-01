@@ -1,7 +1,9 @@
 import { readFileSync, statSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import express, { type NextFunction, type Request, type Response } from "express";
-import { rateLimit } from "express-rate-limit";
+// Default import on purpose: CodeQL's js/missing-rate-limiting model recognizes
+// invocations of the "express-rate-limit" module import as rate limiters.
+import rateLimit from "express-rate-limit";
 import type { Network } from "@x402/core/types";
 import { ExactCasperScheme } from "@make-software/casper-x402/exact/facilitator";
 import casperSdk from "casper-js-sdk";
