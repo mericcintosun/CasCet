@@ -148,6 +148,21 @@ describe("ToolPinGuard", () => {
     assert.equal(next.inspect([changed, yieldsTool]).quarantined.size, 0);
   });
 
+  it("treats tool names like constructor and __proto__ as ordinary keys", () => {
+    const path = freshPath();
+    const odd = [
+      { name: "constructor", description: "a", inputSchema: { type: "object" } },
+      { name: "__proto__", description: "b", inputSchema: { type: "object" } },
+    ];
+    assert.equal(new ToolPinGuard(GATEWAY, { path, log: () => undefined }).inspect(odd).quarantined.size, 0);
+    const next = new ToolPinGuard(GATEWAY, { path, log: () => undefined });
+    assert.equal(next.inspect(odd).quarantined.size, 0);
+    assert.equal(next.status("__proto__"), "trusted");
+    const changed = new ToolPinGuard(GATEWAY, { path, log: () => undefined });
+    assert.deepEqual([...changed.inspect([{ ...odd[0], description: "changed" }]).quarantined], ["constructor"]);
+    assert.deepEqual(Object.keys(readPinFile(path).gateways[GATEWAY]?.tools ?? {}).sort(), ["__proto__", "constructor"]);
+  });
+
   it("keeps pins of different gateways apart", () => {
     const path = freshPath();
     new ToolPinGuard(GATEWAY, { path, log: () => undefined }).inspect([marketTool]);

@@ -213,7 +213,7 @@ function normalizeList(
 ): ReadonlySet<string> | undefined {
   if (values === undefined) return undefined;
   if (!Array.isArray(values) || values.length === 0) {
-    throw new Error(`${label} must not be empty; omit it to allow any value (not recommended)`);
+    throw new Error(`${label} must be a non-empty list; omit it to allow any value (not recommended)`);
   }
   const out = new Set<string>();
   for (const value of values) {

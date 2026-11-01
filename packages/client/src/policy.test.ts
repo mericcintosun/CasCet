@@ -94,8 +94,8 @@ describe("SpendPolicy construction", () => {
   });
 
   it("rejects empty allowlists and public keys in allowedPayTo", () => {
-    assert.throws(() => new SpendPolicy({ allowedPayTo: [] }), /allowedPayTo must not be empty/);
-    assert.throws(() => new SpendPolicy({ allowedAssets: [] }), /allowedAssets must not be empty/);
+    assert.throws(() => new SpendPolicy({ allowedPayTo: [] }), /allowedPayTo must be a non-empty list/);
+    assert.throws(() => new SpendPolicy({ allowedAssets: [] }), /allowedAssets must be a non-empty list/);
     assert.throws(() => new SpendPolicy({ allowedPayTo: ["01" + "ab".repeat(32)] }), /public key.*account-hash/);
     assert.throws(() => new SpendPolicy({ allowedAssets: ["nope"] }), /allowedAssets: invalid asset/);
   });

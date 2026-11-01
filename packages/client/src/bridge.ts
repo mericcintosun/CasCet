@@ -48,6 +48,9 @@ interface RpcMessage {
   error?: unknown;
 }
 
+/** Conventional MCP tool names; anything else is not echoed back in a quarantine stub. */
+const SAFE_TOOL_NAME = /^[A-Za-z0-9_./-]{1,128}$/;
+
 const QUARANTINE_NOTICE =
   "[CasCet] This tool is quarantined: its definition changed since it was pinned, or it appeared after " +
   "the gateway's tools were pinned. CasCet will not call it or pay for it. Ask the user to review the " +
@@ -161,15 +164,16 @@ export function createBridge(gatewayMcpUrl: string, paying: PayingFetch, options
     if (method === "tools/list" && pins && isRecord(result) && Array.isArray(result.tools)) {
       const tools: unknown[] = result.tools;
       const { quarantined } = pins.inspect(tools);
-      if (quarantined.size > 0) {
-        // Withhold the changed definition from the model: a poisoned description works the
-        // moment the model reads it, even if the tool is never called.
-        result.tools = tools.map(tool =>
-          isRecord(tool) && typeof tool.name === "string" && quarantined.has(tool.name)
-            ? { name: tool.name, description: QUARANTINE_NOTICE, inputSchema: { type: "object", properties: {} } }
-            : tool,
-        );
-      }
+      // Withhold changed definitions from the model: a poisoned description works the moment
+      // the model reads it, even if the tool is never called. Entries without a string name
+      // cannot be pinned and are dropped, and a stub never echoes an unusual tool name.
+      result.tools = tools.flatMap(tool => {
+        if (!isRecord(tool) || typeof tool.name !== "string") return [];
+        if (!quarantined.has(tool.name)) return [tool];
+        return SAFE_TOOL_NAME.test(tool.name)
+          ? [{ name: tool.name, description: QUARANTINE_NOTICE, inputSchema: { type: "object", properties: {} } }]
+          : [];
+      });
     }
     return JSON.stringify(reply);
   }

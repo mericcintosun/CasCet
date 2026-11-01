@@ -184,10 +184,10 @@ export class ToolPinGuard {
       return { quarantined };
     }
 
-    const entry = store.gateways[this.gatewayKey];
+    const entry = own(store.gateways, this.gatewayKey);
     if (this.firstContact === undefined) this.firstContact = entry === undefined;
     const pinned = entry?.tools ?? {};
-    const updates: Record<string, PinnedTool> = {};
+    const updates = new Map<string, PinnedTool>();
     const firstPins: string[] = [];
     const timestamp = this.now().toISOString();
 
@@ -200,20 +200,20 @@ export class ToolPinGuard {
       }
       const definition = pinnedToolDefinition(tool);
       const digest = sha256(canonicalJson(definition));
-      const previous = updates[name] ?? pinned[name];
+      const previous = updates.get(name) ?? own(pinned, name);
       if (previous && previous.sha256 === digest) {
         this.trust.set(name, "trusted");
         continue;
       }
       if (!previous && this.firstContact) {
-        updates[name] = { sha256: digest, pinnedAt: timestamp, definition };
+        updates.set(name, { sha256: digest, pinnedAt: timestamp, definition });
         firstPins.push(name);
         this.trust.set(name, "trusted");
         continue;
       }
       const change: ToolChange = { name, kind: previous ? "changed" : "new", previous, sha256: digest, definition };
       if (this.acceptChanges) {
-        updates[name] = { sha256: digest, pinnedAt: timestamp, definition };
+        updates.set(name, { sha256: digest, pinnedAt: timestamp, definition });
         this.trust.set(name, "trusted");
         this.report(change, "accepted");
         continue;
@@ -223,22 +223,27 @@ export class ToolPinGuard {
       this.report(change, "quarantined");
     }
 
-    if (Object.keys(updates).length > 0) this.persist(updates);
+    if (updates.size > 0) this.persist(updates);
     if (firstPins.length > 0) {
       this.log(
         `[cascet] pinned ${firstPins.length} tool definition(s) of ${this.gatewayKey} on first use ` +
-          `(${firstPins.join(", ")}) in ${this.path}. A later change to any of them will be refused until you accept it.`,
+          `(${firstPins.map(sanitize).join(", ")}) in ${this.path}. A later change to any of them will be refused until you accept it.`,
       );
     }
     this.inspected = true;
     return { quarantined };
   }
 
-  private persist(updates: Record<string, PinnedTool>): void {
+  private persist(updates: ReadonlyMap<string, PinnedTool>): void {
     try {
       const store = readPinFile(this.path); // re-read: another bridge may have written meanwhile
-      const entry = (store.gateways[this.gatewayKey] ??= { tools: {} });
-      Object.assign(entry.tools, updates);
+      let entry = own(store.gateways, this.gatewayKey);
+      if (!entry) {
+        entry = { tools: {} };
+        defineOwn(store.gateways, this.gatewayKey, entry);
+      }
+      // defineProperty, not assignment: a tool named "__proto__" must stay an ordinary key.
+      for (const [name, pin] of updates) defineOwn(entry.tools, name, pin);
       writePinFile(this.path, store);
     } catch (err) {
       this.log(
@@ -306,6 +311,15 @@ function sanitize(text: string): string {
     /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g,
     char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
+}
+
+/** Own-property lookup, so names such as "constructor" never resolve to Object.prototype. */
+function own<T>(record: Record<string, T>, key: string): T | undefined {
+  return Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
+}
+
+function defineOwn<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, { value, enumerable: true, writable: true, configurable: true });
 }
 
 function sha256(text: string): string {
