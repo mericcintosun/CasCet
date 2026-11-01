@@ -48,9 +48,10 @@ export function ingest(event: CascetEvent): void {
     }
     case "server-online": {
       // Bounded and sanitised: the event comes over the network (I42).
-      if (!store.servers.has(event.server) && store.servers.size >= MAX_SERVERS) break;
-      store.servers.set(event.server.slice(0, 128), {
-        name: event.server.slice(0, 128),
+      const name = event.server.slice(0, 128);
+      if (!store.servers.has(name) && store.servers.size >= MAX_SERVERS) break;
+      store.servers.set(name, {
+        name,
         tools: sanitizeTools(event.tools),
         online: true,
         lastSeen: new Date().toISOString(),
@@ -58,7 +59,7 @@ export function ingest(event: CascetEvent): void {
       break;
     }
     case "server-offline": {
-      const info = store.servers.get(event.server);
+      const info = store.servers.get(event.server.slice(0, 128));
       if (info) info.online = false;
       break;
     }
