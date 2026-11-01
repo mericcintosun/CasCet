@@ -8,6 +8,8 @@ const TOKEN = "f".repeat(64);
 const DEPLOYER = NETWORKS["casper:casper"].deployerAccount;
 const FEE_PAYER = "ab".repeat(32);
 const SELLER = `00${"5e".repeat(32)}`;
+/** Official Wrapped CSPR on testnet (cep3009-value). */
+const WCSPR = "3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e";
 
 describe("key-role separation rules (M07)", () => {
   test("account hashes are normalized from every accepted form", () => {
@@ -101,7 +103,7 @@ describe("facilitator environment", () => {
     assert.throws(() => readFacilitatorEnv({ CASCET_NETWORK: "casper:casper", CASCET_FACILITATOR_KEY: "/k.pem" }, ROOT), /CASCET_FACILITATOR_TOKEN/);
   });
 
-  test("mainnet defaults: CasCet token, deployer as owner and seller, 4 CSPR gas limit", () => {
+  test("mainnet defaults: CasCet token with its known name, deployer as owner and seller, gas limit per style", () => {
     const cfg = readFacilitatorEnv(
       { CASCET_NETWORK: "casper:casper", CASCET_FACILITATOR_KEY: "/secure/fee.pem", CASCET_FACILITATOR_TOKEN: TOKEN },
       ROOT,
@@ -110,7 +112,9 @@ describe("facilitator environment", () => {
     assert.deepEqual(cfg.allowedAssets, [NETWORKS["casper:casper"].token]);
     assert.deepEqual(cfg.allowedPayTo, [DEPLOYER]);
     assert.deepEqual(cfg.ownerAccountHashes, [DEPLOYER.slice(2)]);
-    assert.equal(cfg.paymentMotes, 4_000_000_000);
+    // No limit configured: the facilitator applies the style's default (4 CSPR for CasCet's token) at start-up.
+    assert.equal(cfg.paymentMotes, undefined);
+    assert.deepEqual(cfg.assets, [{ packageHash: NETWORKS["casper:casper"].token, name: "CasCet X402 Token", version: "1" }]);
     assert.equal(cfg.dailyGasCapMotes, 500_000_000_000n);
     assert.equal(cfg.settleWaitMs, 60_000);
     assert.equal(cfg.preflight, true);
@@ -143,6 +147,7 @@ describe("facilitator environment", () => {
     assert.deepEqual(cfg.ownerAccountHashes, ["0e".repeat(32), "0f".repeat(32), DEPLOYER.slice(2)]);
     assert.deepEqual(cfg.allowedAssets, ["cb".repeat(32)]);
     assert.equal(cfg.paymentMotes, 3_500_000_000);
+    assert.deepEqual(cfg.assets, [{ packageHash: "cb".repeat(32), version: "1", paymentMotes: 3_500_000_000 }]);
     assert.equal(cfg.dailyGasCapMotes, 50_000_000_000n);
     assert.equal(cfg.settleWaitMs, 20_000);
     assert.equal(cfg.preflight, true);
@@ -164,15 +169,18 @@ describe("facilitator environment", () => {
     const off = readFacilitatorEnv({ CASCET_PREFLIGHT: "off" }, ROOT);
     assert.deepEqual([off.preflight, off.tokenName], [false, "CasCet X402 Token"]);
     assert.ok(off.warnings.some(w => w.includes("CASCET_PREFLIGHT=off")));
-    // Another token: its name must be given when nothing reads it on-chain.
+    // Another token: its name and its style must be given when nothing reads it on-chain.
     const other = { CASCET_PREFLIGHT: "off", CASCET_ALLOWED_ASSETS: "cb".repeat(32) };
     assert.throws(() => readFacilitatorEnv(other, ROOT), /CASCET_TOKEN_NAME/);
-    assert.equal(readFacilitatorEnv({ ...other, CASCET_TOKEN_NAME: "Other Token" }, ROOT).tokenName, "Other Token");
+    assert.throws(() => readFacilitatorEnv({ ...other, CASCET_TOKEN_NAME: "Other Token" }, ROOT), /CASCET_ASSET_STYLES .*declare the authorization style/);
+    const declared = readFacilitatorEnv({ ...other, CASCET_TOKEN_NAME: "Other Token", CASCET_ASSET_STYLES: `${"cb".repeat(32)}=cep3009-value` }, ROOT);
+    assert.equal(declared.tokenName, "Other Token");
+    assert.deepEqual(declared.assets, [{ packageHash: "cb".repeat(32), authorization: "cep3009-value", name: "Other Token", version: "1" }]);
   });
 
-  test("gas limit guard rails: never below measured consumption, warn above lane 5", () => {
+  test("gas limit guard rails: never below the style's measured consumption, warn above lane 5", () => {
     const env = { CASCET_FACILITATOR_KEY: "/k.pem" };
-    assert.throws(() => readFacilitatorEnv({ ...env, CASCET_SETTLE_PAYMENT_MOTES: "2700000000" }, ROOT), /between 3000000000/);
+    assert.throws(() => readFacilitatorEnv({ ...env, CASCET_SETTLE_PAYMENT_MOTES: "2700000000" }, ROOT), /between 3000000000 .* legacy-amount/);
     assert.throws(() => readFacilitatorEnv({ ...env, CASCET_SETTLE_PAYMENT_MOTES: "4 CSPR" }, ROOT), /whole number/);
     const lane4 = readFacilitatorEnv({ ...env, CASCET_SETTLE_PAYMENT_MOTES: "7000000000" }, ROOT);
     assert.ok(lane4.warnings.some(w => w.includes("lane 4")));
@@ -180,6 +188,69 @@ describe("facilitator environment", () => {
       () => readFacilitatorEnv({ ...env, CASCET_DAILY_GAS_CAP_MOTES: "1000" }, ROOT),
       /at least one settle/,
     );
+  });
+
+  test("both styles side by side: per-asset styles, names and gas limits", () => {
+    const LEGACY = NETWORKS["casper:casper-test"].token;
+    const cfg = readFacilitatorEnv(
+      {
+        CASCET_FACILITATOR_KEY: "/k.pem",
+        CASCET_ALLOWED_ASSETS: `hash-${LEGACY}, ${WCSPR}, hash-${LEGACY}`,
+        CASCET_ASSET_STYLES: `${WCSPR}=cep3009-value`,
+        CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET: `hash-${WCSPR}=2_000_000_000`,
+        CASCET_TOKEN_VERSION: "1",
+      },
+      ROOT,
+    );
+    assert.deepEqual(cfg.allowedAssets, [LEGACY, WCSPR], "normalized, duplicates dropped");
+    assert.deepEqual(cfg.assets, [
+      // Known names are pinned by default; the legacy token keeps its style's default limit (resolved at start-up).
+      { packageHash: LEGACY, name: "CasCet X402 Token", version: "1" },
+      { packageHash: WCSPR, authorization: "cep3009-value", name: "Wrapped CSPR", version: "1", paymentMotes: 2_000_000_000 },
+    ]);
+    assert.equal(cfg.tokenName, undefined, "no single-asset name with several assets");
+
+    // The default limit applies to every asset without its own, and must suit each one's style.
+    const shared = readFacilitatorEnv({ CASCET_ALLOWED_ASSETS: `${LEGACY},${WCSPR}`, CASCET_SETTLE_PAYMENT_MOTES: "5000000000" }, ROOT);
+    assert.deepEqual(shared.assets.map(a => a.paymentMotes), [5_000_000_000, 5_000_000_000]);
+    assert.throws(
+      () => readFacilitatorEnv({ CASCET_ALLOWED_ASSETS: `${LEGACY},${WCSPR}`, CASCET_SETTLE_PAYMENT_MOTES: "2000000000" }, ROOT),
+      /between 3000000000 .* legacy-amount/,
+    );
+    assert.throws(
+      () => readFacilitatorEnv({ CASCET_ALLOWED_ASSETS: WCSPR, CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET: `${WCSPR}=1000000000` }, ROOT),
+      /CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET .*between 1500000000 .* cep3009-value/,
+    );
+    // The cap must fit the largest settle.
+    assert.throws(
+      () =>
+        readFacilitatorEnv(
+          { CASCET_ALLOWED_ASSETS: WCSPR, CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET: `${WCSPR}=6000000000`, CASCET_DAILY_GAS_CAP_MOTES: "5000000000" },
+          ROOT,
+        ),
+      /at least one settle/,
+    );
+    // Without the preflight, the known testnet tokens need nothing more.
+    const off = readFacilitatorEnv({ CASCET_PREFLIGHT: "off", CASCET_ALLOWED_ASSETS: `${LEGACY},${WCSPR}` }, ROOT);
+    assert.deepEqual(off.assets.map(a => a.name), ["CasCet X402 Token", "Wrapped CSPR"]);
+  });
+
+  test("per-asset settings are validated against the allowlist", () => {
+    const LEGACY = NETWORKS["casper:casper-test"].token;
+    const two = { CASCET_ALLOWED_ASSETS: `${LEGACY},${WCSPR}` };
+    const cases: Array<[Record<string, string>, RegExp]> = [
+      [{ CASCET_ASSET_STYLES: `${"dd".repeat(32)}=cep3009-value` }, /CASCET_ASSET_STYLES: dddddddddd… is not in CASCET_ALLOWED_ASSETS/],
+      [{ CASCET_ASSET_STYLES: `${WCSPR}=value` }, /neither legacy-amount nor cep3009-value/],
+      [{ CASCET_ASSET_STYLES: `${WCSPR}` }, /expected <package hash>=<value>/],
+      [{ CASCET_ASSET_STYLES: `${WCSPR}=cep3009-value,hash-${WCSPR}=cep3009-value` }, /listed twice/],
+      [{ CASCET_ASSET_STYLES: `${LEGACY}=cep3009-value` }, /CasCet's x402 token, whose transfer_with_authorization takes `amount`/],
+      [{ CASCET_ASSET_NAMES: `${WCSPR}=` }, /CASCET_ASSET_NAMES/],
+      [{ CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET: `${WCSPR}=lots` }, /whole number/],
+      [{ CASCET_TOKEN_NAME: "Wrapped CSPR" }, /CASCET_TOKEN_NAME pins the name of a single allowlisted asset/],
+    ];
+    for (const [env, error] of cases) assert.throws(() => readFacilitatorEnv({ ...two, ...env }, ROOT), error);
+    const named = readFacilitatorEnv({ ...two, CASCET_ASSET_NAMES: `${WCSPR}=Wrapped CSPR (testnet)` }, ROOT);
+    assert.equal(named.assets[1]?.name, "Wrapped CSPR (testnet)");
   });
 
   test("rejects malformed values instead of crashing later (I08)", () => {

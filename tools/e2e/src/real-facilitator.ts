@@ -9,46 +9,57 @@ import { AuthorizationLedger } from "./authorization-ledger.js";
 import { verifyPaymentSignature } from "./authorization-signature.js";
 import { assertUsableToken, authorizationMatches, MIN_MAINNET_TOKEN_LENGTH } from "./facilitator-auth.js";
 import {
+  checkDomainString,
+  checkPaymentMotes,
+  describeAssetPolicy,
+  MIN_EVERY_STYLE_PAYMENT_MOTES,
+  planAssets,
+  resolveAssetPolicies,
+  type AssetPlan,
+  type FacilitatorAssetOptions,
+} from "./facilitator-assets.js";
+import {
   createFacilitatorCore,
   DEFAULT_MIN_SETTLE_WINDOW_SECONDS,
+  DEFAULT_PAYMENT_MOTES_BY_STYLE,
   DEFAULT_PREFLIGHT_DEADLINE_MS,
   logText,
-  normalizeAsset,
   normalizePayTo,
   parsePaymentRequest,
   Reason,
+  type AssetPolicy,
   type FacilitatorCore,
   type FacilitatorLogger,
   type ParsedPayment,
   type SettlementStatus,
 } from "./facilitator-core.js";
-import {
-  DEFAULT_DAILY_GAS_CAP_MOTES,
-  DEFAULT_SETTLE_PAYMENT_MOTES,
-  DEFAULT_SETTLE_WAIT_MS,
-  MAX_SETTLE_PAYMENT_MOTES,
-  MIN_SETTLE_PAYMENT_MOTES,
-  NETWORKS,
-  ownerAccountsFor,
-} from "./facilitator-env.js";
+import { DEFAULT_DAILY_GAS_CAP_MOTES, DEFAULT_SETTLE_WAIT_MS, NETWORKS, ownerAccountsFor } from "./facilitator-env.js";
 import { checkRoleSeparation } from "./facilitator-roles.js";
 import { accountsSignableBy } from "./account-keys.js";
 import { DailyGasBudget } from "./gas-budget.js";
 import { loadSecretKeyFile } from "./key-file.js";
 import { createCasperSettlementChain } from "./settlement.js";
 
+export type { FacilitatorAssetOptions } from "./facilitator-assets.js";
+
+/** How long the token probe trusts a token's contract, ABI style, name and chain_name (migration design: 5 minutes). */
+export const TOKEN_STATE_CACHE_MS = 5 * 60_000;
+
 /**
- * Self-hosted REAL x402 facilitator for Casper.
+ * Self-hosted REAL x402 facilitator for Casper, for both authorization styles.
  *
  * Why this exists: in July 2026 the Casper x402 stack renamed the settle
  * runtime arg `amount` → `value` (CEP-3009, make-software/casper-x402
  * `3ee705ec`) and the hosted CSPR.cloud facilitator
  * (`https://x402-facilitator.cspr.cloud`) followed. CasCet's token is the
- * earlier reference build whose `transfer_with_authorization` expects `amount`,
- * so a hosted settle against it reverts `User error: 64658`
- * (Odra `ExecutionError::MissingArg`). This facilitator checks signatures with
- * @x402/casper's EIP-712 digest and settles with its own transaction builder
- * (same `amount` argument), fee-sponsored by a Casper key.
+ * earlier reference build whose `transfer_with_authorization` expects `amount`
+ * (`legacy-amount`), so a hosted settle against it reverts `User error: 64658`
+ * (Odra `ExecutionError::MissingArg`). This facilitator settles it and CEP-3009
+ * tokens such as the official Wrapped CSPR (`cep3009-value`) side by side:
+ * one CasCet-owned transaction builder sends `amount` or `value` according to
+ * each token's on-chain ABI, fee-sponsored by a Casper key. Signatures are
+ * checked with @x402/casper's EIP-712 digest (both styles sign the same
+ * message).
  *
  * SECURITY: the fee payer pays real CSPR gas for every settle it submits, and
  * a reverted deploy burns its whole gas limit. The server therefore:
@@ -58,20 +69,32 @@ import { createCasperSettlementChain } from "./settlement.js";
  *   - rate-limits per client IP before authentication, and globally plus per
  *     payer on /verify and /settle (express-rate-limit);
  *   - only settles to allowlisted payees and assets (required on mainnet);
- *   - refuses authorizations that expire too soon to be settled in time
- *     (default 20 s; casper-x402 alone accepts 6 s, less than one block);
+ *   - reads every allowlisted token's ABI, chain_name and name at start-up and
+ *     refuses to start when the chain contradicts the configured style or name;
+ *     every request reads them again (cached) and refuses payments when the
+ *     token's ABI no longer matches its pinned style;
+ *   - gives every asset its own gas limit (default per style: 4 CSPR for
+ *     `legacy-amount`, 3.5 CSPR for `cep3009-value`), never below the style's
+ *     measured consumption;
+ *   - refuses authorizations that are not valid yet, or that expire too soon
+ *     to be settled in time (default 20 s; casper-x402 alone accepts 6 s, less
+ *     than one block);
  *   - keeps an in-flight ledger of (network, asset, from, nonce) until the
- *     authorization can no longer execute, answering duplicates with 409;
+ *     authorization can no longer execute, answering duplicates with
+ *     `duplicate_nonce`; a settle retry of a payment whose earlier settle
+ *     answered "pending" follows that transaction instead of submitting again;
  *   - checks on-chain, before submitting, that the nonce is unused, that the
  *     payer's balance covers the value plus everything already in flight, and
  *     that the EIP-712 domain name is the token's (required on mainnet; a
- *     testnet facilitator without it must pin the name);
+ *     testnet facilitator without it must pin the style and the name);
  *   - re-checks the validity window right before submitting and caps the
  *     transaction's TTL so it can never execute after validBefore;
  *   - caps sponsored gas per UTC day, reserving it only right before
  *     submission and counting the real on-chain cost when known;
  *   - answers "pending"/"unknown" with the transaction hash instead of a
  *     failure when RPC errors hide the outcome;
+ *   - answers every verdict about a payment with HTTP 200 and `isValid: false`
+ *     / `success: false`, as x402 facilitator clients expect;
  *   - refuses to start on mainnet when the fee-payer key is an owner account
  *     (the deployer always counts as one) or a seller account, or when it is
  *     an associated key of one of them (read on-chain at start-up).
@@ -87,7 +110,12 @@ export interface RealFacilitatorOptions {
   keyAlgo?: "ed25519" | "secp256k1";
   /** Casper node JSON-RPC URL. Defaults to the public node of the network. */
   rpcUrl?: string;
-  /** Gas limit (motes) per settle transaction. Defaults to 4 CSPR; at least 3 CSPR. */
+  /**
+   * Gas limit (motes) of a settle of every asset without its own
+   * (`assets[].paymentMotes`). Default per style: 4 CSPR for legacy-amount,
+   * 3.5 CSPR for cep3009-value. Never below the style's minimum (3 CSPR and
+   * 1.5 CSPR); without an asset allowlist, at least 3 CSPR.
+   */
   paymentMotes?: number;
   /** Interface to bind. Defaults to 127.0.0.1 (not remotely reachable). */
   host?: string;
@@ -95,7 +123,15 @@ export interface RealFacilitatorOptions {
   authToken?: string;
   /** Payees (serialized account-hash Keys "00…") this facilitator settles to. Required on mainnet. */
   allowedPayTo?: string[];
-  /** CEP-18 package hashes this facilitator settles. Required on mainnet. */
+  /**
+   * The assets this facilitator settles, with per-asset style, domain pins and
+   * gas limit. Required on mainnet (or `allowedAssets`).
+   */
+  assets?: FacilitatorAssetOptions[];
+  /**
+   * CEP-18 package hashes this facilitator settles, each with the default
+   * settings (shorthand for `assets`; set one or the other).
+   */
   allowedAssets?: string[];
   /**
    * Owner accounts (e.g. a new ReceiptRegistry owner); the fee payer must be none
@@ -119,8 +155,10 @@ export interface RealFacilitatorOptions {
    */
   settleWaitMs?: number;
   /**
-   * On-chain nonce / balance / token-name checks before verifying and settling.
-   * Default true. Required on mainnet; turning it off elsewhere requires `tokenName`.
+   * On-chain ABI / nonce / balance / token-name checks at start-up, before
+   * verifying and before settling. Default true. Required on mainnet; turning it
+   * off elsewhere requires every asset's style and name to be pinned (`tokenName`
+   * without an asset allowlist).
    */
   preflight?: boolean;
   /**
@@ -128,12 +166,13 @@ export interface RealFacilitatorOptions {
    * 10 s; keep it below the gateway's verify timeout (timeouts.facilitatorMs, 15 s).
    */
   preflightDeadlineMs?: number;
-  /** Pinned EIP-712 domain version (`extra.version`) of the token. Default "1". */
+  /** Pinned EIP-712 domain version (`extra.version`) of every asset without its own. Default "1". */
   tokenVersion?: string;
   /**
-   * Pinned EIP-712 domain name (`extra.name`), e.g. "CasCet X402 Token". Checked
+   * Pinned EIP-712 domain name (`extra.name`), e.g. "CasCet X402 Token", of the
+   * single allowlisted asset (or of every asset without an allowlist). Checked
    * without RPC; with the preflight on, the on-chain name is checked as well.
-   * Required when the preflight is off.
+   * With several assets, pin names per asset (`assets[].name`).
    */
   tokenName?: string;
   /** Reject authorizations that stay valid longer than this. Default 3600 s. */
@@ -159,6 +198,11 @@ export interface RealFacilitatorHandle {
   network: Network;
   /** Bound port (useful with `port: 0`). */
   port: number;
+  /**
+   * How each allowlisted asset is settled (style, pinned name and version, gas
+   * limit), as resolved at start-up; undefined without an asset allowlist.
+   */
+  assets?: readonly AssetPolicy[];
 }
 
 const consoleLogger: FacilitatorLogger = {
@@ -473,19 +517,20 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     label: mainnet ? "authToken (CASCET_FACILITATOR_TOKEN) on mainnet" : "authToken for a non-loopback host",
   });
   const allowedPayTo = opts.allowedPayTo?.map(normalizePayTo);
-  const allowedAssets = opts.allowedAssets?.map(normalizeAsset);
-  if (mainnet && (!allowedPayTo?.length || !allowedAssets?.length)) {
+  if (opts.assets && opts.allowedAssets) throw new Error("set either assets or allowedAssets, not both");
+  const assetSpecs: FacilitatorAssetOptions[] | undefined = opts.assets ?? opts.allowedAssets?.map(packageHash => ({ packageHash }));
+  if (mainnet && (!allowedPayTo?.length || !assetSpecs?.length)) {
     throw new Error("mainnet requires allowedPayTo and allowedAssets (CASCET_SELLER_ACCOUNT_HASH, CASCET_ALLOWED_ASSETS)");
   }
-  if (!allowedPayTo || !allowedAssets) {
+  if (!allowedPayTo || !assetSpecs) {
     logger.warn("no payTo/asset allowlist: any payee and token can be settled at the fee payer's expense (testnet only)");
   }
-  const paymentMotes = opts.paymentMotes ?? DEFAULT_SETTLE_PAYMENT_MOTES;
-  if (!Number.isSafeInteger(paymentMotes) || paymentMotes < MIN_SETTLE_PAYMENT_MOTES || paymentMotes > MAX_SETTLE_PAYMENT_MOTES) {
-    throw new Error(
-      `paymentMotes must be between ${MIN_SETTLE_PAYMENT_MOTES} and ${MAX_SETTLE_PAYMENT_MOTES}: ` +
-        "a settle consumes ~2.7 CSPR and a revert burns the whole limit",
-    );
+  if (opts.paymentMotes !== undefined) {
+    checkPaymentMotes(opts.paymentMotes, undefined, "paymentMotes");
+    if (!assetSpecs && opts.paymentMotes < MIN_EVERY_STYLE_PAYMENT_MOTES) {
+      // Without an asset allowlist, tokens of either style may come: the limit must suit both.
+      throw new Error(`paymentMotes must be at least ${MIN_EVERY_STYLE_PAYMENT_MOTES} without an asset allowlist`);
+    }
   }
   const maxValiditySeconds = opts.maxAuthorizationValiditySeconds ?? 3_600;
   const minSettleWindowSeconds = opts.minSettleWindowSeconds ?? DEFAULT_MIN_SETTLE_WINDOW_SECONDS;
@@ -493,9 +538,10 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     throw new Error(`minSettleWindowSeconds must be a whole number from 6 to ${maxValiditySeconds - 1}`);
   }
   const preflight = opts.preflight ?? true;
-  const tokenName = opts.tokenName?.trim();
-  if (tokenName !== undefined && (tokenName === "" || tokenName.length > 100 || /[\u0000-\u001f\u007f]/.test(tokenName))) {
-    throw new Error("tokenName must be 1 to 100 printable characters");
+  const tokenName = opts.tokenName !== undefined ? checkDomainString(opts.tokenName, "tokenName", 100) : undefined;
+  const tokenVersion = checkDomainString(opts.tokenVersion ?? "1", "tokenVersion", 20);
+  if (tokenName !== undefined && assetSpecs && assetSpecs.length > 1) {
+    throw new Error("tokenName pins the name of a single asset; with several assets, pin each one's name (assets[].name)");
   }
   if (!preflight && mainnet) {
     throw new Error(
@@ -503,8 +549,32 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
         "wrongly signed authorizations are submitted and burn the fee payer's gas",
     );
   }
-  if (!preflight && tokenName === undefined) {
+  if (!preflight && !assetSpecs && tokenName === undefined) {
     throw new Error("with the preflight off, set tokenName (CASCET_TOKEN_NAME) so the EIP-712 domain name is still checked");
+  }
+  // Every allowlisted asset, checked before the key is loaded or the chain is read.
+  let plans: AssetPlan[] | undefined;
+  if (assetSpecs) {
+    const fromShorthand = !opts.assets;
+    plans = planAssets(
+      assetSpecs.map(spec => (tokenName !== undefined && spec.name === undefined ? { ...spec, name: tokenName } : spec)),
+      {
+        network,
+        preflight,
+        defaultVersion: tokenVersion,
+        ...(opts.paymentMotes !== undefined ? { defaultPaymentMotes: opts.paymentMotes } : {}),
+        label: (i, field) =>
+          fromShorthand
+            ? field === "packageHash"
+              ? `allowedAssets[${i}]`
+              : field === "name"
+                ? "tokenName"
+                : field === "paymentMotes"
+                  ? "paymentMotes"
+                  : `${field} of allowedAssets[${i}]`
+            : `assets[${i}].${field}`,
+      },
+    );
   }
   const preflightDeadlineMs = opts.preflightDeadlineMs ?? DEFAULT_PREFLIGHT_DEADLINE_MS;
   if (!Number.isSafeInteger(preflightDeadlineMs) || preflightDeadlineMs < 1_000 || preflightDeadlineMs > 60_000) {
@@ -547,6 +617,34 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     }
   }
 
+  // --- assets: read each token's ABI, chain_name and name, pin how it is settled ---
+  // Both CasCet tokens are upgradable: a token's ABI, name and chain_name are
+  // re-read at least every TOKEN_STATE_CACHE_MS, so an upgrade that changes its
+  // style is refused within that time instead of reverting settles.
+  const probe = preflight ? new TokenProbe(rpc, { cacheTtlMs: TOKEN_STATE_CACHE_MS }) : undefined;
+  let assets: AssetPolicy[] | undefined;
+  if (plans) {
+    try {
+      assets = await resolveAssetPolicies(plans, { network, ...(probe ? { probe } : {}), warn: m => logger.warn(m) });
+    } catch (err) {
+      throw new Error(`refusing to start: ${logText(err)}`);
+    }
+    for (const policy of assets) logger.info(describeAssetPolicy(policy));
+  }
+  // Without an asset allowlist (testnet only), any token in the style its ABI shows.
+  const paymentMotesByStyle =
+    opts.paymentMotes !== undefined
+      ? { "legacy-amount": BigInt(opts.paymentMotes), "cep3009-value": BigInt(opts.paymentMotes) }
+      : DEFAULT_PAYMENT_MOTES_BY_STYLE;
+  const largestLimit = [...(assets ? assets.map(a => a.paymentMotes ?? 0n) : Object.values(paymentMotesByStyle))].reduce(
+    (max, motes) => (motes > max ? motes : max),
+    0n,
+  );
+  const dailyGasCapMotes = opts.dailyGasCapMotes ?? DEFAULT_DAILY_GAS_CAP_MOTES;
+  if (dailyGasCapMotes < largestLimit) {
+    throw new Error(`dailyGasCapMotes must be at least one settle (${largestLimit} motes, the largest gas limit)`);
+  }
+
   // --- wiring ---
   const chain = createCasperSettlementChain({
     rpc,
@@ -555,26 +653,24 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     log: m => logger.warn(m),
   });
   const ledger = new AuthorizationLedger();
-  const gas = new DailyGasBudget({ capMotes: opts.dailyGasCapMotes ?? DEFAULT_DAILY_GAS_CAP_MOTES });
+  const gas = new DailyGasBudget({ capMotes: dailyGasCapMotes });
   if (!preflight) logger.warn("on-chain preflight disabled: replayed or unfunded authorizations are only caught by the in-memory ledger");
 
   const core = createFacilitatorCore(
     {
       network,
       ...(allowedPayTo ? { allowedPayTo } : {}),
-      ...(allowedAssets ? { allowedAssets } : {}),
-      tokenVersion: opts.tokenVersion ?? "1",
-      ...(tokenName !== undefined ? { tokenName } : {}),
-      paymentMotes: BigInt(paymentMotes),
+      ...(assets ? { assets } : { anyAsset: { ...(tokenName !== undefined ? { name: tokenName } : {}), version: tokenVersion } }),
+      paymentMotesByStyle,
       settleWaitMs,
       maxValiditySeconds,
       minSettleWindowSeconds,
       preflightDeadlineMs,
     },
     {
-      // @x402/casper's EIP-712 digest and checks, without RPC (the core runs the preflight).
+      // Both styles sign the same EIP-712 message: one check, no RPC.
       verifySignature: async (payload, requirements) => verifyPaymentSignature(payload, requirements),
-      ...(preflight ? { tokenState: new TokenProbe(rpc) } : {}),
+      ...(probe ? { tokenState: probe } : {}),
       chain,
       ledger,
       gas,
@@ -605,8 +701,8 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
 
   logger.info(
     `listening on http://${urlHost}:${port} (feePayer=${feePayer.slice(0, 12)}…, net=${network}, ` +
-      `auth=${opts.authToken ? "on" : "off"}, allowlist=${allowedPayTo && allowedAssets ? "on" : "off"}, ` +
-      `preflight=${preflight ? "on" : "off"}, gasLimit=${paymentMotes} motes)`,
+      `auth=${opts.authToken ? "on" : "off"}, allowlist=${allowedPayTo && assets ? "on" : "off"}, ` +
+      `preflight=${preflight ? "on" : "off"}, assets=${assets ? assets.length : "any"})`,
   );
 
   // Longest a settle can run: its preflight, submission and polling (until
@@ -623,5 +719,6 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     feePayer,
     network,
     port,
+    ...(assets ? { assets } : {}),
   };
 }
