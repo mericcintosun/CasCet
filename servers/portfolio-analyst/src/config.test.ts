@@ -135,15 +135,21 @@ describe("loadAnalystConfig", () => {
     }
   });
 
-  it("normalizes payTo and asset allowlist entries and drops duplicates", () => {
+  it("normalizes payTo and asset allowlist entries to the shared form and drops duplicates", () => {
     const r = loadAnalystConfig({
       ...BASE,
-      CASCET_ALLOWED_PAYTO: ` account-hash-${ACCOUNT.toUpperCase()}, 00${ACCOUNT} ,package-hash-${TOKEN}`,
+      CASCET_ALLOWED_PAYTO: ` account-hash-${ACCOUNT.toUpperCase()}, 00${ACCOUNT} ,package-hash-${TOKEN},hash-${TOKEN}`,
       CASCET_ALLOWED_ASSETS: `${TOKEN},0x${TOKEN},contract-package-${TOKEN}`,
     });
     assert.ok(r.ok, JSON.stringify(r));
-    assert.deepEqual(r.config.allowedPayTo, [`00${ACCOUNT}`, `01${TOKEN}`]);
+    assert.deepEqual(r.config.allowedPayTo, [`00${ACCOUNT}`, `hash-${TOKEN}`]);
     assert.deepEqual(r.config.allowedAssets, [`hash-${TOKEN}`]);
+  });
+
+  it("accepts only the payTo forms of the shared rule", () => {
+    for (const bad of [`0x00${ACCOUNT}`, `contract-package-${TOKEN}`, `0x${ACCOUNT}`, ACCOUNT, `account-hash-${ACCOUNT}ff`]) {
+      assert.ok(problemsOf({ ...BASE, CASCET_ALLOWED_PAYTO: bad }).some(p => p.startsWith("CASCET_ALLOWED_PAYTO:")), bad);
+    }
   });
 
   it("validates CASCET_NETWORK and never accepts a wildcard", () => {

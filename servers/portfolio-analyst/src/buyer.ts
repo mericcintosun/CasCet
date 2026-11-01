@@ -76,7 +76,7 @@ export async function createDataBuyer(cfg: AnalystConfig, ctx: BuyerContext): Pr
   const paying = await createPayingFetch({
     privateKeyPath: cfg.keyPath,
     keyAlgorithm: cfg.keyAlgorithm,
-    allowedPayTo: cfg.allowedPayTo,
+    allowedPayTo: clientAllowedPayTo(cfg.allowedPayTo),
     allowedAssets: cfg.allowedAssets,
     budget: { maxPerCallRaw: cfg.maxPerCallRaw, maxSessionRaw: sessionCap?.toString() },
     parentId: ctx.parentId,
@@ -87,6 +87,19 @@ export async function createDataBuyer(cfg: AnalystConfig, ctx: BuyerContext): Pr
     callTool: (name, args) => client.callTool(name, args),
     spentRaw: () => paying.spentRaw(),
   };
+}
+
+/**
+ * The payTo allowlist in the form the @cascet/client of this branch compares
+ * with a 402's payTo: it matches the serialized Key ("00"/"01" + hex), so a
+ * contract package ("hash-" + hex in the shared form) goes in as "01" + hex.
+ *
+ * INTEGRATION with the buyer-side fixes: that client takes the shared payTo
+ * form itself and rejects "01" + hex as a public key, so return the entries
+ * unchanged there (buyer.test checks a contract-package payee end to end).
+ */
+export function clientAllowedPayTo(entries: readonly string[] | undefined): string[] | undefined {
+  return entries?.map(entry => (entry.startsWith("hash-") ? `01${entry.slice("hash-".length)}` : entry));
 }
 
 function optionalRaw(value: string | undefined): bigint | undefined {

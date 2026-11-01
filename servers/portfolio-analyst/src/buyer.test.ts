@@ -6,7 +6,14 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDataBuyer, paymentGuard, withAbortSignal, type BuyerContext, type FetchLike } from "./buyer.js";
+import {
+  clientAllowedPayTo,
+  createDataBuyer,
+  paymentGuard,
+  withAbortSignal,
+  type BuyerContext,
+  type FetchLike,
+} from "./buyer.js";
 import { loadAnalystConfig, type AnalystConfig } from "./config.js";
 import { REASONS, classifyPurchaseError, errorText } from "./sanitize.js";
 import { within } from "./test-fakes.js";
@@ -59,6 +66,14 @@ describe("withAbortSignal", () => {
   });
 });
 
+describe("clientAllowedPayTo", () => {
+  it("passes a contract package as its serialized Key and keeps account hashes", () => {
+    const account = `00${"a".repeat(64)}`;
+    assert.deepEqual(clientAllowedPayTo([account, `hash-${"c".repeat(64)}`]), [account, `01${"c".repeat(64)}`]);
+    assert.equal(clientAllowedPayTo(undefined), undefined);
+  });
+});
+
 describe("paymentGuard", () => {
   const info = { amountRaw: "500000000", payTo: `00${"a".repeat(64)}`, network: "casper:casper-test" };
 
@@ -94,6 +109,8 @@ describe("paymentGuard", () => {
 
 const ACCOUNT = "881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36";
 const TOKEN = "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
+/** A contract-package payee (e.g. a revenue split); the gateway's 402 names it as "01" + hash. */
+const PACKAGE = "5f".repeat(32);
 
 interface FakeGateway {
   url: string;
@@ -220,6 +237,15 @@ describe("createDataBuyer with the real paying fetch", { timeout: 15_000 }, () =
   it("refuses a payee that is not allowlisted", async () => {
     const { err, gateway } = await refusal({ payTo: `00${"e".repeat(64)}` });
     assertRefused(err, gateway, /payTo .* is not allowlisted/);
+  });
+
+  it("matches a contract-package payee allowlisted as hash-<hex> against a 402 payTo of 01<hex>", async () => {
+    // The price is over the per-call cap, so reaching that check proves the payTo allowlist matched.
+    const { err, gateway } = await refusal(
+      { payTo: `01${PACKAGE}`, amount: "1000000001" },
+      { CASCET_ALLOWED_PAYTO: `hash-${PACKAGE}` },
+    );
+    assertRefused(err, gateway, /exceeds (the )?per-call budget/);
   });
 
   it("refuses an asset that is not allowlisted (CASCET_ALLOWED_ASSETS)", async () => {
