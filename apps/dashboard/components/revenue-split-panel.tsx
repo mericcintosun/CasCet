@@ -302,8 +302,8 @@ export function RevenueSplitPanel() {
             </div>
           );
         })}
-        <div className="flex flex-wrap items-start justify-between gap-2 pt-1">
-          <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+        <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:items-start sm:justify-between">
+          <p className="min-w-0 text-xs text-muted-foreground sm:flex-1">
             <code className="text-xs">release</code> is permissionless — the connected wallet only pays gas
             (~5 CSPR); funds always go to the payee. The releasable amounts are read from the contract&apos;s on-chain state;
             Withdraw is off at zero, because such a release reverts and still costs gas. &ldquo;Submitted&rdquo; means the
@@ -312,7 +312,7 @@ export function RevenueSplitPanel() {
           <Button
             size="sm"
             variant="ghost"
-            className="h-7 gap-1.5 px-2 text-xs"
+            className="h-7 shrink-0 gap-1.5 self-start px-2 text-xs"
             onClick={() => void loadReleasable()}
             disabled={releasable.status === "loading"}
           >
