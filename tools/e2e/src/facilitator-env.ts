@@ -25,8 +25,9 @@ import { normalizeAccountHash } from "./facilitator-roles.js";
  *   CASCET_TOKEN_VERSION          pinned EIP-712 domain version (default "1")
  *   CASCET_TOKEN_NAME             pinned EIP-712 domain name (default "CasCet X402 Token" when only the CasCet
  *                                 x402 token is allowlisted; required when CASCET_PREFLIGHT=off)
- *   CASCET_RPC_URL                Casper node JSON-RPC URL (default: the public node of the network);
- *                                 use ONE node, not a load balancer, so balance reads follow settlements
+ *   CASCET_RPC_URL                Casper node JSON-RPC URL (default: the network's public endpoint, which is
+ *                                 load-balanced; mainnet warns). Use ONE node you run or trust, so balance reads
+ *                                 already include the settlements this facilitator observed
  *   CASCET_FACILITATOR_HOST       bind address (default 127.0.0.1; any other address requires the token)
  *   PORT                          port (default 4501)
  */
@@ -120,9 +121,18 @@ function integer(env: Env, name: string, fallback: number, min: number, max: num
 }
 
 /** CASCET_RPC_URL must be an http(s) URL; plain http to a remote node only warns. */
-function rpcUrl(env: Env, fallback: string, warnings: string[]): string {
+function rpcUrl(env: Env, network: CasperNetwork, warnings: string[]): string {
+  const fallback = NETWORKS[network].rpcUrl;
   const raw = value(env, "CASCET_RPC_URL");
-  if (raw === undefined) return fallback;
+  if (raw === undefined) {
+    if (network === "casper:casper") {
+      warnings.push(
+        `CASCET_RPC_URL not set: ${new URL(fallback).host} is load-balanced, and a lagging backend can overstate a payer's ` +
+          "balance right after a settle (the next settle then reverts and burns gas); set CASCET_RPC_URL to a single node",
+      );
+    }
+    return fallback;
+  }
   let url: URL;
   try {
     url = new URL(raw);
@@ -274,7 +284,7 @@ export function readFacilitatorEnv(env: Env, repoRoot: string, forceNetwork?: Ca
 
   return {
     network,
-    rpcUrl: rpcUrl(env, net.rpcUrl, warnings),
+    rpcUrl: rpcUrl(env, network, warnings),
     host: value(env, "CASCET_FACILITATOR_HOST") ?? "127.0.0.1",
     port: integer(env, "PORT", 4501, 1, 65_535),
     keyPath,

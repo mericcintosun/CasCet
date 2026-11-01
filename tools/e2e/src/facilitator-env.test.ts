@@ -200,6 +200,14 @@ describe("facilitator environment", () => {
     const remote = readFacilitatorEnv({ CASCET_RPC_URL: "http://203.0.113.7:7777/rpc" }, ROOT);
     assert.ok(remote.warnings.some(w => w.includes("plain http")));
     assert.equal(readFacilitatorEnv({}, ROOT).rpcUrl, NETWORKS["casper:casper-test"].rpcUrl);
+
+    // The default mainnet endpoint is load-balanced: say so.
+    const mainnet = { CASCET_NETWORK: "casper:casper", CASCET_FACILITATOR_KEY: "/k.pem", CASCET_FACILITATOR_TOKEN: TOKEN };
+    const lb = readFacilitatorEnv(mainnet, ROOT);
+    assert.equal(lb.rpcUrl, NETWORKS["casper:casper"].rpcUrl);
+    assert.ok(lb.warnings.some(w => w.includes("load-balanced")));
+    const single = readFacilitatorEnv({ ...mainnet, CASCET_RPC_URL: "https://10.0.0.5:7777/rpc" }, ROOT);
+    assert.ok(!single.warnings.some(w => w.includes("load-balanced")));
   });
 
   test("testnet keeps the demo defaults but says so", () => {
