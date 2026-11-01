@@ -1,0 +1,95 @@
+name: Publish to MCP Registry
+
+# Publishes registry/server.json (the paid casper-defi-data MCP server,
+# Casper TESTNET) to the official MCP Registry, authenticating with GitHub
+# OIDC for the io.github.mericcintosun/* namespace. No secret is needed.
+#
+# Manual only. Before the first run, host a public HTTPS gateway and put its
+# /mcp URL into registry/server.json: see registry/README.md. The job refuses
+# to publish while the placeholder URL is still there or the URL does not
+# answer an MCP initialize request.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-registry-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish registry/server.json
+    # Publish only what is on main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # GitHub OIDC login to the MCP Registry
+    env:
+      # Pinned on purpose; bump deliberately to a newer release tag of
+      # modelcontextprotocol/registry (never the mutable releases/latest URL).
+      MCP_PUBLISHER_VERSION: v1.8.7
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the remote URL
+        run: |
+          set -euo pipefail
+          if grep -q 'REPLACE-WITH-PUBLIC-GATEWAY' registry/server.json; then
+            echo "::error::registry/server.json still has the placeholder remote URL. See registry/README.md."
+            exit 1
+          fi
+          url="$(jq -r '.remotes[0].url' registry/server.json)"
+          case "$url" in
+            https://*) ;;
+            *) echo "::error::the remote URL must use https:// (got: $url)"; exit 1 ;;
+          esac
+          # The registry requires remotes to be publicly reachable. initialize
+          # is free on a CasCet gateway; only tools/call is priced.
+          code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X POST "$url" \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cascet-registry-check","version":"1.0.0"}}}')"
+          if [ "$code" != "200" ]; then
+            echo "::error::$url answered HTTP $code to an MCP initialize request"
+            exit 1
+          fi
+          echo "$url is reachable (HTTP $code)"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Download the pinned release and verify its Sigstore bundle before
+      # extracting it, as the registry's own publishing guide does.
+      - name: Download and verify mcp-publisher
+        run: |
+          set -euo pipefail
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+          archive="mcp-publisher_${os}_${arch}.tar.gz"
+          base_url="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
+
+          curl --fail --location --silent --show-error --output "$archive" "$base_url/$archive"
+          curl --fail --location --silent --show-error --output "$archive.sigstore.json" "$base_url/$archive.sigstore.json"
+          cosign verify-blob \
+            --bundle "$archive.sigstore.json" \
+            --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/${MCP_PUBLISHER_VERSION}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$archive"
+          tar xzf "$archive" mcp-publisher
+          rm -f "$archive" "$archive.sigstore.json"
+
+      - name: Validate server.json
+        run: ./mcp-publisher validate registry/server.json
+
+      - name: Log in to the MCP Registry (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        run: ./mcp-publisher publish registry/server.json
