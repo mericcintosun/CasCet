@@ -134,8 +134,11 @@ export default function PlaygroundPage() {
                     <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                     <span>
                       User error 5 · <span className="font-semibold">BudgetExceeded</span>. The contract reverts the first hop
-                      that would overspend; the {hopsSettled} hop{hopsSettled === 1 ? "" : "s"} before it stay settled, and
-                      close() refunds the unspent {usd(remaining)}.
+                      that would overspend;{" "}
+                      {hopsSettled === 0
+                        ? "here that is the root itself, so nothing settles"
+                        : `the ${hopsSettled} hop${hopsSettled === 1 ? "" : "s"} before it stay settled`}
+                      , and close() refunds the unspent {usd(remaining)}.
                     </span>
                   </p>
                 ) : (

@@ -10,7 +10,7 @@ const STEPS: Step[] = [
   { key: "wrap", icon: Boxes, title: "Wrap", cmd: "cascet wrap", body: "Put a paywall in front of any MCP server. Price each tool; agents pay per call in CEP-18 over x402. Your tool code stays untouched." },
   { key: "connect", icon: Plug, title: "Connect", cmd: "cascet connect", body: "A stdio bridge lets any MCP host (Claude, Cursor) call paid servers, answering every 402 challenge automatically, but only for the sellers and tokens you allow and within your spending caps." },
   { key: "cascade", icon: GitBranch, title: "Cascade", cmd: "→ on-chain", body: "When a paid tool buys from other paid tools, CasCet links every hop to its parent and anchors each receipt on-chain, so the whole chain is verifiable." },
-  { key: "see", icon: LayoutDashboard, title: "See it", cmd: "/dashboard", body: "A live dashboard shows revenue, receipts with cspr.live settlement links, and the cascading payment graph, rebuilt from on-chain receipts." },
+  { key: "see", icon: LayoutDashboard, title: "See it", cmd: "/dashboard", body: "A live dashboard shows revenue, receipts with cspr.live settlement links, and the cascading payment graph, rebuilt from the receipts anchored on Casper Testnet." },
 ];
 
 export function Steps() {

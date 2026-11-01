@@ -250,7 +250,7 @@ function Features() {
     { icon: ShieldCheck, t: "Real x402 settlement, no mock", d: <>Agents pay from an on-chain balance of a real <span className="font-mono text-foreground">transfer_with_authorization</span> CEP-18 token; a self-hosted x402 facilitator verifies and settles it; receipts anchor on-chain. Every hop is a real Casper transaction.</> },
     { icon: Receipt, t: "Receipts, on-chain", d: <>Every settled call is anchored with its cascade parent id, so the whole payment graph reconstructs from chain data alone, no central coordinator.</> },
     { icon: Lock, t: "Upgradable registry (testnet)", d: <>On testnet the ReceiptRegistry was upgraded v1.1 to v1.2 in place and all anchored state survived. The mainnet packages are deployed locked (not upgradable).</> },
-    { icon: Coins, t: "Revenue splits", d: <>Point a server&apos;s payTo at the RevenueSplit contract and earnings split between co-authors on-chain, pull-based.</> },
+    { icon: Coins, t: "Revenue splits", d: <>The RevenueSplit contract splits the tokens it holds between co-authors by fixed weights, on-chain and pull-based: each payee withdraws their own share. x402 settles to account hashes today, so earnings reach the splitter by a transfer.</> },
     { icon: GitBranch, t: "Wrap any MCP server", d: <>CasCet monetizes the unmodified official <span className="font-mono text-foreground">server-everything</span>, not just first-party tools.</> },
   ];
   return (
