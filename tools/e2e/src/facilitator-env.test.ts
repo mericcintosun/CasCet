@@ -76,7 +76,7 @@ describe("facilitator environment", () => {
     assert.equal(cfg.ownerAccountHash, DEPLOYER.slice(2));
     assert.equal(cfg.paymentMotes, 4_000_000_000);
     assert.equal(cfg.dailyGasCapMotes, 500_000_000_000n);
-    assert.equal(cfg.settleWaitMs, 12_000);
+    assert.equal(cfg.settleWaitMs, 60_000);
     assert.equal(cfg.preflight, true);
     assert.equal(cfg.tokenVersion, "1");
     assert.equal(cfg.host, "127.0.0.1");

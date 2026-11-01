@@ -15,7 +15,8 @@ import { normalizeAccountHash } from "./facilitator-roles.js";
  *   CASCET_ALLOWED_ASSETS         comma list of CEP-18 package hashes (default: the CasCet x402 token)
  *   CASCET_SETTLE_PAYMENT_MOTES   gas limit per settle (default 4_000_000_000 = 4 CSPR)
  *   CASCET_DAILY_GAS_CAP_MOTES    sponsored gas per UTC day (default 500 CSPR)
- *   CASCET_SETTLE_WAIT_MS         time /settle waits for execution before answering "pending" (default 12000)
+ *   CASCET_SETTLE_WAIT_MS         time /settle waits for execution before answering "pending" (default 60000;
+ *                                 keep it below the gateway's timeouts.settleMs, 90 s by default)
  *   CASCET_PREFLIGHT              on (default) | off — on-chain nonce/balance/name checks
  *   CASCET_TOKEN_VERSION          pinned EIP-712 domain version (default "1")
  *   CASCET_RPC_URL                Casper node JSON-RPC URL (default: the public node of the network)
@@ -58,7 +59,13 @@ export const LANE5_MAX_PAYMENT_MOTES = 5_000_000_000;
 /** Lane 4 limit; nothing a settle needs comes close. */
 export const MAX_SETTLE_PAYMENT_MOTES = 100_000_000_000;
 export const DEFAULT_DAILY_GAS_CAP_MOTES = 500_000_000_000n;
-export const DEFAULT_SETTLE_WAIT_MS = 12_000;
+/**
+ * Blocks come every 8 s and a settle's result is visible a block or two after
+ * submission; waiting this long lets almost every /settle answer success or
+ * failure instead of "pending" (which the gateway records as an unknown
+ * outcome and the buyer gets no result). casper-x402 1.0.0 polled up to 60 s too.
+ */
+export const DEFAULT_SETTLE_WAIT_MS = 60_000;
 
 export class FacilitatorConfigError extends Error {
   constructor(message: string) {

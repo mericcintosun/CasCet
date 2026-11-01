@@ -102,7 +102,11 @@ export interface RealFacilitatorOptions {
   maxRequestsPerIpPerMinute?: number;
   /** Cap on sponsored gas (motes) per UTC day; settles get 503 past it. Default 500 CSPR. */
   dailyGasCapMotes?: bigint;
-  /** How long /settle waits for execution before answering "pending" with the hash. Default 12 s. */
+  /**
+   * How long /settle waits for execution before answering "pending" with the
+   * hash. Default 60 s; keep it below the gateway's settle timeout
+   * (timeouts.settleMs, 90 s by default).
+   */
   settleWaitMs?: number;
   /** On-chain nonce / balance / token-name checks before verifying and settling. Default true. */
   preflight?: boolean;
