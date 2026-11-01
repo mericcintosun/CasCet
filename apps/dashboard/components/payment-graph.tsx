@@ -3,22 +3,18 @@
 import * as React from "react";
 import type { PaymentGraph as GraphData } from "@cascet/core";
 import { Bot, Server } from "lucide-react";
-import { aggregateEdges, type AggregatedEdge } from "@/lib/graph";
+import { aggregateEdges, edgeLabelLines, GRAPH_LAYOUT, layoutEdges, layoutNodes, type AggregatedEdge } from "@/lib/graph";
 import { formatTokens } from "@/lib/utils";
 
-interface Positioned {
-  id: string;
-  kind: "agent" | "server";
-  label: string;
-  depth: number;
-  x: number;
-  y: number;
-}
+const { NODE_W, NODE_H, LAYER_GAP, ROW_GAP, TOP } = GRAPH_LAYOUT;
 
-const NODE_W = 140;
-const NODE_H = 44;
-const LAYER_GAP = 300;
-const ROW_GAP = 96;
+const formatAmount = (raw: bigint, symbol: string): string => formatTokens(raw, 9, symbol);
+const labelLines = (edge: AggregatedEdge): [string, string] => edgeLabelLines(edge, formatAmount);
+
+function tooltip(edge: AggregatedEdge, from: string, to: string): string {
+  const totals = edge.totals.map((t) => formatAmount(t.raw, t.symbol)).join(" + ");
+  return `${from} → ${to}\n${edge.calls} settled call${edge.calls === 1 ? "" : "s"}: ${edge.tools.join(", ")}\n${totals}`;
+}
 
 /**
  * Layered left-to-right visualization of the cascade. Agents (roots) sit at
@@ -26,9 +22,11 @@ const ROW_GAP = 96;
  * chain reads as a supply chain of machine-to-machine payments.
  *
  * Receipts between the same two nodes are aggregated into ONE edge with one
- * label ("3 tools · 7 calls · 3.5 WCSPR"); per-receipt detail is in the edge's
- * tooltip. Paint order: lines, then highlighted lines, then labels (with a halo),
- * then nodes, so the highlight is never hidden under other edges (M30).
+ * label ("3 tools" / "7 calls · 3.5 WCSPR"); per-receipt detail is in the edge's
+ * tooltip. An edge that skips a layer runs on a lane above the nodes it passes,
+ * and labels are placed so they overlap neither nodes nor each other. Paint
+ * order: lines (the highlighted cascade last), then labels with a halo, then
+ * nodes (M30).
  */
 export function PaymentGraph({
   graph,
@@ -40,8 +38,11 @@ export function PaymentGraph({
   emptyText?: string;
 }) {
   const uid = React.useId().replace(/[^a-zA-Z0-9_-]/g, "");
-  const layout = React.useMemo(() => computeLayout(graph), [graph]);
-  const edges = React.useMemo(() => aggregateEdges(graph.edges, highlightEdgeIds), [graph.edges, highlightEdgeIds]);
+  const layout = React.useMemo(() => layoutNodes(graph), [graph]);
+  const geometry = React.useMemo(
+    () => layoutEdges(aggregateEdges(graph.edges, highlightEdgeIds), layout.byId, labelLines),
+    [graph.edges, highlightEdgeIds, layout.byId],
+  );
 
   if (graph.nodes.length === 0) {
     return (
@@ -51,31 +52,22 @@ export function PaymentGraph({
     );
   }
 
+  // Lanes and labels may rise above the first row; the viewBox grows upward to keep them in view.
+  const contentTop = Math.min(0, ...geometry.map((g) => Math.min(g.top, g.box.y0) - 8));
+  const contentBottom = Math.max(TOP + layout.maxRow * ROW_GAP, ...geometry.map((g) => g.box.y1 + 24));
   const width = Math.max(640, (layout.maxDepth + 1) * LAYER_GAP);
-  const height = Math.max(320, layout.maxRow * ROW_GAP + 80);
-  const calls = graph.edges.length;
-  const geometry = edges
-    .map((edge) => {
-      const from = layout.byId.get(edge.from);
-      const to = layout.byId.get(edge.to);
-      if (!from || !to) return null;
-      const x0 = from.x + NODE_W / 2;
-      const x1 = to.x - NODE_W / 2;
-      const midX = (x0 + x1) / 2;
-      const d = `M ${x0} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${x1} ${to.y}`;
-      // The cubic's midpoint (t = 0.5) is exactly (midX, average y).
-      return { edge, d, lx: midX, ly: (from.y + to.y) / 2, fromLabel: from.label, toLabel: to.label };
-    })
-    .filter((g): g is NonNullable<typeof g> => g !== null);
+  const height = Math.max(320, contentBottom - contentTop);
+  const labelOf = (id: string) => layout.byId.get(id)?.label ?? id;
 
   return (
     <div className="grid-bg overflow-x-auto rounded-lg border">
       <svg
         width={width}
         height={height}
+        viewBox={`0 ${contentTop} ${width} ${height}`}
         className="min-w-full"
         role="img"
-        aria-label={`Payment graph: ${graph.nodes.length} participants, ${edges.length} payment links, ${calls} settled calls`}
+        aria-label={`Payment graph: ${graph.nodes.length} participants, ${geometry.length} payment links, ${graph.edges.length} settled calls`}
       >
         <defs>
           <marker id={`arrow-${uid}`} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
@@ -87,7 +79,7 @@ export function PaymentGraph({
         </defs>
 
         {/* 1. lines (aggregateEdges orders highlighted edges last, so they paint on top) */}
-        {geometry.map(({ edge, d, fromLabel, toLabel }) => (
+        {geometry.map(({ edge, d }) => (
           <path
             key={edge.key}
             d={d}
@@ -97,31 +89,34 @@ export function PaymentGraph({
             strokeOpacity={edge.hot ? 1 : 0.55}
             markerEnd={edge.hot ? `url(#arrow-hot-${uid})` : `url(#arrow-${uid})`}
           >
-            <title>{tooltip(edge, fromLabel, toLabel)}</title>
+            <title>{tooltip(edge, labelOf(edge.from), labelOf(edge.to))}</title>
           </path>
         ))}
 
-        {/* 2. one label per edge, above every line */}
-        {geometry.map(({ edge, lx, ly, fromLabel, toLabel }) => (
-          <text
-            key={`label-${edge.key}`}
-            x={lx}
-            y={ly - 18}
-            textAnchor="middle"
-            className={edge.hot ? "text-[10px] font-semibold" : "text-[10px]"}
-            fill={edge.hot ? "hsl(var(--primary-text))" : "hsl(var(--muted-foreground))"}
-            stroke="hsl(var(--card))"
-            strokeWidth={3}
-            strokeLinejoin="round"
-            paintOrder="stroke"
-          >
-            <title>{tooltip(edge, fromLabel, toLabel)}</title>
-            <tspan x={lx}>{edge.tools.length === 1 ? edge.tools[0] : `${edge.tools.length} tools`}</tspan>
-            <tspan x={lx} dy="12">
-              {edge.calls} call{edge.calls === 1 ? "" : "s"} · {totalsText(edge)}
-            </tspan>
-          </text>
-        ))}
+        {/* 2. one label per edge, above every line, with a halo for legibility */}
+        {geometry.map(({ edge, lx, ly, labelDy }) => {
+          const [l1, l2] = labelLines(edge);
+          return (
+            <text
+              key={`label-${edge.key}`}
+              x={lx}
+              y={ly + labelDy - 18}
+              textAnchor="middle"
+              className={edge.hot ? "text-[10px] font-semibold" : "text-[10px]"}
+              fill={edge.hot ? "hsl(var(--primary-text))" : "hsl(var(--muted-foreground))"}
+              stroke="hsl(var(--card))"
+              strokeWidth={3}
+              strokeLinejoin="round"
+              paintOrder="stroke"
+            >
+              <title>{tooltip(edge, labelOf(edge.from), labelOf(edge.to))}</title>
+              <tspan x={lx}>{l1}</tspan>
+              <tspan x={lx} dy="12">
+                {l2}
+              </tspan>
+            </text>
+          );
+        })}
 
         {/* 3. nodes on top */}
         {layout.nodes.map((node) => (
@@ -144,52 +139,4 @@ export function PaymentGraph({
       </svg>
     </div>
   );
-}
-
-function totalsText(edge: AggregatedEdge): string {
-  return edge.totals.map((t) => formatTokens(t.raw, 9, t.symbol)).join(" + ");
-}
-
-function tooltip(edge: AggregatedEdge, from: string, to: string): string {
-  return `${from} → ${to}\n${edge.calls} settled call${edge.calls === 1 ? "" : "s"}: ${edge.tools.join(", ")}\n${totalsText(edge)}`;
-}
-
-function computeLayout(graph: GraphData): {
-  nodes: Positioned[];
-  byId: Map<string, Positioned>;
-  maxDepth: number;
-  maxRow: number;
-} {
-  const depth = new Map<string, number>();
-  const incoming = new Map<string, number>();
-  for (const n of graph.nodes) incoming.set(n.id, 0);
-  for (const e of graph.edges) incoming.set(e.to, (incoming.get(e.to) ?? 0) + 1);
-
-  // Roots (no incoming edge) start at depth 0; relax depths along edges.
-  for (const n of graph.nodes) if ((incoming.get(n.id) ?? 0) === 0) depth.set(n.id, 0);
-  let changed = true;
-  let guard = 0;
-  while (changed && guard++ < 100) {
-    changed = false;
-    for (const e of graph.edges) {
-      const d = (depth.get(e.from) ?? 0) + 1;
-      if (d > (depth.get(e.to) ?? 0)) {
-        depth.set(e.to, d);
-        changed = true;
-      }
-    }
-  }
-
-  const rows = new Map<number, number>();
-  const positioned: Positioned[] = graph.nodes.map((n) => {
-    const d = depth.get(n.id) ?? 0;
-    const row = rows.get(d) ?? 0;
-    rows.set(d, row + 1);
-    return { ...n, depth: d, x: 90 + d * LAYER_GAP, y: 60 + row * ROW_GAP };
-  });
-
-  const byId = new Map(positioned.map((p) => [p.id, p]));
-  const maxDepth = Math.max(0, ...positioned.map((p) => p.depth));
-  const maxRow = Math.max(1, ...[...rows.values()]);
-  return { nodes: positioned, byId, maxDepth, maxRow };
 }
