@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createCesPreemptionChecker, decodeCesEvent } from "./preemption.js";
+import { createCesPreemptionChecker, decodeCesEvent, routePreemptionChecks, type SettlementPreemptionChecker } from "./preemption.js";
 
 // Real events #43 and #44 of CasCet's x402 token on casper-test (one transfer_with_authorization).
 const REAL_AUTHORIZATION_USED =
   "60000000170000006576656e745f417574686f72697a6174696f6e557365640065190126b1ca282f041fad6b74b845a3c48e0c8411392b13c640a16a1438faf920000000320c94ebedbb5bc01d63644266d33c4088618644ec58ee06bb8ebd328002c2fc";
 const REAL_TRANSFER =
   "5a0000000e0000006576656e745f5472616e736665720065190126b1ca282f041fad6b74b845a3c48e0c8411392b13c640a16a1438faf90051a4f8ca1c186b0e93ff6628e2c2303ded5b3cd343fca220e829ce540411abf30500f2052a01";
+// Real events #11003 and #11004 of the official Wrapped CSPR (cep3009-value) on casper-test, written by its
+// transfer_with_authorization 4b2ab2c28df59792903ab17fe16f6c9a74c477fc204e46941b739d30f1296e25 (the
+// payer paid itself 1000000 units): the same fields, in the same order, as CasCet's legacy-amount token.
+const WCSPR_AUTHORIZATION_USED =
+  "60000000170000006576656e745f417574686f72697a6174696f6e557365640037534e4d705e0b23940d94a5cfda0b1d4a65a515b7e2b9c5dbd69875307825dd20000000256ca783438bf36da43f1d9faa607e010c35e3870efd7e419be28909cf9b54e9";
+const WCSPR_TRANSFER =
+  "580000000e0000006576656e745f5472616e736665720037534e4d705e0b23940d94a5cfda0b1d4a65a515b7e2b9c5dbd69875307825dd0037534e4d705e0b23940d94a5cfda0b1d4a65a515b7e2b9c5dbd69875307825dd0340420f";
+const WCSPR_PAYER = "0037534e4d705e0b23940d94a5cfda0b1d4a65a515b7e2b9c5dbd69875307825dd";
+const WCSPR_NONCE = "256ca783438bf36da43f1d9faa607e010c35e3870efd7e419be28909cf9b54e9";
 const REAL_PAYER = "0065190126b1ca282f041fad6b74b845a3c48e0c8411392b13c640a16a1438faf9";
 const REAL_PAY_TO = "0051a4f8ca1c186b0e93ff6628e2c2303ded5b3cd343fca220e829ce540411abf3";
 const REAL_NONCE = "320c94ebedbb5bc01d63644266d33c4088618644ec58ee06bb8ebd328002c2fc";
@@ -117,6 +126,22 @@ describe("decodeCesEvent", () => {
     });
   });
 
+  it("decodes the same events of the official Wrapped CSPR (cep3009-value), whose layout is identical", () => {
+    assert.deepEqual(decodeCesEvent(WCSPR_AUTHORIZATION_USED), {
+      name: "AuthorizationUsed",
+      authorizer: { tag: 0, hash: WCSPR_PAYER.slice(2) },
+      nonce: WCSPR_NONCE,
+    });
+    assert.deepEqual(decodeCesEvent(WCSPR_TRANSFER), {
+      name: "Transfer",
+      sender: { tag: 0, hash: WCSPR_PAYER.slice(2) },
+      recipient: { tag: 0, hash: WCSPR_PAYER.slice(2) },
+      amount: 1_000_000n,
+    });
+    assert.equal(authorizationUsed(WCSPR_PAYER, WCSPR_NONCE), WCSPR_AUTHORIZATION_USED);
+    assert.equal(transfer(WCSPR_PAYER, WCSPR_PAYER, 1_000_000n), WCSPR_TRANSFER);
+  });
+
   it("matches the encoder used for the synthetic events below", () => {
     assert.equal(authorizationUsed(REAL_PAYER, REAL_NONCE), REAL_AUTHORIZATION_USED);
     assert.equal(transfer(REAL_PAYER, REAL_PAY_TO, 5_000_000_000n), REAL_TRANSFER);
@@ -198,5 +223,40 @@ describe("CES settlement preemption checker", () => {
     });
     // The fake node asserts that every contract read targets the enabled version 2.
     assert.deepEqual(await c.check(query), { kind: "paid", eventIndex: 0 });
+  });
+
+  it("finds a Wrapped CSPR payment by the same AuthorizationUsed + Transfer pair", async () => {
+    const events = [...filler(3), WCSPR_AUTHORIZATION_USED, WCSPR_TRANSFER];
+    const wcsprQuery = { payer: WCSPR_PAYER, nonce: WCSPR_NONCE, payTo: WCSPR_PAYER, amount: "1000000" };
+    assert.deepEqual(await checker(events).check(wcsprQuery), { kind: "paid", eventIndex: 3 });
+  });
+
+  it("answers queries for its own token only", async () => {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const c = createCesPreemptionChecker({ nodeUrl: "http://node.test/rpc", tokenPackageHash: `hash-${PACKAGE}`, scanWindow: 8, fetchImpl: fakeNode([], calls) });
+    await assert.rejects(c.check({ ...query, asset: "dd".repeat(32) }), /is not this checker's token/);
+    assert.deepEqual(calls, [], "nothing is read for another token");
+    assert.deepEqual(await c.check({ ...query, asset: `hash-${PACKAGE.toUpperCase()}` }), { kind: "not-found", scanned: 0 });
+  });
+});
+
+describe("routePreemptionChecks", () => {
+  const verdict = (eventIndex: number): SettlementPreemptionChecker => ({ check: async () => ({ kind: "paid", eventIndex }) });
+
+  it("asks the checker of the query's token, whatever its spelling", async () => {
+    const routed = routePreemptionChecks(
+      new Map([
+        [`hash-${PACKAGE}`, verdict(1)],
+        ["dd".repeat(32), verdict(2)],
+      ]),
+    );
+    assert.deepEqual(await routed.check({ ...query, asset: PACKAGE.toUpperCase() }), { kind: "paid", eventIndex: 1 });
+    assert.deepEqual(await routed.check({ ...query, asset: `hash-${"dd".repeat(32)}` }), { kind: "paid", eventIndex: 2 });
+  });
+
+  it("refuses a query without a token or for a token it has no checker for (an error, never a verdict)", async () => {
+    const routed = routePreemptionChecks(new Map([[PACKAGE, verdict(1)]]));
+    await assert.rejects(routed.check(query), /no checker for asset \(none given\)/);
+    await assert.rejects(routed.check({ ...query, asset: "ee".repeat(32) }), /no checker for asset e{64}/);
   });
 });
