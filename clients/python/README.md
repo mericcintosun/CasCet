@@ -70,7 +70,7 @@ Every refusal raises `PaymentAborted` before anything is signed.
 |---|---|---|
 | Network | `networks` (default `["casper:casper-test"]`) | Only pays on the listed networks. Each entry must be a CAIP-2 id such as `casper:casper`; wildcards like `casper:*` are refused. |
 | Seller and token | `allowed_pay_to`, `allowed_assets` | Only pays these payees in these tokens. If either list is missing, the client logs an `InsecurePaymentConfigWarning`. |
-| payTo format | — | Allowlist entries are account hashes (`00…` or `account-hash-…`), or `hash-…` for a contract-package payee. A public key in the allowlist is rejected, and the error gives the payTo to use instead. With no allowlist, a `01`-tagged payTo is refused. |
+| payTo format | — | Payees are accounts: allowlist entries are account hashes (`00…` or `account-hash-…`). A `01`-tagged payTo (a contract package, or a public key) is always refused, as in the TypeScript client, because no facilitator in use credits it correctly (`CONTRACT_PAYEE_REASON`). A public key or a contract package (`hash-…`) in the allowlist is a `ValueError`; for a public key the error gives the payTo to use instead. |
 | Amount | — | A string of 1–40 ASCII digits, greater than 0. `-5`, `0x10`, `1e5` and ` 5` are all refused. |
 | Budget | `max_per_call_raw`, `max_session_raw` | Per call, and per asset over the session, in raw units greater than 0. Spend is counted when an authorization is signed and is never refunded. |
 | Validity | `max_authorization_seconds` (default 900) | `validAfter = now − 600`, `validBefore = now + maxTimeoutSeconds`. An entry without a positive whole `maxTimeoutSeconds`, or with one above the limit, is refused, as in the TS client. |

@@ -71,6 +71,7 @@ __all__ = [
     "HEADER_PAYMENT_RESPONSE",
     "HEADER_CASCET_PARENT_ID",
     "HEADER_CASCET_PAYMENT_ID",
+    "CONTRACT_PAYEE_REASON",
     "X402Error",
     "ProtocolError",
     "PaymentAborted",
@@ -115,6 +116,13 @@ VALID_AFTER_SKEW_SECONDS = 600
 #: `maxTimeoutSeconds` a server asks for (a hostile 402 could ask for years).
 #: The TS client's `maxAuthorizationSeconds` default.
 MAX_VALIDITY_SECONDS = 900
+
+#: Why a "01" payTo (a contract package, or a public key passed off as one) is
+#: never paid, worded as in @cascet/client's CONTRACT_PAYEE_REASON.
+CONTRACT_PAYEE_REASON = (
+    "contract-package payees cannot be settled by @make-software/casper-x402 1.0.0 facilitators; "
+    "the payment would be credited to an account nobody controls"
+)
 
 _U64_MAX = 2**64 - 1
 _U256_LIMIT = 2**256
@@ -435,6 +443,17 @@ def _check_u64(value: Any, what: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= _U64_MAX:
         raise ValueError(f"{what} must be an integer unix time between 0 and 2^64 - 1, got {value!r}")
     return value
+
+
+# ---- choosing what to pay ----
+def _normalize_allowed_pay_to(value: Any) -> str:
+    """An allowlist payee as normalize_pay_to returns it; a contract package is a config error (CONTRACT_PAYEE_REASON)."""
+    pay_to = normalize_pay_to(value)
+    if not pay_to.startswith("00"):
+        raise ValueError(
+            f"{value!r} is a contract-package payee: {CONTRACT_PAYEE_REASON}. Allowlist an account hash instead."
+        )
+    return pay_to
 
 
 # ---- payment payload ----
@@ -870,9 +889,10 @@ class PayingClient:
       any other network is refused.
     * `allowed_pay_to` / `allowed_assets`: only pay these sellers in these
       tokens. Leaving either out logs a warning, because then a hostile or
-      man-in-the-middled 402 picks the payee or the token. Without a payTo
-      allowlist a '01'-tagged payTo (a contract package, or a public key pasted
-      where an account hash belongs) is refused.
+      man-in-the-middled 402 picks the payee or the token. A '01'-tagged payTo
+      (a contract package, or a public key pasted where an account hash
+      belongs) is always refused, and a contract-package entry (hash-<64 hex>)
+      in `allowed_pay_to` raises ValueError (see CONTRACT_PAYEE_REASON).
     * `max_per_call_raw` / `max_session_raw`: budgets in raw token units
       (greater than zero); the session budget is tracked per asset. Spend is
       counted when an authorization is signed (a signed authorization can be
@@ -945,7 +965,7 @@ class PayingClient:
         self._max_authorization_seconds = max_authorization_seconds
         self._allowed_pay_to: Optional[frozenset] = None
         if allowed_pay_to is not None:
-            self._allowed_pay_to = frozenset(normalize_pay_to(p) for p in _as_list(allowed_pay_to))
+            self._allowed_pay_to = frozenset(_normalize_allowed_pay_to(p) for p in _as_list(allowed_pay_to))
         self._allowed_assets: Optional[frozenset] = None
         if allowed_assets is not None:
             self._allowed_assets = frozenset(normalize_asset(a) for a in _as_list(allowed_assets))
@@ -989,7 +1009,8 @@ class PayingClient:
           is an error.
         * CASCET_NETWORK: comma list, default casper:casper-test.
         * CASCET_ALLOWED_PAYTO, CASCET_ALLOWED_ASSETS: comma lists, required
-          unless CASCET_ALLOW_ANY_SELLER is 1, true or yes.
+          unless CASCET_ALLOW_ANY_SELLER is 1, true or yes. Payees are account
+          hashes; a contract package (hash-<64 hex>) is an error.
         * CASCET_MAX_PER_CALL, CASCET_MAX_SESSION: raw token units (> 0),
           required unless CASCET_ALLOW_UNLIMITED_BUDGET is 1, true or yes.
         * CASCET_TIMEOUT_MS: deadline per call in milliseconds (default 30000).
@@ -1030,7 +1051,7 @@ class PayingClient:
                 "(set CASCET_ALLOW_ANY_SELLER=1 to pay any seller in any token)"
             )
         for pay_to in allowed_pay_to:
-            attribute("CASCET_ALLOWED_PAYTO", normalize_pay_to, pay_to)
+            attribute("CASCET_ALLOWED_PAYTO", _normalize_allowed_pay_to, pay_to)
         for asset in allowed_assets:
             attribute("CASCET_ALLOWED_ASSETS", normalize_asset, asset)
 
@@ -1078,14 +1099,14 @@ class PayingClient:
         if network not in self._networks:
             return f"network {network} is not allowed (allowed: {', '.join(self._networks)})"
         pay_to = requirements["payTo"].lower()
-        if self._allowed_pay_to is not None:
-            if pay_to not in self._allowed_pay_to:
-                return f"payTo {requirements['payTo']} is not allowlisted"
-        elif pay_to.startswith("01"):
+        # Checked before the allowlist and never overridable by it, like the TS client.
+        if not pay_to.startswith("00"):
             return (
                 f"payTo {requirements['payTo']} carries the 01 tag (a contract package, or a public key used where "
-                "an account hash belongs); add it to allowed_pay_to as hash-<64 hex> to pay it"
+                f"an account hash belongs): {CONTRACT_PAYEE_REASON}"
             )
+        if self._allowed_pay_to is not None and pay_to not in self._allowed_pay_to:
+            return f"payTo {requirements['payTo']} is not allowlisted"
         asset = requirements["asset"].lower()
         if self._allowed_assets is not None and asset not in self._allowed_assets:
             return f"asset {requirements['asset']} is not allowlisted"
