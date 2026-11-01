@@ -55,6 +55,10 @@ which gateways and docs must point at the new hashes.
   0.5.5, which comes in through casper-types and needs an upstream release.
 - Formatted with rustfmt; `cargo fmt --check` and
   `cargo clippy --all-targets` are clean.
+- `rust-toolchain` (plain text) → `rust-toolchain.toml`. The channel is
+  unchanged, the wasm target and rustfmt/clippy are added, and the wasm is
+  byte-identical. The plain-text file is what Dependabot's cargo job failed on
+  (L72, I03).
 
 ### Tests
 - 13 → 49 unit tests. New coverage:

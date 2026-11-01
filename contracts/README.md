@@ -50,7 +50,7 @@ under Unreleased reach a locked package only through a fresh install.
 
 ## Reproducible builds
 
-The toolchain is pinned in `rust-toolchain` (`nightly-2026-01-01`) and
+The toolchain is pinned in `rust-toolchain.toml` (`nightly-2026-01-01`) and
 `Cargo.lock` is tracked. The release profile builds with `overflow-checks = true`.
 The wasm embeds no local paths, so two builds of the same commit are
 byte-identical when they use the same toolchain, lock file and binaryen
