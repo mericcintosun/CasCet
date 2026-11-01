@@ -37,6 +37,22 @@ export const HEADER_CASCET_PARENT_ID = "x-cascet-parent-id";
 export const DEFAULT_FACILITATOR_URL = "https://x402-facilitator.cspr.cloud";
 
 /**
+ * Host of the hosted facilitator ({@link DEFAULT_FACILITATOR_URL}). It takes the
+ * raw CSPR.cloud access key in the Authorization header (no "Bearer " prefix)
+ * and only settles `cep3009-value` tokens.
+ */
+export const HOSTED_FACILITATOR_HOST = "x402-facilitator.cspr.cloud";
+
+/** Whether `url` points at the hosted facilitator ({@link HOSTED_FACILITATOR_HOST}). False for anything unparsable. */
+export function isHostedFacilitatorUrl(url: string): boolean {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/\.$/, "") === HOSTED_FACILITATOR_HOST;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Default address of CasCet's self-hosted facilitator
  * (`pnpm --filter @cascet/e2e facilitator` in a CasCet checkout). It is built on
  * `@make-software/casper-x402` 1.0.0, so it settles `amount`-style x402 tokens

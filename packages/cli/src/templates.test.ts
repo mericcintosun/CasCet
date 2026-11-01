@@ -4,6 +4,7 @@ import {
   cascetConfigSchema,
   DEFAULT_FACILITATOR_URL,
   DEFAULT_SELF_HOSTED_FACILITATOR_URL,
+  normalizePackageHash,
 } from "@cascet/core";
 import { CASCET_TESTNET_X402_TOKEN, initNextSteps, initTemplate, PAYTO_PLACEHOLDER } from "./init-template.js";
 import { facilitatorWarnings, formatConfigIssues, payToWarnings, wrapWarnings } from "./wrap-check.js";
@@ -26,7 +27,8 @@ describe("cascet init template (M01, M41, M03)", () => {
     assert.equal(cfg.payTo, ACCOUNT_HASH);
     assert.equal(cfg.network, "casper:casper-test");
     assert.equal(cfg.facilitator.url, DEFAULT_SELF_HOSTED_FACILITATOR_URL);
-    assert.equal(cfg.asset.packageHash, CASCET_TESTNET_X402_TOKEN);
+    assert.equal(cfg.asset.packageHash, normalizePackageHash(CASCET_TESTNET_X402_TOKEN), "stored as bare hex");
+    assert.equal(cfg.asset.authorization, "legacy-amount", "CasCet's token takes `amount`");
     assert.equal(cfg.asset.name, "CasCet X402 Token", "EIP-712 domain name of CasCet's token");
     assert.deepEqual(facilitatorWarnings(cfg), []);
   });
