@@ -133,9 +133,6 @@ importers:
       '@cascet/core':
         specifier: workspace:*
         version: link:../core
-      '@make-software/casper-x402':
-        specifier: ^1.0.0
-        version: 1.0.0
       '@x402/casper':
         specifier: 2.29.0
         version: 2.29.0
