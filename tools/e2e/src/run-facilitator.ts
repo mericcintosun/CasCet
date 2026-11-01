@@ -1,35 +1,61 @@
 import { resolve } from "node:path";
+import { readFacilitatorEnv } from "./facilitator-env.js";
 import { startRealFacilitator } from "./real-facilitator.js";
 
 /**
  * Run the self-hosted x402 facilitator standalone (for the Python client demo,
- * or any external client). Testnet by default; CASCET_NET=mainnet for mainnet.
+ * or any external client). Testnet by default; mainnet with
+ * CASCET_NETWORK=casper:casper (or the legacy CASCET_NET=mainnet).
  *
  *   pnpm --filter @cascet/e2e facilitator
+ *
+ * Mainnet needs dedicated keys and a token (see docs/mainnet-readiness.md):
+ *   CASCET_NETWORK=casper:casper \
+ *   CASCET_FACILITATOR_KEY=/secure/fee-payer_secret_key.pem \
+ *   CASCET_FACILITATOR_TOKEN=$(openssl rand -hex 32) \
+ *   CASCET_SELLER_ACCOUNT_HASH=00<seller account hash> \
+ *   pnpm --filter @cascet/e2e facilitator
+ *
+ * Every variable is documented in src/facilitator-env.ts. The facilitator
+ * refuses to start on mainnet when the fee-payer key is the contract owner
+ * (CASCET_OWNER_ACCOUNT_HASH, default: the CasCet deployer) or a seller.
  */
 const ROOT = resolve(import.meta.dirname, "../../..");
-const mainnet = process.env.CASCET_NET === "mainnet";
-const network = mainnet ? "casper:casper" : "casper:casper-test";
-const rpcUrl = mainnet ? "https://node.mainnet.casper.network/rpc" : "https://node.testnet.casper.network/rpc";
-const keyPath = mainnet
-  ? resolve(ROOT, "contracts/keys/mainnet_deployer_secret_key.pem")
-  : resolve(ROOT, "contracts/keys/deployer_secret_key.pem");
-const token = mainnet
-  ? "hash-8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41"
-  : "hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
-const seller = mainnet
-  ? "00b9a38c827771d6bc510dd5f1e24fee61acdd4f97f758f4d68fe1dea13a7a140d"
-  : "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36";
 
-const fac = await startRealFacilitator({
-  port: Number(process.env.PORT ?? 4501),
-  network,
-  keyPath,
-  keyAlgo: "ed25519",
-  rpcUrl,
-  allowedPayTo: [seller],
-  allowedAssets: [token],
-});
-console.log(`facilitator up at ${fac.url} (net=${network})`);
-process.on("SIGINT", () => { fac.close(); process.exit(0); });
-process.on("SIGTERM", () => { fac.close(); process.exit(0); });
+let cfg: ReturnType<typeof readFacilitatorEnv>;
+try {
+  cfg = readFacilitatorEnv(process.env, ROOT);
+} catch (err) {
+  console.error(`[run-facilitator] configuration error: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
+for (const warning of cfg.warnings) console.warn(`[run-facilitator] warning: ${warning}`);
+
+try {
+  const fac = await startRealFacilitator({
+    port: cfg.port,
+    host: cfg.host,
+    network: cfg.network,
+    keyPath: cfg.keyPath,
+    keyAlgo: cfg.keyAlgo,
+    rpcUrl: cfg.rpcUrl,
+    ...(cfg.authToken ? { authToken: cfg.authToken } : {}),
+    allowedPayTo: cfg.allowedPayTo,
+    allowedAssets: cfg.allowedAssets,
+    ...(cfg.ownerAccountHash ? { ownerAccountHash: cfg.ownerAccountHash } : {}),
+    paymentMotes: cfg.paymentMotes,
+    dailyGasCapMotes: cfg.dailyGasCapMotes,
+    settleWaitMs: cfg.settleWaitMs,
+    preflight: cfg.preflight,
+    tokenVersion: cfg.tokenVersion,
+  });
+  console.log(`facilitator up at ${fac.url} (net=${fac.network})`);
+  const stop = () => {
+    void fac.close().then(() => process.exit(0));
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+} catch (err) {
+  console.error(`[run-facilitator] refusing to start: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}

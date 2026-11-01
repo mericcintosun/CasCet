@@ -24,7 +24,8 @@
     "@make-software/casper-x402": "^1.0.0",
     "@x402/core": "2.15.0",
     "casper-js-sdk": "^5.0.12",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.7.2"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
