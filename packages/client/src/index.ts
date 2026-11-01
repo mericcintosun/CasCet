@@ -27,6 +27,7 @@ export {
 export {
   defaultToolPinsPath,
   PinFileError,
+  readPinFile,
   ToolPinGuard,
   toolDigest,
   type ToolPinGuardOptions,

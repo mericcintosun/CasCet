@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { cascetConfigSchema } from "@cascet/core";
-import { accountHashFromPublicKey, createPayingFetch, runBridge } from "@cascet/client";
+import { accountHashFromPublicKey, createPayingFetch, readPinFile, runBridge } from "@cascet/client";
 import { checkArgs, CliError, CONNECT_FLAGS, parseArgs, type ParsedArgs } from "./args.js";
 import { resolveConnectConfig } from "./connect-config.js";
 import { initNextSteps, initTemplate } from "./init-template.js";
@@ -82,6 +82,7 @@ async function connect(args: ParsedArgs): Promise<void> {
     cwd: process.cwd(),
     home: homedir(),
   });
+  readPinFile(cfg.bridge.toolPins.path); // fail before starting on an unreadable pin file
   for (const notice of cfg.notices) console.error(notice);
   const paying = await createPayingFetch({
     ...cfg.paying,

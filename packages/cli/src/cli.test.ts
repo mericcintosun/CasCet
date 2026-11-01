@@ -1,6 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const CLI = fileURLToPath(new URL("./cli.ts", import.meta.url));
@@ -43,6 +46,27 @@ describe("cascet CLI", () => {
     const result = run(["connect", "http://localhost:4402/mcp"], { CASCET_KEY_PATH: CLI });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /CASCET_ALLOWED_PAYTO and CASCET_ALLOWED_ASSETS are required/);
+  });
+
+  it("connect fails before starting when the tool pin file is unreadable", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cascet-cli-test-"));
+    try {
+      const pins = join(dir, "pins.json");
+      writeFileSync(pins, "{ broken");
+      const result = run(["connect", "http://localhost:4402/mcp"], {
+        CASCET_KEY_PATH: CLI,
+        CASCET_ALLOWED_PAYTO: "00" + "a1".repeat(32),
+        CASCET_ALLOWED_ASSETS: "hash-" + "d4".repeat(32),
+        CASCET_MAX_PER_CALL: "1000",
+        CASCET_MAX_SESSION: "5000",
+        CASCET_TOOL_PINS: pins,
+      });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /tool pin file .* is not valid JSON/);
+      assert.doesNotMatch(result.stderr, /bridge up/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects unknown commands and options", () => {
