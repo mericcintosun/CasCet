@@ -199,6 +199,7 @@ describe("/verify", () => {
       [{ value: "0" }, 200, Reason.invalidAmount],
       [{ value: "0500" }, 200, Reason.invalidAmount],
       [{ validBefore: now - 1 }, 200, Reason.expired],
+      [{ validBefore: now + 19 }, 200, Reason.expiresTooSoon],
       [{ validBefore: now + 7_200 }, 200, Reason.validityTooLong],
       [{ nonce: "abc" }, 200, Reason.invalidNonce],
       [{ publicKey: `02${"cd".repeat(33)}` }, 200, Reason.algorithmMismatch],
@@ -211,6 +212,14 @@ describe("/verify", () => {
       assert.equal(r.body.invalidReason, reason);
     }
     assert.equal(h.signatureChecks.count, 0, "rejected before the signature check");
+  });
+
+  test("the minimum settle window is configurable", async () => {
+    const now = Math.floor(T0 / 1000);
+    const strict = harness({ config: { minSettleWindowSeconds: 60 } });
+    assert.equal((await strict.core.verify(parsed({ validBefore: now + 59 }))).body.invalidReason, Reason.expiresTooSoon);
+    const lax = harness({ config: { minSettleWindowSeconds: 6 } });
+    assert.equal((await lax.core.verify(parsed({ validBefore: now + 10 }))).body.isValid, true);
   });
 
   test("passes through the casper-x402 signature verdict", async () => {
@@ -296,6 +305,19 @@ describe("/settle", () => {
     const s = h.gas.snapshot();
     assert.equal(s.reservedMotes + s.spentMotes, 0n);
     assert.equal(h.ledger.size, 0);
+  });
+
+  test("an authorization about to expire is not submitted (it would revert and burn the gas limit)", async () => {
+    const h = harness();
+    const now = Math.floor(T0 / 1000);
+    assert.equal((await h.core.verify(parsed({ validBefore: now + 120 }))).body.isValid, true);
+    h.clock.advance(105_000); // the gateway ran a slow tool: 15 s left at settle time
+    const r = await h.core.settle(parsed({ validBefore: now + 120 }));
+    assert.deepEqual([r.status, r.body.errorReason, r.body.transaction], [200, Reason.expiresTooSoon, ""]);
+    assert.deepEqual(r.body.extra, { settlementStatus: "not_submitted" });
+    assert.equal(h.chain.submits, 0);
+    const s = h.gas.snapshot();
+    assert.equal(s.reservedMotes + s.spentMotes, 0n);
   });
 
   test("gas is reserved only right before submission (M08)", async () => {

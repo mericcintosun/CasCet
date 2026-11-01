@@ -12,6 +12,7 @@ import { createCasperRpc } from "./casper-rpc.js";
 import { assertUsableToken, authorizationMatches, MIN_MAINNET_TOKEN_LENGTH } from "./facilitator-auth.js";
 import {
   createFacilitatorCore,
+  DEFAULT_MIN_SETTLE_WINDOW_SECONDS,
   logText,
   normalizeAsset,
   normalizePayTo,
@@ -55,6 +56,8 @@ import { TokenStateReader } from "./token-state.js";
  *   - rate-limits per client IP before authentication, and globally plus per
  *     payer on /verify and /settle (express-rate-limit);
  *   - only settles to allowlisted payees and assets (required on mainnet);
+ *   - refuses authorizations that expire too soon to be settled in time
+ *     (default 20 s; casper-x402 alone accepts 6 s, less than one block);
  *   - keeps an in-flight ledger of (network, asset, from, nonce) until the
  *     authorization can no longer execute, answering duplicates with 409;
  *   - checks on-chain, before submitting, that the nonce is unused and that the
@@ -107,6 +110,8 @@ export interface RealFacilitatorOptions {
   tokenVersion?: string;
   /** Reject authorizations that stay valid longer than this. Default 3600 s. */
   maxAuthorizationValiditySeconds?: number;
+  /** Reject authorizations that expire sooner than this (at /verify and /settle). Default 20 s. */
+  minSettleWindowSeconds?: number;
   /** Per-call RPC timeout. Default 8000 ms. */
   rpcTimeoutMs?: number;
   /** Log sink (defaults to the console with a `[real-facilitator]` prefix). */
@@ -341,6 +346,11 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
         "a settle consumes ~2.7 CSPR and a revert burns the whole limit",
     );
   }
+  const maxValiditySeconds = opts.maxAuthorizationValiditySeconds ?? 3_600;
+  const minSettleWindowSeconds = opts.minSettleWindowSeconds ?? DEFAULT_MIN_SETTLE_WINDOW_SECONDS;
+  if (!Number.isSafeInteger(minSettleWindowSeconds) || minSettleWindowSeconds < 6 || minSettleWindowSeconds >= maxValiditySeconds) {
+    throw new Error(`minSettleWindowSeconds must be a whole number from 6 to ${maxValiditySeconds - 1}`);
+  }
   const ownerAccountHash = opts.ownerAccountHash ? normalizeAccountHash(opts.ownerAccountHash) : undefined;
 
   // --- fee payer and key-role separation (M07) ---
@@ -392,7 +402,8 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
       tokenVersion: opts.tokenVersion ?? "1",
       paymentMotes: BigInt(paymentMotes),
       settleWaitMs: opts.settleWaitMs ?? DEFAULT_SETTLE_WAIT_MS,
-      maxValiditySeconds: opts.maxAuthorizationValiditySeconds ?? 3_600,
+      maxValiditySeconds,
+      minSettleWindowSeconds,
     },
     {
       verifySignature: (payload, requirements) => scheme.verify(payload, requirements),

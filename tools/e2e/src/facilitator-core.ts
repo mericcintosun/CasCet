@@ -12,7 +12,8 @@ import { TokenStateError, type TokenStateReader } from "./token-state.js";
  *
  * Both /verify and /settle run the FULL check list (M21): request shape,
  * allowlists, CEP-3009 field formats (payer and payee must be account-hash
- * Keys, publicKey and signature algorithm tags must match), the casper-x402
+ * Keys, publicKey and signature algorithm tags must match), a validity window
+ * that still leaves time to settle before validBefore, the casper-x402
  * signature check, the in-flight nonce ledger (M09), and an on-chain preflight
  * (nonce not used, balance covers the value plus everything already in flight,
  * EIP-712 domain name equals the token's on-chain name). /settle then reserves
@@ -38,6 +39,7 @@ export const Reason = {
   invalidValidity: "invalid_validity_window",
   validityTooLong: "validity_window_too_long",
   expired: "authorization_expired",
+  expiresTooSoon: "authorization_expires_too_soon",
   invalidNonce: "invalid_nonce",
   invalidPublicKey: "invalid_public_key",
   invalidSignature: "invalid_signature",
@@ -96,7 +98,20 @@ export interface FacilitatorCoreConfig {
   settleWaitMs: number;
   /** Reject authorizations valid for longer than this (bounds ledger retention). */
   maxValiditySeconds: number;
+  /**
+   * Reject authorizations that expire sooner than this, at /verify and at
+   * /settle. Default {@link DEFAULT_MIN_SETTLE_WINDOW_SECONDS}.
+   */
+  minSettleWindowSeconds?: number;
 }
+
+/**
+ * casper-x402 1.0.0 settles an authorization that is valid for 6 more seconds.
+ * Casper produces a block every 8 s (chainspec minimum_block_time) and recorded
+ * settles were included 4–10 s after submission, so a transaction submitted
+ * that late is likely to execute after validBefore, revert, and burn its gas.
+ */
+export const DEFAULT_MIN_SETTLE_WINDOW_SECONDS = 20;
 
 export interface FacilitatorCoreDeps {
   /** casper-x402 cryptographic verification (EIP-712 digest, signature, pubkey ↔ payer). */
@@ -253,6 +268,10 @@ export function checkAuthorization(
   const validBefore = Number(a.validBefore);
   if (validAfter >= validBefore) return reject(200, Reason.invalidValidity, "validAfter must be before validBefore");
   if (validBefore <= nowSec) return reject(200, Reason.expired, "authorization expired");
+  const minWindow = config.minSettleWindowSeconds ?? DEFAULT_MIN_SETTLE_WINDOW_SECONDS;
+  if (validBefore - nowSec < minWindow) {
+    return reject(200, Reason.expiresTooSoon, `authorization must stay valid for at least ${minWindow}s to be settled in time`);
+  }
   if (validBefore - nowSec > config.maxValiditySeconds) {
     return reject(200, Reason.validityTooLong, `authorization must expire within ${config.maxValiditySeconds}s`);
   }
