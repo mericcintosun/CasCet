@@ -10,6 +10,10 @@ import { createDataServer } from "./server.js";
  *                      label and network.name say which network the numbers describe.
  *   CSPR_CLOUD_TOKEN   cspr.cloud access token for live staking yields (optional;
  *                      without it get_defi_yields returns the labeled snapshot)
+ *
+ * Live answers are cached briefly (CoinGecko 60 s, cspr.cloud 10 min); when an
+ * upstream fails, a recent live answer is served, labeled with its age, before
+ * the dated snapshot is.
  */
 
 const server = createDataServer();

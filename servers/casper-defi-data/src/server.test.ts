@@ -101,6 +101,50 @@ describe("casper-defi-data tools", { timeout: 15_000 }, () => {
     }
   });
 
+  it("reuses a live quote for a minute, then serves it with its age while CoinGecko fails (L24)", async () => {
+    let now = 1_000_000;
+    let calls = 0;
+    let up = true;
+    const fetchImpl: FetchLike = async () => {
+      calls++;
+      return up
+        ? new Response(JSON.stringify({ "pax-gold": { usd: 3400.5, usd_24h_change: 1.5 } }))
+        : new Response("{}", { status: 429 });
+    };
+    const h = await connect({ fetchImpl, env: {}, now: () => now });
+    const gold = async () =>
+      JSON.parse(textOf(await h.client.callTool({ name: "get_rwa_price", arguments: { asset: "gold" } }))) as {
+        priceUsd: number;
+        source: string;
+      };
+    try {
+      assert.deepEqual(await gold(), {
+        asset: "gold",
+        proxyToken: "pax-gold",
+        priceUsd: 3400.5,
+        change24hPct: 1.5,
+        source: "coingecko(live)",
+      });
+      now += 30_000;
+      assert.equal((await gold()).source, "coingecko(live)");
+      assert.equal(calls, 1, "a fresh answer is reused");
+
+      up = false;
+      now += 270_000;
+      const cached = await gold();
+      assert.equal(cached.priceUsd, 3400.5);
+      assert.equal(cached.source, "coingecko(cached, 5 min old)");
+      assert.equal(calls, 2);
+
+      now += 15 * 60_000;
+      const snapshot = await gold();
+      assert.equal(snapshot.priceUsd, 3312.4);
+      assert.equal(snapshot.source, "snapshot(2026-07-07)");
+    } finally {
+      await h.close();
+    }
+  });
+
   it("validates input before doing any work", async () => {
     let calls = 0;
     const h = await connect({
