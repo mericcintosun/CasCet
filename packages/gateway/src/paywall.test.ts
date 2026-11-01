@@ -4,9 +4,11 @@ import { x402ResourceServer, type FacilitatorClient, type HTTPAdapter } from "@x
 import type { Network } from "@x402/core/types";
 import {
   buildToolTable,
+  createPaymentRail,
   maxTimeoutSecondsFor,
   resolveToolPolicy,
   routeForTool,
+  settleablePayTo,
   unmatchedConfiguredTools,
   type PaymentRail,
 } from "./paywall.js";
@@ -115,5 +117,29 @@ describe("maxTimeoutSecondsFor", () => {
   it("covers running the tool and settling, never below 300 s", () => {
     assert.equal(maxTimeoutSecondsFor(testConfig()), 300);
     assert.equal(maxTimeoutSecondsFor(testConfig({ timeouts: { upstreamMs: 600_000, settleMs: 90_000 } })), 720);
+  });
+});
+
+describe("payTo (L60)", () => {
+  const hex = "ab".repeat(32);
+
+  it("accepts an account in either spelling and returns the 00-prefixed form", () => {
+    assert.equal(settleablePayTo(`00${hex}`), `00${hex}`);
+    assert.equal(settleablePayTo(`00${hex.toUpperCase()}`), `00${hex}`);
+    assert.equal(settleablePayTo(`account-hash-${hex}`), `00${hex}`);
+  });
+
+  it("refuses a contract package payee, which casper-x402 1.0.0 can never settle to", () => {
+    assert.throws(() => settleablePayTo(`01${hex}`), /cannot settle to a contract package.*account-hash <public-key>/);
+  });
+
+  it("refuses public keys and anything else with the account-hash hint", () => {
+    for (const value of [`02${"cd".repeat(33)}`, `hash-${hex}`, "", "<your Casper public key>"]) {
+      assert.throws(() => settleablePayTo(value), /npx @cascet\/cli account-hash <public-key>/, value);
+    }
+  });
+
+  it("refuses at startup, before the facilitator is contacted", async () => {
+    await assert.rejects(createPaymentRail(testConfig({ payTo: `01${hex}` })), /cannot settle to a contract package/);
   });
 });

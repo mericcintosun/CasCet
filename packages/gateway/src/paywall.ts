@@ -3,6 +3,7 @@ import type { Network } from "@x402/core/types";
 import { ExactCasperScheme } from "@make-software/casper-x402/exact/server";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { usdPriceToTokenUnits, type CascetConfig, type ToolPrice } from "@cascet/core";
+import { normalizeAccountAddress } from "./authorization.js";
 import { TimeoutFacilitatorClient } from "./facilitator.js";
 
 /** Seconds an authorization must still be valid when settlement starts (inclusion + execution on Casper). */
@@ -14,7 +15,7 @@ export const MAX_CLOCK_SKEW_SECONDS = 120;
 export interface PaymentRail {
   resourceServer: x402ResourceServer;
   network: Network;
-  /** Payee address, lowercase. */
+  /** Payee account: "00" + account hash, lowercase. */
   payTo: string;
   /** Token contract package hash, 64 lowercase hex. */
   asset: string;
@@ -30,17 +31,31 @@ export function maxTimeoutSecondsFor(cfg: CascetConfig): number {
   return Math.max(300, Math.ceil((cfg.timeouts.upstreamMs + cfg.timeouts.settleMs) / 1_000) + SETTLE_HEADROOM_SECONDS);
 }
 
+/**
+ * The payee as the scheme settles it: "00" + account hash. casper-x402 1.0.0
+ * encodes every `to` as an account-hash key when it settles, so a contract
+ * package payee ("01" + 64 hex, written as hash-/package-hash- in the config)
+ * would pass verification and then revert on every call (L60); it is refused
+ * until the scheme supports contract payees.
+ */
+export function settleablePayTo(value: string): string {
+  const payTo = normalizeAccountAddress(value);
+  if (/^00[0-9a-f]{64}$/.test(payTo)) return payTo;
+  const hint = "use the payee account's hash instead (for a public key run: npx @cascet/cli account-hash <public-key>)";
+  if (/^01[0-9a-f]{64}$/.test(payTo)) {
+    throw new Error(
+      `payTo ${payTo} is not an account: the x402 Casper scheme (casper-x402 1.0.0) cannot settle to a contract package, ` +
+        `and a public key is not an address; ${hint}`,
+    );
+  }
+  throw new Error(`payTo must be the payee's account hash ("00" + 64 hex, or account-hash-<64 hex>); ${hint}`);
+}
+
 /** Create the x402 resource server and load the facilitator's supported kinds. */
 export async function createPaymentRail(cfg: CascetConfig): Promise<PaymentRail> {
   const network = cfg.network as Network;
   const asset = cfg.asset.packageHash.toLowerCase().replace(/^hash-/, "");
-  const payTo = cfg.payTo.toLowerCase();
-  if (!/^(00|01)[0-9a-f]{64}$/.test(payTo)) {
-    throw new Error(
-      'payTo must be a Casper address: "00" + 64 hex (account hash) or "01" + 64 hex (contract package hash). ' +
-        "For a public key run: npx @cascet/cli account-hash <public-key>",
-    );
-  }
+  const payTo = settleablePayTo(cfg.payTo);
   if (!/^[0-9a-f]{64}$/.test(asset)) throw new Error("asset.packageHash must be 64 hex characters (optionally prefixed with hash-)");
   const facilitator = new TimeoutFacilitatorClient({
     url: cfg.facilitator.url,
