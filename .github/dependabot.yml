@@ -6,20 +6,49 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    # Supply chain: propose a release only after it has been public for a week
+    # (most malicious package versions are pulled within days). Security
+    # updates are never delayed by this.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "deps"
     groups:
-      js-dependencies:
-        patterns:
-          - "*"
+      # Minor and patch bumps travel together; every major bump gets its own PR,
+      # so one breaking release no longer blocks all the others.
+      js-minor-and-patch:
+        update-types: ["minor", "patch"]
+        patterns: ["*"]
+    ignore:
+      # @x402/core and @x402/fetch are held on ~2.17 on purpose: the move to
+      # 2.29 (CEP-3009 `value`, @x402/casper) is a planned migration, not a
+      # routine bump.
+      - dependency-name: "@x402/*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
-  # GitHub Actions used by the workflows below
+  # GitHub Actions used by the workflows (pinned by commit SHA; Dependabot
+  # updates the SHA and the version comment together)
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns: ["*"]
 
-  # Rust / Odra smart contracts
+  # Rust / Odra smart contracts. This updater needs contracts/rust-toolchain in
+  # TOML form (rust-toolchain.toml); the legacy one-line format makes every run
+  # fail with "only rust-toolchain files formatted as TOML are supported".
   - package-ecosystem: "cargo"
     directory: "/contracts"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "deps"
