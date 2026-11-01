@@ -70,8 +70,19 @@ test("the MCP client config is the Claude Desktop / Claude Code mcpServers shape
 });
 
 test("lists are comma-joined", () => {
-  const env = new Map(connectEnv({ ...base, allowedPayTo: [SELLER, `01${"ef".repeat(32)}`] }));
-  assert.equal(env.get("CASCET_ALLOWED_PAYTO"), `${SELLER},01${"ef".repeat(32)}`);
+  const SELLER2 = `account-hash-${"ef".repeat(32)}`;
+  const env = new Map(connectEnv({ ...base, allowedPayTo: [SELLER, SELLER2], allowedAssets: [ASSET, "ef".repeat(32)] }));
+  assert.equal(env.get("CASCET_ALLOWED_PAYTO"), `${SELLER},${SELLER2}`);
+  assert.equal(env.get("CASCET_ALLOWED_ASSETS"), `${ASSET},${"ef".repeat(32)}`);
+});
+
+test("a contract-package seller is written as hash-… and flagged: x402 cannot settle to it yet", () => {
+  const pkg = `hash-${"ef".repeat(32)}`;
+  const s = { ...base, allowedPayTo: [SELLER, pkg] };
+  assert.equal(new Map(connectEnv(s)).get("CASCET_ALLOWED_PAYTO"), `${SELLER},${pkg}`);
+  const w = connectWarnings(s);
+  assert.deepEqual(w.map((x) => `${x.level}:${x.field}`), ["warning:sellers"]);
+  assert.match(w[0]!.message, /cannot pay a contract package/);
 });
 
 test("empty safety fields warn and add NO opt-out unless the user explicitly chose it", () => {
@@ -98,7 +109,7 @@ test("an opt-out is dropped once the safety fields are filled in", () => {
 
 test("other warnings: per-call above session, mainnet, local gateway, relative key and pin paths", () => {
   const w = connectWarnings(
-    { ...base, maxPerCallRaw: "10", maxSessionRaw: "5", network: "mainnet", keyPath: "./agent.pem", toolPinsPath: "~/.cascet/pins.json" },
+    { ...base, maxPerCallRaw: "10", maxSessionRaw: "5", network: "mainnet", keyPath: "./agent.pem", toolPinsPath: "pins.json" },
     true,
   );
   assert.deepEqual(
@@ -106,6 +117,11 @@ test("other warnings: per-call above session, mainnet, local gateway, relative k
     ["warning:budget", "warning:network", "info:gateway", "info:key", "info:key"],
   );
   assert.deepEqual(connectWarnings({ ...base, keyPath: "C:\\keys\\agent.pem", toolPinsPath: "/home/me/pins.json" }), []);
+  // The CLI expands ~/ in CASCET_TOOL_PINS itself (not in CASCET_KEY_PATH), so only the key path warns.
+  assert.deepEqual(
+    connectWarnings({ ...base, keyPath: "~/agent.pem", toolPinsPath: "~/.cascet/pins.json" }).map((x) => x.message.slice(0, 20)),
+    ["MCP clients start th"],
+  );
 });
 
 test("shell quoting keeps injection out of the copied command", () => {

@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { CopyButton } from "@/components/copy-button";
 import { SessionSpend } from "@/components/connect/session-spend";
-import { checkGatewayUrl, parseAssetInput, parsePayeeInput, payToAllowlistValue } from "@/lib/casper/keys";
+import { checkGatewayUrl, parseAssetInput, parsePayeeInput, payToValue } from "@/lib/casper/keys";
 import {
   buildMcpConfig,
   buildShellCommand,
@@ -126,7 +126,7 @@ export function ConnectBuilder() {
   const converted = useAccountHashes(sellerKeys);
   const sellerRows = sellerEntries.map(({ input, parsed }) => {
     if (parsed.kind === "account" || parsed.kind === "package") {
-      return { input, value: payToAllowlistValue(parsed), note: parsed.kind === "package" ? "contract package" : "account", error: null };
+      return { input, value: payToValue(parsed), note: parsed.kind === "package" ? "contract package (cannot settle yet)" : "account", error: null };
     }
     if (parsed.kind === "public-key") {
       const c = converted.get(parsed.publicKey);
@@ -288,8 +288,9 @@ export function ConnectBuilder() {
               label="Allowed sellers (payTo)"
               hint={
                 <>
-                  One per line: an account hash (<code>00…</code> or <code>account-hash-…</code>), a seller&apos;s public key (
-                  <code>01…</code>/<code>02…</code>, converted here), or <code>hash-…</code> for a contract payee such as a RevenueSplit.
+                  One per line: an account hash (<code>00…</code> or <code>account-hash-…</code>) or a seller&apos;s public key (
+                  <code>01…</code>/<code>02…</code>, converted here). Get a seller&apos;s value with{" "}
+                  <code>npx @cascet/cli account-hash &lt;public-key&gt;</code>.
                 </>
               }
               error={sellersError}

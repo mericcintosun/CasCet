@@ -30,7 +30,11 @@ export interface ConnectSettings {
   network: ConnectNetwork;
   keyPath: string;
   keyAlgorithm: "ed25519" | "secp256k1";
-  /** Serialized payee keys as the 402 challenge carries them: "00"+hash (account) or "01"+hash (contract package). */
+  /**
+   * Payees in the form `cascet connect` takes: "00"+hash for an account, "hash-"+hash for a contract
+   * package (the CLI normalises that to the "01" Key of the 402 challenge; a raw "01…" is refused as a
+   * public key).
+   */
   allowedPayTo: string[];
   /** Bare 64-hex CEP-18 package hashes. */
   allowedAssets: string[];
@@ -146,6 +150,14 @@ export function connectWarnings(s: ConnectSettings, gatewayIsLocal = false): Con
         : `No ${missing} cap: cascet connect refuses to start without CASCET_MAX_PER_CALL and CASCET_MAX_SESSION. Set both, or explicitly allow an unlimited budget.`,
     });
   }
+  if (s.allowedPayTo.some((p) => p.startsWith("hash-"))) {
+    out.push({
+      level: "warning",
+      field: "sellers",
+      message:
+        "A contract package (hash-…) is on the seller allowlist. x402 on Casper settles to an account hash: casper-x402 1.0.0, which CasCet's facilitator runs, cannot pay a contract package, so those payments will not settle. Allowlist the seller's account hash instead.",
+    });
+  }
   if (s.maxPerCallRaw && s.maxSessionRaw && BigInt(s.maxPerCallRaw) > BigInt(s.maxSessionRaw)) {
     out.push({
       level: "warning",
@@ -174,11 +186,12 @@ export function connectWarnings(s: ConnectSettings, gatewayIsLocal = false): Con
       message: "MCP clients start the bridge in their own working directory and do not expand ~, so use an absolute key path in the JSON config.",
     });
   }
-  if (s.toolPinsPath && !isAbsolutePath(s.toolPinsPath)) {
+  if (s.toolPinsPath && !isAbsolutePath(s.toolPinsPath) && !s.toolPinsPath.startsWith("~/")) {
     out.push({
       level: "info",
       field: "key",
-      message: "The tool pin file path is not absolute; in the JSON config ~ is not expanded. Use an absolute path, or leave it empty for the CLI default.",
+      message:
+        "The tool pin file path is relative, so it depends on the directory the MCP client starts the bridge in. Use an absolute path or ~/…, or leave it empty for the CLI default (~/.cascet/tool-pins.json).",
     });
   }
   return out;

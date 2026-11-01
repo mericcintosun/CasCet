@@ -6,8 +6,7 @@ import {
   isLoopbackHostname,
   parseAssetInput,
   parsePayeeInput,
-  payToAllowlistValue,
-  payToConfigValue,
+  payToValue,
 } from "./keys";
 import { accountHashFromPublicKey } from "./account-hash";
 
@@ -40,11 +39,15 @@ test("bare 64-hex, wrong lengths and junk are rejected with a reason", () => {
   assert.deepEqual(parsePayeeInput("   "), { kind: "empty" });
 });
 
-test("config payTo and buyer allowlist forms", () => {
-  assert.equal(payToConfigValue({ kind: "account", hash: H }), `00${H}`);
-  assert.equal(payToConfigValue({ kind: "package", hash: H }), `hash-${H}`);
-  assert.equal(payToAllowlistValue({ kind: "account", hash: H }), `00${H}`);
-  assert.equal(payToAllowlistValue({ kind: "package", hash: H }), `01${H}`);
+test("payees are written as 00… or hash-…, never as a raw 01… that reads as a public key", () => {
+  // The config schema and cascet connect (CASCET_ALLOWED_PAYTO) both normalise with core's normalizePayTo,
+  // which turns hash-… into the 01 Key of the 402 challenge and rejects a raw 01… (M01).
+  assert.equal(payToValue({ kind: "account", hash: H }), `00${H}`);
+  assert.equal(payToValue({ kind: "package", hash: H }), `hash-${H}`);
+  // What payToValue writes parses back to the same payee (the /build → /connect hand-over).
+  for (const target of [{ kind: "account", hash: H }, { kind: "package", hash: H }] as const) {
+    assert.deepEqual(parsePayeeInput(payToValue(target)), target);
+  }
 });
 
 test("asset package hashes normalise to bare lower-case hex", () => {
@@ -80,6 +83,8 @@ test("gateway URLs: https anywhere, http only on loopback, no credentials", () =
   assert.equal(checkGatewayUrl("ftp://gw.example.com").ok, false);
   assert.equal(checkGatewayUrl("not a url").ok, false);
   assert.equal(checkGatewayUrl("").ok, false);
-  assert.equal(isLoopbackHostname("app.localhost"), true);
+  // Exactly the hosts cascet connect accepts over http, so a URL accepted here never fails at its startup.
+  assert.equal(isLoopbackHostname("app.localhost"), false);
   assert.equal(isLoopbackHostname("localhost.example.com"), false);
+  assert.equal(isLoopbackHostname("127.0.0.53"), true);
 });

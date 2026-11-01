@@ -20,7 +20,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CopyButton } from "@/components/copy-button";
 import { CONTRACTS } from "@/lib/economy";
 import { accountHashFromPublicKey } from "@/lib/casper/account-hash";
-import { parseAssetInput, parsePayeeInput, payToAllowlistValue, payToConfigValue } from "@/lib/casper/keys";
+import { CONTRACT_PAYEE_UNSUPPORTED, parseAssetInput, parsePayeeInput, payToValue } from "@/lib/casper/keys";
 import { CLI_SPEC, rawToTokens } from "@/lib/connect-config";
 import { shortHex } from "@/lib/utils";
 
@@ -32,7 +32,22 @@ import { shortHex } from "@/lib/utils";
 type Settlement = "self-hosted" | "hosted";
 
 const SELF_HOSTED_FACILITATOR_URL = "http://127.0.0.1:4501";
-const FACILITATOR_HOWTO = "CASCET_FACILITATOR_KEY=./fee-payer.pem pnpm --filter @cascet/e2e facilitator";
+
+/**
+ * One line that starts CasCet's self-hosted facilitator for this seller. It
+ * only settles to the accounts in CASCET_SELLER_ACCOUNT_HASH and in the tokens
+ * in CASCET_ALLOWED_ASSETS (default: CasCet's testnet x402 token), and pnpm
+ * runs the script from tools/e2e, so the key path must be absolute.
+ */
+function facilitatorHowto(payTo: string | null, assetHash: string | null): string {
+  const env = [
+    "CASCET_FACILITATOR_KEY=/absolute/path/to/fee-payer.pem",
+    `CASCET_SELLER_ACCOUNT_HASH=${payTo ?? "00<your account hash>"}`,
+    ...(assetHash && assetHash !== CONTRACTS.x402Token ? [`CASCET_ALLOWED_ASSETS=${assetHash}`] : []),
+  ];
+  return `${env.join(" ")} pnpm --filter @cascet/e2e facilitator`;
+}
+
 const CASCET_TOKEN = {
   assetPackageHash: `hash-${CONTRACTS.x402Token}`,
   assetName: "CasCet X402 Token",
@@ -139,9 +154,11 @@ export function BuildWizard() {
       ? "enter the seller's account hash (00 + 64 hex), or paste a public key to convert it"
       : payee.kind === "invalid"
         ? payee.reason
-        : payee.kind === "public-key" && !payTarget
-          ? conversion?.error ?? "converting the public key…"
-          : null;
+        : payee.kind === "package"
+          ? `${CONTRACT_PAYEE_UNSUPPORTED}. Enter the account hash that should receive the payments.`
+          : payee.kind === "public-key" && !payTarget
+            ? conversion?.error ?? "converting the public key…"
+            : null;
 
   const asset = React.useMemo(() => parseAssetInput(s.assetPackageHash), [s.assetPackageHash]);
   const freeTools = React.useMemo(() => splitList(s.freeTools), [s.freeTools]);
@@ -160,7 +177,7 @@ export function BuildWizard() {
       name: s.name.trim(),
       upstream,
       network: NETWORK_CASPER_TESTNET,
-      payTo: payTarget ? payToConfigValue(payTarget) : s.payTo.trim(),
+      payTo: payTarget ? payToValue(payTarget) : s.payTo.trim(),
       asset: {
         packageHash: asset.ok ? `hash-${asset.hash}` : s.assetPackageHash.trim(),
         name: s.assetName.trim(),
@@ -243,7 +260,7 @@ export function BuildWizard() {
   }, null);
   const connectHref = (() => {
     const q = new URLSearchParams({ gateway: `http://localhost:${s.port || DEFAULT_GATEWAY_PORT}/mcp`, network: "testnet" });
-    if (payTarget) q.set("seller", payToAllowlistValue(payTarget));
+    if (payTarget) q.set("seller", payToValue(payTarget));
     if (asset.ok) q.set("asset", asset.hash);
     if (maxPrice !== null) {
       q.set("perCall", rawToTokens(maxPrice, decimals));
@@ -251,6 +268,11 @@ export function BuildWizard() {
     }
     return `/connect?${q.toString()}`;
   })();
+
+  const howto = facilitatorHowto(
+    payTarget?.kind === "account" ? payToValue(payTarget) : null,
+    asset.ok ? asset.hash : null,
+  );
 
   const sellerCommands = [
     `npx ${CLI_SPEC} init ${s.name.trim() || "my-paid-mcp"}`,
@@ -308,8 +330,8 @@ export function BuildWizard() {
                 <>
                   x402 pays an <span className="text-foreground">account hash</span>, not a public key: <code>00</code> + 64 hex or{" "}
                   <code>account-hash-…</code>. Paste a public key (<code>01…</code> / <code>02…</code>) and it is converted here, or run{" "}
-                  <code>npx @cascet/cli account-hash &lt;public-key&gt;</code>. For a contract payee such as a RevenueSplit, use{" "}
-                  <code>hash-&lt;package hash&gt;</code>.
+                  <code>npx @cascet/cli account-hash &lt;public-key&gt;</code>. A contract package (<code>hash-…</code>) cannot
+                  receive x402 payments yet.
                 </>
               }
             >
@@ -378,9 +400,12 @@ export function BuildWizard() {
                   to your gateway, from a CasCet checkout:
                 </p>
                 <pre className="overflow-x-auto rounded-md border bg-background/50 p-2 font-mono text-[11px] text-foreground">
-                  {FACILITATOR_HOWTO}
+                  {howto}
                 </pre>
-                <p>It listens on {SELF_HOSTED_FACILITATOR_URL} and pays each settle&apos;s gas from that funded key (see docs/onchain.md).</p>
+                <p>
+                  It listens on {SELF_HOSTED_FACILITATOR_URL}, pays each settle&apos;s gas from that funded key and only settles to
+                  the account in <code>CASCET_SELLER_ACCOUNT_HASH</code> (see docs/onchain.md).
+                </p>
               </TabsContent>
               <TabsContent value="hosted" className="space-y-2 text-xs leading-relaxed text-muted-foreground">
                 <p>
@@ -534,7 +559,7 @@ export function BuildWizard() {
             )}
             {payTarget && (
               <p className="text-[11px] text-muted-foreground">
-                Payments go to <span className="font-mono text-foreground">{shortHex(payToConfigValue(payTarget), 10, 6)}</span>.
+                Payments go to <span className="font-mono text-foreground">{shortHex(payToValue(payTarget), 10, 6)}</span>.
               </p>
             )}
           </CardContent>
@@ -550,10 +575,10 @@ export function BuildWizard() {
                 <p className="text-xs text-muted-foreground">1. Start the self-hosted facilitator (CasCet checkout):</p>
                 <div className="relative">
                   <div className="absolute right-2 top-2">
-                    <CopyButton text={FACILITATOR_HOWTO} />
+                    <CopyButton text={howto} />
                   </div>
                   <pre className="overflow-x-auto rounded-lg border bg-background/50 p-3 pr-12 font-mono text-[11.5px] leading-relaxed">
-                    {FACILITATOR_HOWTO}
+                    {howto}
                   </pre>
                 </div>
               </div>
