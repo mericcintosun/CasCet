@@ -243,7 +243,11 @@ export interface PayingFetchOptions {
    * Forwarded as X-CASCET-PARENT-ID so downstream receipts join the chain.
    */
   parentId?: string;
-  /** Called after each payment authorization has been signed. */
+  /**
+   * Called after each payment authorization has been signed. It cannot refuse
+   * the payment: what it throws is logged and the signed payment is sent. Use
+   * `networks`, the allowlists and the budget to restrict what is paid.
+   */
   onPayment?: (info: PaymentInfo) => void;
   /**
    * Deadline for one `fetch` call in ms, covering the first request, the 402,
@@ -299,7 +303,7 @@ export interface PaymentClientOptions {
   signer: ClientCasperSigner;
   /** Authorization styles in order of preference (see PayingFetchOptions.preferStyles). */
   preferStyles?: readonly AuthorizationStyle[];
-  /** Called after each payment authorization has been signed. */
+  /** Called after each payment authorization has been signed; it cannot refuse it (see PayingFetchOptions.onPayment). */
   onPayment?: (info: PaymentInfo) => void;
   /** Receives warnings (default: console.error). */
   log?: (message: string) => void;
