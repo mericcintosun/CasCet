@@ -86,9 +86,11 @@ tools by price and stay within a budget **before** spending anything.
 3. Gateway verifies the authorization with the x402 facilitator, runs the
    upstream tool, and settles through the facilitator only if the tool
    succeeded, then returns the MCP result. A failed call is never charged.
-   A gateway MAY mark tools that are expensive or have side effects as
-   settle-before-execute: such a tool is settled first and runs only after
-   settlement succeeds.
+   A gateway MAY mark tools that are expensive, have side effects, or buy
+   from other paid tools (cascades) as settle-before-execute: such a tool is
+   settled first and runs only after settlement succeeds. Otherwise an
+   authorization that verifies but then fails to settle gets the call for
+   free, and a cascading tool would already have paid its own suppliers.
 
 On success the gateway MUST return the response header:
 

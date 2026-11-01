@@ -260,8 +260,9 @@ Then edit `cascet.config.json`:
   (name `CasCet X402 Token`, version `1`, 9 decimals).
 - `facilitator.url`: the facilitator that verifies and settles payments.
 - `pricing.tools`: a price per tool. Add `"settleBeforeExecute": true` to tools
-  that are expensive or have side effects: they then run only after the payment
-  has settled on-chain.
+  that are expensive, have side effects, or buy from other paid tools
+  (cascades): they then run only after the payment has settled on-chain. The
+  trade-off: such a call stays charged if the tool then fails.
 - `pricing.freeTools`: tools that stay free. Every upstream tool that is neither
   priced nor listed here is hidden from `tools/list` and rejected.
 

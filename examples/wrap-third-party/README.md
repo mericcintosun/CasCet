@@ -14,6 +14,15 @@ and sells **three** of the server's tools per call over x402:
 Prices are converted at `asset.tokensPerUsd` (50 tokens per USD) with 9
 decimals, so 1 token is 1,000,000,000 raw units.
 
+`trigger-long-running-operation` is paid before it runs: the gateway waits
+until the settlement has executed on-chain, then starts the job, which runs for
+`duration` seconds (10 by default; the buyer picks the value). If settlement and
+`duration` together take longer than the bridge's per-call deadline
+(`CASCET_TIMEOUT_MS`, 30 s by default), the payment is final but the result
+never reaches the MCP host. Step 5 therefore raises the deadline to 90 s. Keep
+`duration` well below that, and below the gateway's upstream timeout
+(`timeouts.upstreamMs`, 60 s by default).
+
 `get-tiny-image` stays free because it is listed in `pricing.freeTools`.
 Every other tool of the upstream server is neither priced nor free, so the
 gateway hides it from `tools/list` and rejects calls to it. That matters here:
@@ -86,19 +95,23 @@ node packages/cli/dist/cli.js wrap examples/wrap-third-party/cascet.config.json
 # 4. Discover the paid tools (x402 Bazaar format).
 curl http://127.0.0.1:4410/.well-known/x402.json
 
-# 5. Point an MCP host at the gateway through the paying bridge.
+# 5. The paying bridge. Your MCP host starts it: register this command and
+#    these variables (with absolute paths) as a stdio MCP server, as shown under
+#    "Point an agent at it" in the main README.
 CASCET_KEY_PATH=tools/e2e/keys/agent.pem \
 CASCET_NETWORK=casper:casper-test \
 CASCET_ALLOWED_PAYTO=<the 00... value from step 1> \
 CASCET_ALLOWED_ASSETS=hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3 \
 CASCET_MAX_PER_CALL=2500000000 \
 CASCET_MAX_SESSION=10000000000 \
+CASCET_TIMEOUT_MS=90000 \
 node packages/cli/dist/cli.js connect http://127.0.0.1:4410/mcp
 ```
 
 `connect` refuses to start without the payTo and asset allowlists and without
 both budgets. The bridge then pays only this seller, only in this token, only
-on testnet, at most 2.5 tokens per call and 10 tokens per session.
+on testnet, at most 2.5 tokens per call and 10 tokens per session, and gives
+each call up to 90 s.
 
 If the facilitator should be reachable from anywhere but this machine, start
 it with a secret `CASCET_FACILITATOR_TOKEN` and put the same value in
