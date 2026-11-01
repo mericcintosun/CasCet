@@ -89,15 +89,23 @@ export const corsSchema = z
   })
   .prefault({});
 
-/** Network timeouts of the gateway, in milliseconds. */
+/**
+ * Network timeouts of the gateway, in milliseconds.
+ *
+ * A paid call in the default run-then-settle mode can take up to
+ * facilitatorMs + upstreamMs + settleMs (165 s with the defaults) before the
+ * gateway answers, so buyers must wait longer than that: a buyer that gives up
+ * earlier may still be charged without receiving the result.
+ */
 export const timeoutsSchema = z
   .object({
     /** Facilitator /verify and /supported calls. */
     facilitatorMs: z.number().int().positive().default(15_000),
     /**
      * Facilitator /settle call. Longer than `facilitatorMs` because a Casper
-     * facilitator only answers once the transfer has executed on-chain; when
-     * it expires the outcome is recorded as "unknown", never as failed.
+     * facilitator only answers once the transfer has executed on-chain
+     * (casper-x402 polls for up to 60 s); when it expires the outcome is
+     * recorded as "unknown", never as failed.
      */
     settleMs: z.number().int().positive().default(90_000),
     /** One upstream MCP request (tools/list page, tools/call). */
