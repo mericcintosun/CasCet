@@ -76,6 +76,12 @@ const analystConfig: CascetConfig = cascetConfigSchema.parse({
     env: {
       DATA_GATEWAY_URL: "http://localhost:4402/mcp",
       CASCET_KEY_PATH: resolve(KEYS, "analyst.pem"),
+      // The analyst pays with its own wallet: pin the data seller and cap the spend.
+      CASCET_NETWORK: "casper:casper-test",
+      CASCET_ALLOWED_PAYTO: SELLER_DATA_ACCOUNT_HASH,
+      CASCET_ALLOWED_ASSETS: X402_TOKEN,
+      CASCET_MAX_PER_CALL: "1000000000", // $0.02 (the dearest data tool) at 50 tokens/USD, 9 decimals
+      CASCET_MAX_SESSION: "5000000000", // one analysis never spends more than it earns ($0.10)
     },
   },
   network: "casper:casper-test",
