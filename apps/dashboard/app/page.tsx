@@ -496,7 +496,7 @@ function Roadmap() {
         "5 Odra contracts; real x402 settlement, no mock.",
         "CascadeController: budget-bounded cascades + recursive attribution.",
         "Autonomous LLM buyer, live dashboard, cascade playground, and a proposed x402-MCP spec.",
-        "CLI + libraries published on npm: npx @cascet/cli.",
+        "CLI + libraries published on npm (@cascet/cli, core, client, gateway).",
       ],
     },
     {
@@ -515,6 +515,7 @@ function Roadmap() {
       when: "Q4 2026",
       title: "Monetization & control plane",
       points: [
+        "@cascet/* 0.1.1: the fixes from the 2026-10-20 internal review; cascet connect requires allowlists and caps.",
         "An external security audit of the contracts and the payment path.",
         "A protocol take-rate on settled volume: the business model.",
         "Hosted CasCet control plane: register a server, get a paid endpoint + dashboard in one step.",

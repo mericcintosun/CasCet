@@ -19,7 +19,7 @@ export default function BuildPage() {
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
             Fill in your server, the account hash that receives payments, a token and facilitator that can settle, and per-tool
             prices. CasCet generates a validated <code className="text-xs">cascet.config.json</code> and the exact{" "}
-            <code className="text-xs">npx @cascet/cli</code> commands — no code changes to your tools.
+            <code className="text-xs">@cascet/cli</code> commands — no code changes to your tools.
           </p>
         </div>
 

@@ -13,12 +13,26 @@ import type { KeyConversion, PayeeInput } from "./casper/keys";
 
 export const CLI_PACKAGE = "@cascet/cli";
 /**
- * Version the generated commands run. "latest" until the release that carries
- * the buyer-side allowlist and budget enforcement is published; the release
- * step pins it to that exact version (0.1.0 on npm predates those checks).
+ * The exact @cascet/cli release every command on this site runs: the first
+ * one that enforces CASCET_NETWORK, the payee and token allowlists, the
+ * budgets and tool pins, and has `account-hash` (SECURITY.md: 0.1.0 is
+ * unsupported). Never "latest" or an open range: npm's latest is 0.1.0, which
+ * silently ignores those settings, and an MCP host runs this command with the
+ * wallet key at every start, so it must not float to whatever is published
+ * next. Until this version is on npm, npx stops with ETARGET instead of
+ * running 0.1.0. Raise it on purpose, together with README.md and SECURITY.md.
  */
-export const CLI_VERSION = "latest";
+export const CLI_VERSION = "0.1.1";
 export const CLI_SPEC = `${CLI_PACKAGE}@${CLI_VERSION}`;
+
+/**
+ * `npx <spec> <args>` as a copy-paste shell line. The spec is shell-quoted, so
+ * a range ("^", ">") can never act as a shell operator. `args` must already be
+ * shell-safe (quote user input with `shellQuote`).
+ */
+export function cliCommand(args: string, spec: string = CLI_SPEC): string {
+  return `npx ${shellQuote(spec)} ${args}`;
+}
 
 export const CONNECT_NETWORKS = {
   /** `cascetToken`: CasCet's x402 payment token (Cep18X402) on that network, as a hint for the asset allowlist. */
@@ -130,7 +144,7 @@ export function shellQuote(value: string): string {
 
 export function buildShellCommand(s: ConnectSettings): string {
   const lines = connectEnv(s).map(([k, v]) => `${k}=${shellQuote(v)} \\`);
-  lines.push(`npx ${CLI_SPEC} connect ${shellQuote(s.gatewayUrl)}`);
+  lines.push(cliCommand(`connect ${shellQuote(s.gatewayUrl)}`));
   return lines.join("\n");
 }
 
@@ -144,7 +158,8 @@ export function buildMcpConfig(s: ConnectSettings): McpClientConfig {
     mcpServers: {
       [sanitizeServerName(s.serverName)]: {
         command: "npx",
-        // -y: an MCP host cannot answer npx's install prompt.
+        // -y: an MCP host cannot answer npx's install prompt. CLI_SPEC is an exact version: the host
+        // runs this with the wallet key at every start, so it never floats to a new release.
         args: ["-y", CLI_SPEC, "connect", s.gatewayUrl],
         env: Object.fromEntries(connectEnv(s)),
       },

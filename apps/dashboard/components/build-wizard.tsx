@@ -21,7 +21,8 @@ import { CopyButton } from "@/components/copy-button";
 import { CONTRACTS } from "@/lib/economy";
 import { accountHashFromPublicKey } from "@/lib/casper/account-hash";
 import { CONTRACT_PAYEE_UNSUPPORTED, parseAssetInput, parsePayeeInput, payToValue } from "@/lib/casper/keys";
-import { CLI_SPEC, rawToTokens } from "@/lib/connect-config";
+import { cliCommand, rawToTokens, shellQuote } from "@/lib/connect-config";
+import { CliPinNote } from "@/components/cli-pin-note";
 import { shortHex } from "@/lib/utils";
 
 /**
@@ -275,10 +276,11 @@ export function BuildWizard() {
     asset.ok ? asset.hash : null,
   );
 
+  // The server name is user input: shell-quoted like everything else that is copied into a terminal.
   const sellerCommands = [
-    `npx ${CLI_SPEC} init ${s.name.trim() || "my-paid-mcp"}`,
+    cliCommand(`init ${shellQuote(s.name.trim() || "my-paid-mcp")}`),
     `# replace the generated cascet.config.json with the one on this page (or download it)`,
-    `npx ${CLI_SPEC} wrap                       # your MCP server is now paid`,
+    `${cliCommand("wrap")}   # your MCP server is now paid`,
   ].join("\n");
 
   return (
@@ -331,7 +333,7 @@ export function BuildWizard() {
                 <>
                   x402 pays an <span className="text-foreground">account hash</span>, not a public key: <code>00</code> + 64 hex or{" "}
                   <code>account-hash-…</code>. Paste a public key (<code>01…</code> / <code>02…</code>) and it is converted here, or run{" "}
-                  <code>npx @cascet/cli account-hash &lt;public-key&gt;</code>. A contract package (<code>hash-…</code>) cannot
+                  <code>{cliCommand("account-hash <public-key>")}</code>. A contract package (<code>hash-…</code>) cannot
                   receive x402 payments yet.
                 </>
               }
@@ -595,6 +597,7 @@ export function BuildWizard() {
                 </pre>
               </div>
             </div>
+            <CliPinNote />
             <p className="text-[11px] leading-relaxed text-muted-foreground">
               Buyer bridges only talk to a remote gateway over https, so publish yours behind an HTTPS reverse proxy. A hosted control
               plane is on the roadmap; today you run the open-source CLI yourself.

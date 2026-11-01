@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ArrowRight, Coins, Eye, Wallet } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CopyButton } from "@/components/copy-button";
+import { cliCommand } from "@/lib/connect-config";
 
 type Flow = {
   key: string;
@@ -26,11 +27,14 @@ const FLOWS: Flow[] = [
         tool code stays untouched.
       </>
     ),
-    code: `npx @cascet/cli init          # writes cascet.config.json
-# payTo = your ACCOUNT HASH (00…), not your public key:
-npx @cascet/cli account-hash 01ab…   # prints it for a public key
-# then set per-tool prices and a facilitator that can settle your token
-npx @cascet/cli wrap          # your server is now paid`,
+    // Every command runs the one pinned @cascet/cli release (M13): never latest, which is the unsupported 0.1.0.
+    code: [
+      `${cliCommand("init")}          # writes cascet.config.json`,
+      "# payTo = your ACCOUNT HASH (00…), not your public key:",
+      `${cliCommand("account-hash 01ab…")}   # prints it for a public key`,
+      "# then set per-tool prices and a facilitator that can settle your token",
+      `${cliCommand("wrap")}          # your server is now paid`,
+    ].join("\n"),
     cta: { label: "Generate your config", href: "/build" },
   },
   {
@@ -49,7 +53,7 @@ CASCET_ALLOWED_PAYTO=00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb6
 CASCET_ALLOWED_ASSETS=cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3 \\
 CASCET_MAX_PER_CALL=1000000000 \\
 CASCET_MAX_SESSION=5000000000 \\
-npx @cascet/cli connect http://localhost:4402/mcp   # the local testnet demo gateway`,
+${cliCommand("connect http://localhost:4402/mcp")}   # the local testnet demo gateway`,
     cta: { label: "Generate yours: allowlists + spending caps", href: "/connect" },
   },
   {

@@ -6,6 +6,8 @@ import {
   buildMcpConfig,
   buildShellCommand,
   CLI_SPEC,
+  CLI_VERSION,
+  cliCommand,
   connectEnv,
   connectWarnings,
   CONTRACT_SELLER_ERROR,
@@ -51,6 +53,20 @@ test("the shell command carries every safety env var and the pinned CLI spec", (
     ].join("\n"),
   );
   assert.deepEqual(connectWarnings(base), []);
+});
+
+test("generated commands pin the hardened CLI release exactly, never latest or 0.1.0 (M13)", () => {
+  // npm's latest is 0.1.0, which ignores CASCET_NETWORK, the allowlists and the tool pins.
+  assert.notEqual(CLI_VERSION, "latest");
+  assert.notEqual(CLI_VERSION, "0.1.0");
+  assert.match(CLI_VERSION, /^\d+\.\d+\.\d+$/, "an exact version, not a tag or a range");
+  assert.equal(CLI_SPEC, `@cascet/cli@${CLI_VERSION}`);
+  assert.equal(buildShellCommand(base).split("\n").at(-1), `npx ${shellQuote(CLI_SPEC)} connect https://gw.example.com/mcp`);
+  assert.deepEqual(buildMcpConfig(base).mcpServers["my-gateway"]!.args.slice(0, 2), ["-y", CLI_SPEC]);
+  // The spec goes through shell quoting, so a range can never act as a redirect or glob.
+  assert.equal(cliCommand("connect x", "@cascet/cli@>0.1.0"), "npx '@cascet/cli@>0.1.0' connect x");
+  assert.equal(cliCommand("init x", "@cascet/cli@^0.1.1"), "npx '@cascet/cli@^0.1.1' init x");
+  assert.equal(cliCommand("wrap"), `npx ${CLI_SPEC} wrap`);
 });
 
 test("the MCP client config is the Claude Desktop / Claude Code mcpServers shape", () => {

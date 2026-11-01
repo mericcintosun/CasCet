@@ -14,11 +14,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { CopyButton } from "@/components/copy-button";
 import { SessionSpend } from "@/components/connect/session-spend";
+import { CliPinNote } from "@/components/cli-pin-note";
 import { checkGatewayUrl, parseAssetInput, parsePayeeInput } from "@/lib/casper/keys";
 import {
   allowedPayToOf,
   buildMcpConfig,
   buildShellCommand,
+  cliCommand,
   CONNECT_NETWORKS,
   connectWarnings,
   needsBudgetOverride,
@@ -284,7 +286,7 @@ export function ConnectBuilder() {
                 <>
                   One per line: an account hash (<code>00…</code> or <code>account-hash-…</code>) or a seller&apos;s public key (
                   <code>01…</code>/<code>02…</code>, converted here). Get a seller&apos;s value with{" "}
-                  <code>npx @cascet/cli account-hash &lt;public-key&gt;</code>. A contract package (<code>hash-…</code>) cannot be
+                  <code>{cliCommand("account-hash <public-key>")}</code>. A contract package (<code>hash-…</code>) cannot be
                   paid and is refused.
                 </>
               }
@@ -397,7 +399,12 @@ export function ConnectBuilder() {
               <Field
                 id="tool-pins"
                 label="Tool pin file (optional)"
-                hint="CASCET_TOOL_PINS; default ~/.cascet/tool-pins.json. A tool whose definition changes is refused until you accept it (--accept-tool-changes)."
+                hint={
+                  <>
+                    CASCET_TOOL_PINS; default <code>~/.cascet/tool-pins.json</code>. A tool whose definition changes is refused until
+                    you review it and pass <code>--accept-tool-changes=&lt;sha256&gt;</code> with the digest the bridge logs.
+                  </>
+                }
               >
                 <Input id="tool-pins" value={s.toolPins} onChange={(e) => set("toolPins", e.target.value)} placeholder="~/.cascet/tool-pins.json" spellCheck={false} />
               </Field>
@@ -483,6 +490,7 @@ export function ConnectBuilder() {
                     </p>
                   </TabsContent>
                 </Tabs>
+                <CliPinNote className="mt-3" />
               </CardContent>
             </Card>
           </>
