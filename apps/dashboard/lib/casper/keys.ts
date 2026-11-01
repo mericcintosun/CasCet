@@ -85,6 +85,35 @@ export function payToValue(target: { kind: "account" | "package"; hash: string }
 export const CONTRACT_PAYEE_UNSUPPORTED =
   "x402 on Casper pays account hashes only: casper-x402 1.0.0, which Casper's x402 facilitators run, settles every payTo as an account hash, so a payment to a contract package never reaches it";
 
+export interface ResolvedPayTo {
+  /** "00" + account hash: the only payTo /build ever writes. Null while the payee is not usable. */
+  payTo: string | null;
+  /** Why there is no payTo yet. It blocks copying and downloading the config. */
+  issue: string | null;
+}
+
+/**
+ * The payTo /build writes for what the seller typed. An account hash is used as
+ * is and a public key once converted (`conversion`). Anything else, including a
+ * public key whose conversion is pending or failed and a contract package,
+ * yields no payTo at all, never the raw input (M01).
+ */
+export function resolvePayTo(payee: PayeeInput, conversion?: KeyConversion): ResolvedPayTo {
+  switch (payee.kind) {
+    case "account":
+      return { payTo: payToValue(payee), issue: null };
+    case "public-key":
+      if (conversion && "hash" in conversion) return { payTo: payToValue({ kind: "account", hash: conversion.hash }), issue: null };
+      return { payTo: null, issue: conversion && "error" in conversion ? conversion.error : "converting the public key…" };
+    case "package":
+      return { payTo: null, issue: `${CONTRACT_PAYEE_UNSUPPORTED}. Enter the account hash that should receive the payments.` };
+    case "invalid":
+      return { payTo: null, issue: payee.reason };
+    case "empty":
+      return { payTo: null, issue: "enter the seller's account hash (00 + 64 hex), or paste a public key to convert it" };
+  }
+}
+
 export type AssetInput = { ok: true; hash: string } | { ok: false; empty: boolean; reason: string };
 
 /** Normalise a CEP-18 package hash ("hash-…", "contract-package-…" or bare 64 hex) to bare lower-case hex. */

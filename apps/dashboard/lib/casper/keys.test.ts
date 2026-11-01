@@ -7,8 +7,14 @@ import {
   parseAssetInput,
   parsePayeeInput,
   payToValue,
+  resolvePayTo,
 } from "./keys";
-import { accountHashFromPublicKey } from "./account-hash";
+import {
+  accountHashFromPublicKey,
+  conversionError,
+  createAccountHashConverter,
+  KeyConverterUnavailableError,
+} from "./account-hash";
 
 const H = "fcf6bc94cef41aab24599669d62e919f0c65382a1bb734ae5e57706b997093ca";
 // Real testnet payee from lib/casper/constants.ts: this ed25519 key hashes to H.
@@ -50,6 +56,25 @@ test("payees are written as 00… or hash-…, never as a raw 01… that reads a
   }
 });
 
+test("/build writes a payTo only from an account hash, never from the raw input (M01)", () => {
+  assert.deepEqual(resolvePayTo(parsePayeeInput(`account-hash-${H}`)), { payTo: `00${H}`, issue: null });
+  const key = parsePayeeInput(ED_KEY);
+  // Converted: the account hash, never the key.
+  assert.deepEqual(resolvePayTo(key, { hash: H }), { payTo: `00${H}`, issue: null });
+  // Pending, failed to load, or invalid: no payTo at all, so the raw 01… can never reach the config.
+  assert.deepEqual(resolvePayTo(key), { payTo: null, issue: "converting the public key…" });
+  assert.deepEqual(resolvePayTo(key, { pending: true }), { payTo: null, issue: "converting the public key…" });
+  const offline = { error: "could not load the key converter: check your connection and retry", retryable: true };
+  assert.deepEqual(resolvePayTo(key, offline), { payTo: null, issue: offline.error });
+  assert.equal(resolvePayTo(key, { error: "not a valid Casper public key", retryable: false }).payTo, null);
+  // A contract package cannot be paid by x402 today.
+  const pkg = resolvePayTo(parsePayeeInput(`hash-${H}`));
+  assert.equal(pkg.payTo, null);
+  assert.match(pkg.issue ?? "", /account hash/);
+  assert.equal(resolvePayTo(parsePayeeInput(H)).payTo, null, "an ambiguous bare 64-hex value");
+  assert.equal(resolvePayTo(parsePayeeInput("")).payTo, null);
+});
+
 test("asset package hashes normalise to bare lower-case hex", () => {
   assert.deepEqual(parseAssetInput(`hash-${H.toUpperCase()}`), { ok: true, hash: H });
   assert.deepEqual(parseAssetInput(`contract-package-${H}`), { ok: true, hash: H });
@@ -70,6 +95,33 @@ test("public key → account hash with casper-js-sdk matches the known testnet p
   assert.equal(await accountHashFromPublicKey(ED_KEY), H);
   assert.equal(await accountHashFromPublicKey(SECP_KEY.toUpperCase()), SECP_HASH);
   await assert.rejects(accountHashFromPublicKey(`01${H.slice(2)}`));
+});
+
+test("a converter that fails to load is retryable and not cached; an invalid key is a final error", async () => {
+  let loads = 0;
+  const convert = createAccountHashConverter(async () => {
+    loads += 1;
+    if (loads === 1) throw new Error("ChunkLoadError: loading chunk failed");
+    return import("casper-js-sdk");
+  });
+  // First load fails (offline, blocked chunk): reported as unavailable, which the UI offers to retry.
+  const offline = await convert(ED_KEY).catch((e: unknown) => e);
+  assert.ok(offline instanceof KeyConverterUnavailableError);
+  assert.deepEqual(conversionError(offline), {
+    error: "could not load the key converter: check your connection and retry",
+    retryable: true,
+  });
+  // The rejected load was not cached: the next conversion loads the SDK again and works.
+  assert.equal(await convert(ED_KEY), H);
+  assert.equal(await convert(SECP_KEY), SECP_HASH);
+  assert.equal(loads, 2, "a good load is cached");
+  // A bad key is not a load failure: final, not retryable.
+  const bad = await convert(`01${H.slice(2)}`).catch((e: unknown) => e);
+  assert.ok(bad instanceof Error && !(bad instanceof KeyConverterUnavailableError));
+  assert.deepEqual(conversionError(bad), { error: "not a valid Casper public key", retryable: false });
+  // A module without PublicKey is treated as a failed load.
+  const broken = createAccountHashConverter(async () => ({}));
+  await assert.rejects(broken(ED_KEY), KeyConverterUnavailableError);
 });
 
 test("gateway URLs: https anywhere, http only on loopback, no credentials", () => {

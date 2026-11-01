@@ -54,15 +54,21 @@ export function SessionSpend({
     () => [...new Set(feed.receipts.map((r) => r.payer.toLowerCase()).filter((p) => parsePayeeInput(p).kind === "public-key"))],
     [feed.receipts],
   );
-  const lookups = useAccountHashes(payer.kind === "public-key" ? [...receiptKeys, payer.publicKey] : receiptKeys);
+  const { conversions: lookups, retry: retryLookups } = useAccountHashes(
+    payer.kind === "public-key" ? [...receiptKeys, payer.publicKey] : receiptKeys,
+  );
 
   let target: string | null = null;
   let payerError: string | null = null;
+  let payerRetryable = false;
   if (payer.kind === "account") target = payer.hash;
   else if (payer.kind === "public-key") {
     const c = lookups.get(payer.publicKey);
     if (c && "hash" in c) target = c.hash;
-    else if (c && "error" in c) payerError = c.error;
+    else if (c && "error" in c) {
+      payerError = c.error;
+      payerRetryable = c.retryable;
+    }
   } else if (payer.kind === "package") payerError = "a contract package cannot be a payer; enter the agent's account hash or public key";
   else if (payer.kind === "invalid") payerError = payer.reason;
 
@@ -113,7 +119,14 @@ export function SessionSpend({
             aria-invalid={Boolean(payerError)}
           />
           {payerError ? (
-            <p className="text-xs text-destructive">{payerError}</p>
+            <p className="flex flex-wrap items-center gap-2 text-xs text-destructive">
+              {payerError}
+              {payerRetryable && (
+                <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={retryLookups}>
+                  Retry
+                </Button>
+              )}
+            </p>
           ) : payer.kind === "public-key" && target ? (
             <p className="break-all font-mono text-[11px] text-muted-foreground">account hash 00{target}</p>
           ) : null}

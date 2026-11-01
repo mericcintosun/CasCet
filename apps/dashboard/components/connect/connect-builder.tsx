@@ -127,7 +127,7 @@ export function ConnectBuilder() {
     () => sellerEntries.flatMap((e) => (e.parsed.kind === "public-key" ? [e.parsed.publicKey] : [])),
     [sellerEntries],
   );
-  const converted = useAccountHashes(sellerKeys);
+  const { conversions: converted, retry: retryConversions } = useAccountHashes(sellerKeys);
   const sellerRows = sellerEntries.map(({ input, parsed }) =>
     sellerRow(input, parsed, parsed.kind === "public-key" ? converted.get(parsed.publicKey) : undefined),
   );
@@ -326,6 +326,11 @@ export function ConnectBuilder() {
                         <span className={r.pending ? "text-muted-foreground" : "min-w-0 text-destructive"}>
                           {r.pending ? "converting…" : r.error}
                         </span>
+                        {r.retryable && (
+                          <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={retryConversions}>
+                            Retry
+                          </Button>
+                        )}
                       </>
                     )}
                   </li>

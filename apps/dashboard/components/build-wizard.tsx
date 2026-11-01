@@ -19,10 +19,10 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CopyButton } from "@/components/copy-button";
 import { CONTRACTS } from "@/lib/economy";
-import { accountHashFromPublicKey } from "@/lib/casper/account-hash";
-import { CONTRACT_PAYEE_UNSUPPORTED, parseAssetInput, parsePayeeInput, payToValue } from "@/lib/casper/keys";
+import { parseAssetInput, parsePayeeInput, resolvePayTo } from "@/lib/casper/keys";
 import { cliCommand, rawToTokens, shellQuote } from "@/lib/connect-config";
 import { CliPinNote } from "@/components/cli-pin-note";
+import { useAccountHashes } from "@/lib/use-account-hashes";
 import { shortHex } from "@/lib/utils";
 
 /**
@@ -105,8 +105,6 @@ const PRESETS: Record<Settlement, Partial<FormState>> = {
   hosted: { assetPackageHash: "", assetName: "", assetSymbol: "", assetDecimals: "9", facilitatorUrl: DEFAULT_FACILITATOR_URL },
 };
 
-type Conversion = { publicKey: string; accountHash?: string; error?: string };
-
 const splitList = (s: string): string[] => [...new Set(s.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean))];
 
 function Field({ id, label, hint, children }: { id: string; label: string; hint?: React.ReactNode; children: React.ReactNode }) {
@@ -127,39 +125,12 @@ export function BuildWizard() {
 
   // ── payTo: account hash in, public key converted client-side (M01 / M41) ──
   const payee = React.useMemo(() => parsePayeeInput(s.payTo), [s.payTo]);
-  const [conversion, setConversion] = React.useState<Conversion | null>(null);
-  React.useEffect(() => {
-    if (payee.kind !== "public-key") {
-      setConversion(null);
-      return;
-    }
-    let alive = true;
-    const publicKey = payee.publicKey;
-    setConversion({ publicKey });
-    accountHashFromPublicKey(publicKey)
-      .then((accountHash) => alive && setConversion({ publicKey, accountHash }))
-      .catch(() => alive && setConversion({ publicKey, error: "this is not a valid Casper public key" }));
-    return () => {
-      alive = false;
-    };
-  }, [payee]);
-
-  const payTarget =
-    payee.kind === "account" || payee.kind === "package"
-      ? payee
-      : payee.kind === "public-key" && conversion?.publicKey === payee.publicKey && conversion.accountHash
-        ? ({ kind: "account", hash: conversion.accountHash } as const)
-        : null;
-  const payToIssue =
-    payee.kind === "empty"
-      ? "enter the seller's account hash (00 + 64 hex), or paste a public key to convert it"
-      : payee.kind === "invalid"
-        ? payee.reason
-        : payee.kind === "package"
-          ? `${CONTRACT_PAYEE_UNSUPPORTED}. Enter the account hash that should receive the payments.`
-          : payee.kind === "public-key" && !payTarget
-            ? conversion?.error ?? "converting the public key…"
-            : null;
+  const { conversions, retry: retryConversion } = useAccountHashes(payee.kind === "public-key" ? [payee.publicKey] : []);
+  const conversion = payee.kind === "public-key" ? conversions.get(payee.publicKey) : undefined;
+  const convertedHash = conversion && "hash" in conversion ? conversion.hash : null;
+  const conversionFailure = conversion && "error" in conversion ? conversion : null;
+  // The account hash that receives the payments, or null with the reason. Never the raw input (M01).
+  const { payTo, issue: payToIssue } = resolvePayTo(payee, conversion);
 
   const asset = React.useMemo(() => parseAssetInput(s.assetPackageHash), [s.assetPackageHash]);
   const freeTools = React.useMemo(() => splitList(s.freeTools), [s.freeTools]);
@@ -178,7 +149,7 @@ export function BuildWizard() {
       name: s.name.trim(),
       upstream,
       network: NETWORK_CASPER_TESTNET,
-      payTo: payTarget ? payToValue(payTarget) : s.payTo.trim(),
+      payTo: payTo ?? "",
       asset: {
         packageHash: asset.ok ? `hash-${asset.hash}` : s.assetPackageHash.trim(),
         name: s.assetName.trim(),
@@ -198,7 +169,7 @@ export function BuildWizard() {
       },
       port: Number(s.port || DEFAULT_GATEWAY_PORT),
     };
-  }, [s, payTarget, asset, freeTools]);
+  }, [s, payTo, asset, freeTools]);
 
   const json = React.useMemo(() => JSON.stringify(config, null, 2), [config]);
 
@@ -260,9 +231,9 @@ export function BuildWizard() {
     return raw !== null && (m === null || raw > m) ? raw : m;
   }, null);
   const connectHref = (() => {
-    const q = new URLSearchParams({ gateway: `http://localhost:${s.port || DEFAULT_GATEWAY_PORT}/mcp`, network: "testnet" });
-    // /connect only allowlists account hashes; a contract package would be refused there.
-    if (payTarget?.kind === "account") q.set("seller", payToValue(payTarget));
+    // /connect always starts on testnet and only allowlists account hashes (payTo is one).
+    const q = new URLSearchParams({ gateway: `http://localhost:${s.port || DEFAULT_GATEWAY_PORT}/mcp` });
+    if (payTo) q.set("seller", payTo);
     if (asset.ok) q.set("asset", asset.hash);
     if (maxPrice !== null) {
       q.set("perCall", rawToTokens(maxPrice, decimals));
@@ -271,10 +242,7 @@ export function BuildWizard() {
     return `/connect?${q.toString()}`;
   })();
 
-  const howto = facilitatorHowto(
-    payTarget?.kind === "account" ? payToValue(payTarget) : null,
-    asset.ok ? asset.hash : null,
-  );
+  const howto = facilitatorHowto(payTo, asset.ok ? asset.hash : null);
 
   // The server name is user input: shell-quoted like everything else that is copied into a terminal.
   const sellerCommands = [
@@ -343,33 +311,40 @@ export function BuildWizard() {
                 value={s.payTo}
                 onChange={(e) => set("payTo", e.target.value)}
                 placeholder="00… account hash, or a 01… / 02… public key"
-                aria-invalid={payee.kind === "invalid" || Boolean(conversion?.error)}
+                aria-invalid={payee.kind === "invalid" || payee.kind === "package" || Boolean(conversionFailure)}
                 spellCheck={false}
                 autoComplete="off"
                 className="font-mono text-xs"
               />
             </Field>
             {payee.kind === "public-key" && (
-              <Alert variant={conversion?.error ? "destructive" : "default"} role="status">
-                {conversion?.accountHash ? <ArrowRightLeft /> : conversion?.error ? <TriangleAlert /> : <Loader2 className="animate-spin" />}
+              <Alert variant={conversionFailure ? "destructive" : "default"} role="status">
+                {convertedHash ? <ArrowRightLeft /> : conversionFailure ? <TriangleAlert /> : <Loader2 className="animate-spin" />}
                 <AlertTitle>
-                  {conversion?.accountHash
+                  {convertedHash
                     ? "Public key converted to its account hash"
-                    : conversion?.error
-                      ? "Could not convert this public key"
-                      : "Converting the public key…"}
+                    : conversionFailure?.retryable
+                      ? "Could not load the key converter"
+                      : conversionFailure
+                        ? "Could not convert this public key"
+                        : "Converting the public key…"}
                 </AlertTitle>
                 <AlertDescription className="space-y-1 break-all font-mono text-[11px]">
                   <div>
                     <span className="text-muted-foreground">public key ({payee.algorithm}): </span>
                     {payee.publicKey}
                   </div>
-                  {conversion?.accountHash && (
+                  {convertedHash && (
                     <div>
-                      <span className="text-muted-foreground">payTo (account hash): </span>00{conversion.accountHash}
+                      <span className="text-muted-foreground">payTo (account hash): </span>00{convertedHash}
                     </div>
                   )}
-                  {conversion?.error && <div>{conversion.error}</div>}
+                  {conversionFailure && <div>{conversionFailure.error}</div>}
+                  {conversionFailure?.retryable && (
+                    <Button type="button" size="sm" variant="outline" className="mt-1 font-sans" onClick={retryConversion}>
+                      Retry
+                    </Button>
+                  )}
                 </AlertDescription>
               </Alert>
             )}
@@ -536,16 +511,30 @@ export function BuildWizard() {
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="relative">
+              {/* No copy or download while the payee is unresolved: a config must never leave this page with a
+                  public key, an unconverted value or a contract package as its payTo (M01). */}
               <div className="absolute right-2 top-2 flex gap-1.5">
-                <CopyButton text={json} />
-                <a
-                  href={`data:application/json;charset=utf-8,${encodeURIComponent(json + "\n")}`}
-                  download="cascet.config.json"
-                  aria-label="Download cascet.config.json"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/70 bg-background/40 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
-                >
-                  <Download className="h-4 w-4" />
-                </a>
+                <CopyButton text={json} disabled={Boolean(payToIssue)} disabledReason="fix the payTo first" />
+                {payToIssue ? (
+                  <button
+                    type="button"
+                    disabled
+                    title="fix the payTo first"
+                    aria-label="Download cascet.config.json (unavailable: fix the payTo first)"
+                    className="inline-flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-md border border-border/70 bg-background/40 text-muted-foreground opacity-50"
+                  >
+                    <Download className="h-4 w-4" />
+                  </button>
+                ) : (
+                  <a
+                    href={`data:application/json;charset=utf-8,${encodeURIComponent(json + "\n")}`}
+                    download="cascet.config.json"
+                    aria-label="Download cascet.config.json"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/70 bg-background/40 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+                  >
+                    <Download className="h-4 w-4" />
+                  </a>
+                )}
               </div>
               <pre className="max-h-[22rem] overflow-auto rounded-lg border bg-background/50 p-3 pr-20 font-mono text-[11.5px] leading-relaxed tabular-nums">
                 {json}
@@ -560,9 +549,9 @@ export function BuildWizard() {
                 ))}
               </ul>
             )}
-            {payTarget && (
+            {payTo && (
               <p className="text-[11px] text-muted-foreground">
-                Payments go to <span className="font-mono text-foreground">{shortHex(payToValue(payTarget), 10, 6)}</span>.
+                Payments go to <span className="font-mono text-foreground">{shortHex(payTo, 10, 6)}</span>.
               </p>
             )}
           </CardContent>
