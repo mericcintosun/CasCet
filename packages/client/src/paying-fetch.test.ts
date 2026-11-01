@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import casperSdk from "casper-js-sdk";
 import {
+  CASCET_SPEND_CONTROLS,
   createPayingFetch,
   MAX_402_BODY_BYTES,
   PaymentRefusedError,
@@ -189,6 +190,16 @@ describe("createPayingFetch", () => {
     const paying = await make({ networks: ["casper:casper"] });
     const response = await paying.fetch(gateway.url(), { method: "POST", body: "{}" });
     assert.equal(response.status, 200);
+  });
+
+  it("pays tokens x402 does not know as defaults, above x402's $1 default cap (2.29 spend controls)", async () => {
+    // @x402/core 2.29 would only pay its default asset (csprUSD) and drop this offer.
+    assert.deepEqual(CASCET_SPEND_CONTROLS, { allowedAssets: true, maxAmountPerPayment: false });
+    gateway.accepts = [requirement({ asset: ASSET_B, amount: "900000000000000" })];
+    const paying = await make({ allowedAssets: undefined, budget: undefined });
+    const response = await paying.fetch(gateway.url(), { method: "POST", body: "{}" });
+    assert.equal(response.status, 200);
+    assert.deepEqual(paying.spentByAsset?.(), { [ASSET_B]: "900000000000000" });
   });
 
   it("refuses a negative price and leaves the budget untouched (M32)", async () => {

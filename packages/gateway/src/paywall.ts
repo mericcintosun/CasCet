@@ -1,10 +1,10 @@
 import { x402HTTPResourceServer, x402ResourceServer, type RoutesConfig } from "@x402/core/server";
 import type { Network } from "@x402/core/types";
-import { ExactCasperScheme } from "@make-software/casper-x402/exact/server";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { usdPriceToTokenUnits, type CascetConfig, type ToolPrice } from "@cascet/core";
 import { normalizeAccountAddress } from "./authorization.js";
 import { TimeoutFacilitatorClient } from "./facilitator.js";
+import { CascetCasperServerScheme } from "./server-scheme.js";
 
 /** Seconds an authorization must still be valid when settlement starts (inclusion + execution on Casper). */
 export const SETTLE_HEADROOM_SECONDS = 30;
@@ -74,7 +74,7 @@ export async function createPaymentRail(cfg: CascetConfig): Promise<PaymentRail>
     verifyTimeoutMs: cfg.timeouts.facilitatorMs,
     settleTimeoutMs: cfg.timeouts.settleMs,
   });
-  const scheme = new ExactCasperScheme().registerAsset(network, asset, cfg.asset.decimals);
+  const scheme = new CascetCasperServerScheme([{ network, asset, decimals: cfg.asset.decimals }]);
   const resourceServer = new x402ResourceServer(facilitator).register(network, scheme);
   await resourceServer.initialize();
   if (!resourceServer.getSupportedKind(2, network, "exact")) {

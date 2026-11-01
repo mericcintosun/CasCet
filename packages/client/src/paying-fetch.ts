@@ -1,4 +1,5 @@
 import { wrapFetchWithPayment, x402Client, x402HTTPClient } from "@x402/fetch";
+import type { SpendControls } from "@x402/core/client";
 import { createClientCasperSigner } from "@make-software/casper-x402";
 import { ExactCasperScheme } from "@make-software/casper-x402/exact/client";
 import casperSdk from "casper-js-sdk";
@@ -19,11 +20,21 @@ export type { FetchLike } from "./http.js";
 const { KeyAlgorithm } = casperSdk;
 
 /**
- * Largest 402 body handed to @x402/fetch, which reads every 402 body whole
- * (`response.text()`, no limit) before it looks at the PAYMENT-REQUIRED header.
- * CasCet gateways send a few bytes.
+ * Largest 402 body handed to @x402/fetch. @x402/fetch 2.29 caps the bodies it
+ * reads at 1 MiB itself; CasCet gateways send a few bytes, so this client
+ * refuses anything above 64 KiB before x402 sees it.
  */
 export const MAX_402_BODY_BYTES = 64 * 1024;
+
+/**
+ * x402 spend controls of a CasCet client. By default @x402/core 2.29 pays only
+ * assets its scheme recognizes as defaults (for Casper: csprUSD), capped at $1,
+ * and drops every other offer, including CasCet's own tokens and Wrapped CSPR,
+ * before selection. CasCet enforces its own rules in {@link SpendPolicy} (network,
+ * payee and asset allowlists, raw-unit per-call and session budgets, validity
+ * window) on the option x402 selects, so x402's controls are opened up here.
+ */
+export const CASCET_SPEND_CONTROLS: Readonly<SpendControls> = Object.freeze({ allowedAssets: true, maxAmountPerPayment: false });
 
 /** What was authorized, as reported to `onPayment`. */
 export interface PaymentInfo {
@@ -180,6 +191,9 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
   const scheme = new ExactCasperScheme(signer);
   const client = new x402Client();
   for (const network of policy.networks) client.register(network as `${string}:${string}`, scheme);
+  // x402's own spend controls would refuse every token its scheme does not know by default;
+  // CasCet's SpendPolicy (below) enforces the allowlists and the raw-unit budgets instead.
+  client.setSpendControls(CASCET_SPEND_CONTROLS);
 
   // Budget reserved by the policy for each payment being signed, handed back if signing fails.
   const reservations = new PendingReservations<Extract<SpendDecision, { ok: true }>>();
@@ -254,7 +268,7 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
 /**
  * Budget reservations of payments being signed, keyed by the requirements
  * object x402 hands to the before, after and failure hooks of one payment.
- * @x402/core 2.17 passes the same object to all three hooks; a content key
+ * @x402/core (2.17 and 2.29) passes the same object to all three hooks; a content key
  * (network, payTo, asset, amount) still finds the reservation if a later
  * version passes each hook a copy. Payments with the same content reserve the
  * same amount of the same asset, so taking any one of them keeps the budget exact.
