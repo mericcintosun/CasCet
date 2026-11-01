@@ -16,8 +16,15 @@ try {
       void gateway.close().finally(() => process.exit(1));
     },
   });
+  let stopping = false;
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
+      if (stopping) {
+        log.warn(`[gateway] ${signal} again: exiting without waiting for calls in flight`);
+        process.exit(1);
+      }
+      stopping = true;
+      log.info(`[gateway] ${signal}: finishing calls in flight, then exiting (send it again to exit now)`);
       void gateway.close().finally(() => process.exit(0));
     });
   }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { describe, it, mock } from "node:test";
 import { decodePaymentResponseHeader } from "@x402/core/http";
 import { x402HTTPResourceServer } from "@x402/core/server";
@@ -16,6 +16,7 @@ import {
   eventually,
   payFor,
   receipts,
+  rpcCall,
   startHarness,
   type Harness,
 } from "./testing/harness.js";
@@ -647,6 +648,67 @@ describe("settlement preemption", () => {
       const { header } = await payFor(h, "paid_tool");
       assert.equal((await callPaid(h, "paid_tool", header)).status, 402);
       assert.deepEqual(seen, []);
+    });
+  });
+});
+
+describe("receipt log durability", () => {
+  /** Make the receipt log unwritable (a directory where the file was). */
+  const breakLog = (path: string) => {
+    rmSync(path, { force: true });
+    mkdirSync(path);
+  };
+
+  it("still returns the paid result when the receipt cannot be written after settlement", async () => {
+    let onRun = () => {};
+    const tools = [{ name: "paid_tool", handler: () => (onRun(), { content: [{ type: "text" as const, text: "ok:paid_tool" }] }) }];
+    await withHarness({ tools }, async h => {
+      onRun = () => breakLog(h.receiptsPath);
+      const { header } = await payFor(h, "paid_tool");
+      const res = await callPaid(h, "paid_tool", header);
+      assert.equal(res.status, 200, "the buyer paid, so the result is delivered");
+      assert.equal(res.body.result?.content?.[0]?.text, "ok:paid_tool");
+      assert.equal(h.facilitator.count("settle"), 1);
+      const [receipt] = await receipts(h);
+      assert.equal(receipt?.status, "settled", "the receipt is kept in memory");
+    });
+  });
+
+  it("refuses to run a paid call whose authorization cannot be recorded, and accepts it again later", async () => {
+    await withHarness({}, async h => {
+      const { header } = await payFor(h, "paid_tool");
+      breakLog(h.receiptsPath);
+      const refused = await callPaid(h, "paid_tool", header);
+      assert.equal(refused.status, 503);
+      assert.match(refused.body.error?.message ?? "", /nothing was charged/);
+      assert.equal(h.upstream.calls.length, 0);
+      assert.equal(h.facilitator.count("settle"), 0);
+      rmSync(h.receiptsPath, { recursive: true, force: true });
+      writeFileSync(h.receiptsPath, "");
+      assert.equal((await callPaid(h, "paid_tool", header)).status, 200, "the authorization was released");
+    });
+  });
+
+  it("lets a paid call that is settling finish (with its receipt) when the gateway closes", async () => {
+    await withHarness({}, async h => {
+      h.facilitator.onSettle = call => ({
+        delayMs: 300,
+        json: { success: true, transaction: SETTLE_TX, network: "casper:casper-test", payer: call.body?.paymentPayload?.payload?.authorization?.from },
+      });
+      const { header } = await payFor(h, "paid_tool");
+      const pending = callPaid(h, "paid_tool", header);
+      await eventually(() => h.facilitator.count("settle") === 1, 3_000, "settlement to start");
+      const closing = h.gateway.close();
+      const late = await rpcCall(h.gateway.url, "tools/list").then(
+        r => r.status,
+        () => "refused",
+      );
+      assert.ok(late === 503 || late === "refused", `new calls are refused while draining (got ${late})`);
+      const res = await pending;
+      assert.equal(res.status, 200);
+      await closing;
+      const logged = readFileSync(h.receiptsPath, "utf8");
+      assert.match(logged, new RegExp(`"id":"${res.headers.get("x-cascet-payment-id")}"[^\\n]*"status":"settled"`));
     });
   });
 });

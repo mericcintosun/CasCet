@@ -98,6 +98,11 @@ export interface GatewayOptions {
   receiptsPath?: string;
   /** Upstream reconnect policy. */
   reconnect?: Partial<ReconnectPolicy>;
+  /**
+   * How long close() waits for calls in flight (a paid call may be settling) before it cuts
+   * the remaining connections. Default: timeouts.facilitatorMs + upstreamMs + settleMs.
+   */
+  drainTimeoutMs?: number;
 }
 
 export interface GatewayHealth {
@@ -204,6 +209,11 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   let table: ToolTable = buildToolTable(cfg, rail, []);
   let listening = false;
   let closed = false;
+  let closing: Promise<void> | undefined;
+  /** /mcp requests being handled; close() lets them finish (paid calls may be settling). */
+  const inFlight = new Set<Promise<void>>();
+  const drainTimeoutMs =
+    options.drainTimeoutMs ?? cfg.timeouts.facilitatorMs + cfg.timeouts.upstreamMs + cfg.timeouts.settleMs;
 
   const announceOnline = (): void => {
     pushEvent({
@@ -279,6 +289,20 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
 
   // ---------------------------------------------------------------- receipts
 
+  /**
+   * Write a receipt to the log. A failure (disk full, permissions) is logged and
+   * swallowed: by now the payment may have settled, and losing the buyer's result
+   * over a log write would be worse. The receipt stays in memory (/receipts).
+   */
+  function persist(receipt: PaymentReceipt, kind: "add" | "update"): void {
+    try {
+      if (kind === "add") store.add(receipt);
+      else store.update(receipt);
+    } catch (err) {
+      log.error(`[receipts] could not write receipt ${logSafe(receipt.id)} to the receipt log (${logSafe(err)}); kept in memory only`);
+    }
+  }
+
   function recordReceipt(input: {
     id: string;
     tool: string;
@@ -313,12 +337,12 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       settledBy: input.settledBy,
       note: input.note === undefined ? undefined : clip(input.note, 900),
     };
-    store.add(receipt);
+    persist(receipt, "add");
     pushEvent({ type: "receipt", receipt });
     if (receipt.status === "settled" && anchorer) {
       anchorer.enqueue(receipt, anchoredTxHash => {
         receipt.anchoredTxHash = anchoredTxHash;
-        store.update(receipt);
+        persist(receipt, "update");
         pushEvent({ type: "receipt", receipt });
       });
     }
@@ -327,7 +351,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
 
   function annotateReceipt(receipt: PaymentReceipt, note: string): void {
     receipt.note = clip(receipt.note ? `${receipt.note}; ${note}` : note, 900);
-    store.update(receipt);
+    persist(receipt, "update");
     pushEvent({ type: "receipt", receipt });
   }
 
@@ -859,6 +883,13 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   const app = express();
   app.disable("x-powered-by");
 
+  // Shutting down: calls in flight finish, new ones are refused before anything runs.
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    if (!closed) return next();
+    res.set("connection", "close");
+    res.status(503).json(rpcError(null, RPC_INTERNAL_ERROR, "gateway is shutting down; nothing was run or charged"));
+  });
+
   // Browsers: only allowlisted origins, never "*". A request that carries an Origin
   // header that is not allowlisted is refused (MCP Streamable HTTP: DNS rebinding).
   app.use((req: Request, res: Response, next: NextFunction) => {
@@ -916,10 +947,12 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   app.get("/discovery/resources", discoveryHandler);
 
   app.post("/mcp", (req, res) => {
-    void handleMcp(req, res).catch(err => {
+    const handled = handleMcp(req, res).catch(err => {
       log.error(`[gateway] unhandled error on /mcp: ${logSafe(err)}`);
       if (!res.headersSent) res.status(500).json(rpcError(null, RPC_INTERNAL_ERROR, "gateway error"));
     });
+    inFlight.add(handled);
+    void handled.finally(() => inFlight.delete(handled));
   });
   // Stateless JSON endpoint: no SSE stream (GET) and no sessions to delete (DELETE).
   app.all("/mcp", (_req, res) => {
@@ -974,20 +1007,41 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   log.info(`    on-chain settlement check: ${preemption ? "on" : "off (set settlement.nodeUrl to enable)"}`);
   announceOnline();
 
-  async function close(): Promise<void> {
-    if (closed) return;
-    closed = true;
-    pushEvent({ type: "server-offline", server: cfg.name });
-    anchorer?.stop();
-    await new Promise<void>(resolve => {
-      server.close(() => resolve());
+  /**
+   * Stop accepting calls, let the ones in flight finish (a paid call may be settling;
+   * cutting it would leave a settled payment without a receipt), then close the upstream.
+   * Waits at most `drainTimeoutMs`. Idempotent.
+   */
+  function close(): Promise<void> {
+    closing ??= (async () => {
+      closed = true;
+      pushEvent({ type: "server-offline", server: cfg.name });
+      anchorer?.stop();
+      const stopped = new Promise<void>(resolve => server.close(() => resolve()));
       server.closeIdleConnections();
-      setTimeout(() => server.closeAllConnections(), 5_000).unref();
-    });
-    await upstream.close();
+      if (inFlight.size > 0) {
+        log.info(`[gateway] waiting for ${inFlight.size} call(s) in flight (at most ${Math.ceil(drainTimeoutMs / 1_000)} s)`);
+        const drained = await settleWithin(Promise.allSettled([...inFlight]), drainTimeoutMs);
+        if (!drained) log.warn(`[gateway] ${inFlight.size} call(s) still in flight after ${drainTimeoutMs} ms; closing their connections`);
+      }
+      server.closeAllConnections();
+      await stopped;
+      await upstream.close();
+    })();
+    return closing;
   }
 
   return { port: address.port, host: address.address, url, health, close };
+}
+
+/** Whether `promise` settled within `ms`. */
+function settleWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<boolean>(resolve => {
+    timer = setTimeout(() => resolve(false), ms);
+    timer.unref();
+  });
+  return Promise.race([promise.then(() => true), timeout]).finally(() => clearTimeout(timer));
 }
 
 function sendUpstreamError(res: Response, id: JsonRpcId, err: unknown, suffix: string, data?: unknown): void {
