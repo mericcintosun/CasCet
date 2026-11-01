@@ -7,7 +7,7 @@ export const upstreamSchema = z.discriminatedUnion("type", [
     type: z.literal("stdio"),
     command: z.string(),
     args: z.array(z.string()).default([]),
-    env: z.record(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
   }),
   z.object({
     type: z.literal("http"),
@@ -47,7 +47,7 @@ export const cascetConfigSchema = z.object({
   pricing: z.object({
     /** Fallback price for tools not listed in `tools`. Omit to keep unlisted tools free. */
     default: toolPriceSchema.optional(),
-    tools: z.record(toolPriceSchema).default({}),
+    tools: z.record(z.string(), toolPriceSchema).default({}),
   }),
   port: z.number().int().default(DEFAULT_GATEWAY_PORT),
   /** Optional dashboard ingest endpoint; the gateway POSTs receipt events there. */
