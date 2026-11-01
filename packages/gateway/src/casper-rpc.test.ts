@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { createCasperRpc, isNoSuchTransaction, isValueNotFound, RpcNodeError, RpcTransportError, type FetchLike } from "./casper-rpc.js";
-import * as fx from "./rpc-fixtures.js";
+import { createCasperRpc, isNoSuchTransaction, isValueNotFound, RpcNodeError, RpcTransportError, type RpcFetch } from "./casper-rpc.js";
+import * as fx from "./testing/rpc-fixtures.js";
 
-const respond = (status: number, body: string): FetchLike => async () => ({ ok: status >= 200 && status < 300, status, text: async () => body });
+const respond = (status: number, body: string): RpcFetch => async () => ({ ok: status >= 200 && status < 300, status, text: async () => body });
 
 describe("casper-rpc error classification", () => {
   test("returns the result of a successful call", async () => {
@@ -35,7 +35,7 @@ describe("casper-rpc error classification", () => {
   });
 
   test("HTTP errors, bad bodies, network failures and timeouts are RpcTransportErrors", async () => {
-    const cases: Array<[FetchLike, string]> = [
+    const cases: Array<[RpcFetch, string]> = [
       [respond(503, "busy"), "http"],
       [respond(200, "<html>"), "invalid-response"],
       [respond(200, "42"), "invalid-response"],
@@ -58,7 +58,7 @@ describe("casper-rpc error classification", () => {
   });
 
   test("a per-call timeout can only shorten the client's timeout", async () => {
-    const hang: FetchLike = (_url, init) =>
+    const hang: RpcFetch = (_url, init) =>
       new Promise((_resolve, reject) => {
         init.signal.addEventListener("abort", () => reject(init.signal.reason));
       });

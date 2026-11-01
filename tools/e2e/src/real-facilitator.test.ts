@@ -8,6 +8,7 @@ import casperSdk from "casper-js-sdk";
 import { toClientCasperSigner } from "@make-software/casper-x402";
 import { ExactCasperScheme as ClientScheme } from "@make-software/casper-x402/exact/client";
 import type { PaymentRequirements, SettleResponse, VerifyResponse } from "@x402/core/types";
+import { balanceItemKey, dictionaryAddress } from "@cascet/gateway";
 import type { CoreResult, FacilitatorCore, FacilitatorLogger, ParsedPayment } from "./facilitator-core.js";
 import { NETWORKS } from "./facilitator-env.js";
 import {
@@ -19,7 +20,6 @@ import {
 } from "./real-facilitator.js";
 import * as fx from "./rpc-fixtures.js";
 import { startFakeRpcServer, type FakeRpcServer } from "./test-helpers.js";
-import { balanceItemKey, dictionaryAddress } from "./token-state.js";
 
 const { PrivateKey, KeyAlgorithm } = casperSdk;
 

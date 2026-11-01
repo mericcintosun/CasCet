@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import casperSdk from "casper-js-sdk";
-import { createCasperRpc } from "./casper-rpc.js";
+import { createCasperRpc } from "@cascet/gateway";
 import * as fx from "./rpc-fixtures.js";
 import {
   buildSettlementTransaction,
