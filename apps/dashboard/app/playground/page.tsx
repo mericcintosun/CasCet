@@ -21,12 +21,19 @@ export default function PlaygroundPage() {
   const [children, setChildren] = React.useState(DEFAULTS.children);
   const [attribution, setAttribution] = React.useState(DEFAULTS.attribution);
 
-  const childrenTotal = children * childPrice;
-  const attrAmount = childrenTotal * (attribution / 100);
-  const grossSpend = rootPrice + childrenTotal;
-  const exceeded = grossSpend > budget + 1e-9;
-  const remaining = Math.max(0, budget - grossSpend);
-  const rootEarnings = rootPrice + attrAmount;
+  const EPS = 1e-9;
+  const grossSpend = rootPrice + children * childPrice;
+  const exceeded = grossSpend > budget + EPS;
+  // What actually settles: hops are charged in order and the contract reverts the
+  // first one that would overspend (and, at equal prices, every later one). The
+  // hops before it stay settled (L98).
+  const rootSettles = rootPrice <= budget + EPS;
+  const childrenSettled = rootSettles ? Math.min(children, Math.floor((budget - rootPrice + EPS) / childPrice)) : 0;
+  const hopsSettled = (rootSettles ? 1 : 0) + childrenSettled;
+  const settledSpend = (rootSettles ? rootPrice : 0) + childrenSettled * childPrice;
+  const attrAmount = childrenSettled * childPrice * (attribution / 100);
+  const remaining = Math.max(0, budget - settledSpend);
+  const rootEarnings = (rootSettles ? rootPrice : 0) + attrAmount;
   const childEarning = childPrice * (1 - attribution / 100);
   const spendPct = Math.min(100, (grossSpend / budget) * 100);
 
@@ -41,7 +48,7 @@ export default function PlaygroundPage() {
   return (
     <div className="min-h-screen">
       <SiteHeader />
-      <main className="mx-auto max-w-6xl px-6 py-10">
+      <main className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
         <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
           <div>
             <Badge variant="outline" className="mb-3 border-primary/30 font-mono text-[11px] text-primary">
@@ -59,7 +66,7 @@ export default function PlaygroundPage() {
           </Button>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
           {/* Controls */}
           <Card className="h-fit">
             <CardHeader>
@@ -77,9 +84,9 @@ export default function PlaygroundPage() {
           </Card>
 
           {/* Visualization + ledger */}
-          <div className="space-y-6">
+          <div className="min-w-0 space-y-6">
             <Card className={cn("transition-colors", exceeded && "border-destructive/50")}>
-              <CardHeader className="flex-row items-center justify-between space-y-0">
+              <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
                 <div>
                   <CardTitle className="text-base">Payment tree</CardTitle>
                   <CardDescription>Agent → root tool → {children} downstream tool{children > 1 ? "s" : ""}.</CardDescription>
@@ -104,12 +111,19 @@ export default function PlaygroundPage() {
             <Card>
               <CardContent className="pt-6">
                 <div className="mb-2 flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Spent of budget</span>
+                  <span className="text-muted-foreground">Cascade cost vs budget</span>
                   <span className="font-mono tabular-nums">
                     {usd(grossSpend)} <span className="text-muted-foreground">/ {usd(budget)}</span>
                   </span>
                 </div>
-                <div className="h-2.5 w-full overflow-hidden rounded-full bg-secondary">
+                <div
+                  className="h-2.5 w-full overflow-hidden rounded-full bg-secondary"
+                  role="meter"
+                  aria-label="Cascade cost as a share of the budget"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(spendPct)}
+                >
                   <div
                     className={cn("h-full rounded-full transition-all", exceeded ? "bg-destructive" : "bg-primary")}
                     style={{ width: `${spendPct}%` }}
@@ -119,8 +133,9 @@ export default function PlaygroundPage() {
                   <p className="mt-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 font-mono text-xs text-destructive">
                     <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                     <span>
-                      User error 5 · <span className="font-semibold">BudgetExceeded</span>. The contract rejects the hop that
-                      would overspend. The gateway can&apos;t settle it; the agent must adapt.
+                      User error 5 · <span className="font-semibold">BudgetExceeded</span>. The contract reverts the first hop
+                      that would overspend; the {hopsSettled} hop{hopsSettled === 1 ? "" : "s"} before it stay settled, and
+                      close() refunds the unspent {usd(remaining)}.
                     </span>
                   </p>
                 ) : (
@@ -133,10 +148,18 @@ export default function PlaygroundPage() {
             </Card>
 
             {/* Ledger */}
-            <div className="grid gap-4 sm:grid-cols-3">
-              <Stat label="Root payee earns" value={usd(rootEarnings)} sub={`price ${usd(rootPrice)} + ${usd(attrAmount)} attribution`} />
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <Stat
+                label="Root payee earns"
+                value={usd(rootEarnings)}
+                sub={`${rootSettles ? `price ${usd(rootPrice)}` : "root rejected"} + ${usd(attrAmount)} attribution`}
+              />
               <Stat label="Each downstream earns" value={usd(childEarning)} sub={`${usd(childPrice)} − ${attribution}% up-flow`} />
-              <Stat label="Gross settled" value={usd(grossSpend)} sub={`${children + 1} on-chain hops`} />
+              <Stat
+                label="Gross settled"
+                value={usd(settledSpend)}
+                sub={exceeded ? `${hopsSettled} of ${children + 1} hops settle on-chain` : `${children + 1} on-chain hops`}
+              />
             </div>
           </div>
         </div>
@@ -170,7 +193,15 @@ function Control({
         <span className="text-sm font-medium">{label}</span>
         <span className={cn("font-mono text-sm tabular-nums", accent ? "text-primary" : "text-muted-foreground")}>{value}</span>
       </div>
-      <Slider min={min} max={max} step={step} value={[v]} onValueChange={([n]) => set(n ?? min)} />
+      <Slider
+        min={min}
+        max={max}
+        step={step}
+        value={[v]}
+        onValueChange={([n]) => set(n ?? min)}
+        thumbLabel={label}
+        valueText={value}
+      />
     </div>
   );
 }
