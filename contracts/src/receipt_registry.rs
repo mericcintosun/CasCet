@@ -489,6 +489,16 @@ mod tests {
     }
 
     #[test]
+    fn get_reverts_for_an_unknown_payment_id() {
+        let env = odra_test::env();
+        let mut reg = ReceiptRegistry::deploy(&env, NoArgs);
+        anchor(&mut reg, "known", "", U256::one());
+
+        assert_eq!(reg.try_get("unknown".into()), Err(Error::NotFound.into()));
+        assert!(!reg.is_anchored("unknown".into()));
+    }
+
+    #[test]
     fn only_authorized_can_record() {
         let env = odra_test::env();
         let mut reg = ReceiptRegistry::deploy(&env, NoArgs);

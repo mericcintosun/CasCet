@@ -121,6 +121,30 @@ mod tests {
         assert_eq!(token.total_supply(), U256::from(SUPPLY));
     }
 
+    #[test]
+    fn rejects_self_targeted_calls() {
+        let env = odra_test::env();
+        let owner = env.get_account(0);
+        let spender = env.get_account(1);
+        let mut token = deploy(&env);
+
+        assert_eq!(
+            token.try_transfer(owner, U256::one()),
+            Err(Cep18Error::CannotTargetSelfUser.into())
+        );
+        assert_eq!(
+            token.try_approve(owner, U256::one()),
+            Err(Cep18Error::CannotTargetSelfUser.into())
+        );
+        token.approve(spender, U256::from(10u64));
+        env.set_caller(spender);
+        assert_eq!(
+            token.try_transfer_from(owner, owner, U256::one()),
+            Err(Cep18Error::CannotTargetSelfUser.into())
+        );
+        assert_eq!(token.allowance(owner, spender), U256::from(10u64));
+    }
+
     // M33 regression: transfer_from must spend the caller's (spender's)
     // allowance and must not create an allowance for the recipient.
     #[test]
