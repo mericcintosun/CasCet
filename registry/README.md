@@ -28,6 +28,10 @@ remote URL can belong to only one server name.
    (`node packages/cli/dist/cli.js account-hash <seller-public-key-hex>`, which
    prints `00` + 64 hex), and fund the accounts as described in
    [`examples/wrap-third-party`](../examples/wrap-third-party/README.md#funding-testnet).
+   For a live staking APY in `get_defi_yields`, also add
+   `"env": { "CSPR_CLOUD_TOKEN": "<your cspr.cloud token>" }` to `upstream`:
+   the gateway passes none of its own environment to the server. Your copy
+   then holds a secret, so keep it out of git.
 3. Start the self-hosted facilitator next to the gateway. It listens on
    127.0.0.1:4501 and settles only payments to that seller in the testnet x402
    token:

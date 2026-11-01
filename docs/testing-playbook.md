@@ -155,8 +155,11 @@ Expected: Claude Code reads the priced DeFi/RWA tools, buys the ones it judges
 worth it (typically market data + gold + treasury + yields), the connect bridge
 pays each 402 under budget, and it prints a grounded allocation citing the numbers
 it paid for. Ends with `CONNECT DEMO PASS — Claude bought N paid tool call(s)`.
-Add `CSPR_CLOUD_TOKEN=…` only to make `get_defi_yields` compute a live staking APY
-instead of its labeled snapshot.
+`get_defi_yields` returns its labeled snapshot unless the data server has a
+cspr.cloud access token. The gateway gives the server it wraps none of its own
+environment, so the token has to reach the data server through `upstream.env`
+in the gateway config (`"env": { "CSPR_CLOUD_TOKEN": "…" }`). The demo scripts
+put `CSPR_CLOUD_TOKEN` there for you when it is set in their environment.
 
 ### Single-hop settlement: testnet and mainnet
 
