@@ -25,6 +25,10 @@ Or from the command line: `npx @cascet/cli wrap cascet.config.json`.
 | `pricing.tools.<name>` | | `{ price: "$0.01", description?, settleBeforeExecute?: false }` |
 | `pricing.default` | none | Price for every upstream tool that is neither in `tools` nor in `freeTools`. |
 | `pricing.freeTools` | `[]` | Upstream tools served free of charge. |
+| `asset.authorization` | from `packageHash` | The token's `transfer_with_authorization` ABI: `"legacy-amount"` (CasCet's own x402 token, takes `amount`) or `"cep3009-value"` (CEP-3009 tokens such as Wrapped CSPR, take `value`). CasCet's tokens default to the first, every other token to the second. Buyers see it as `extra.authorizationStyle`. A legacy-amount asset settled by the hosted facilitator is a config error. |
+| `facilitator.authScheme` | `"raw"` | How `facilitator.apiKey` is sent: `raw` (`Authorization: <key>`, what the hosted CSPR.cloud facilitator expects) or `bearer` (`Authorization: Bearer <key>`). |
+| `facilitator.timeoutMs` | none | Per-request timeout of this facilitator; replaces `timeouts.facilitatorMs` and `timeouts.settleMs` for its calls. |
+| `assets`, `facilitators` | | The config accepts several assets (each may name a facilitator from `facilitators`), but this gateway version serves one asset and refuses to start with more. |
 | `timeouts.facilitatorMs` | `15000` | Facilitator `/verify` and `/supported`. |
 | `timeouts.settleMs` | `90000` | Facilitator `/settle` (a Casper facilitator answers after the transfer executed). |
 | `timeouts.upstreamMs` | `60000` | One upstream MCP request. |

@@ -42,6 +42,7 @@ import { errorMessage, log, logSafe } from "./log.js";
 import {
   buildToolTable,
   createPaymentRail,
+  gatewayTimeouts,
   MAX_CLOCK_SKEW_SECONDS,
   requiredValiditySeconds,
   unmatchedConfiguredTools,
@@ -103,7 +104,8 @@ export interface GatewayOptions {
   upstreamHealthCheck?: Partial<HealthCheckPolicy>;
   /**
    * How long close() waits for calls in flight (a paid call may be settling) before it cuts
-   * the remaining connections. Default: timeouts.facilitatorMs + upstreamMs + settleMs.
+   * the remaining connections. Default: the facilitator's verify and settle timeouts plus
+   * timeouts.upstreamMs (see gatewayTimeouts).
    */
   drainTimeoutMs?: number;
 }
@@ -215,8 +217,8 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   let closing: Promise<void> | undefined;
   /** /mcp requests being handled; close() lets them finish (paid calls may be settling). */
   const inFlight = new Set<Promise<void>>();
-  const drainTimeoutMs =
-    options.drainTimeoutMs ?? cfg.timeouts.facilitatorMs + cfg.timeouts.upstreamMs + cfg.timeouts.settleMs;
+  const timeouts = gatewayTimeouts(cfg);
+  const drainTimeoutMs = options.drainTimeoutMs ?? timeouts.facilitatorMs + timeouts.upstreamMs + timeouts.settleMs;
 
   const announceOnline = (): void => {
     pushEvent({

@@ -67,6 +67,23 @@ describe("facilitatorWarnings (M03)", () => {
     );
     assert.deepEqual(facilitatorWarnings({ ...base, facilitator: { url: "http://127.0.0.1:4501" } } as never), []);
   });
+
+  it("checks each asset against its own facilitator", () => {
+    const cfg = cascetConfigSchema.parse({
+      ...initTemplate("demo"),
+      payTo: ACCOUNT_HASH,
+      asset: undefined,
+      assets: [
+        { id: "cascet", packageHash: CASCET_TESTNET_X402_TOKEN, name: "CasCet X402 Token", symbol: "WCSPR" },
+        { packageHash: `hash-${"ab".repeat(32)}`, name: "Other", symbol: "OTH", facilitator: "cloud" },
+      ],
+      facilitators: { cloud: { url: DEFAULT_FACILITATOR_URL } },
+    });
+    const warnings = facilitatorWarnings(cfg);
+    assert.equal(warnings.length, 2, warnings.join("\n"));
+    assert.match(warnings[0] ?? "", /^WARNING: facilitators\.cloud\.url is the hosted facilitator .*asset abab/);
+    assert.equal(warnings[1], "WARNING: the hosted facilitator needs a CSPR.cloud access token in facilitators.cloud.apiKey.");
+  });
 });
 
 describe("payToWarnings (contract-package payees)", () => {

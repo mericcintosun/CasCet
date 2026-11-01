@@ -1,14 +1,19 @@
 export { startGateway, type GatewayHealth, type GatewayOptions, type RunningGateway } from "./server.js";
 export { buildDiscovery, type DiscoveryDocument, type DiscoveryResource } from "./discovery.js";
 export {
+  assetAmountFor,
   buildToolTable,
   createPaymentRail,
+  gatewayAsset,
+  gatewayTimeouts,
   resolveToolPolicy,
   routeForTool,
+  type GatewayTimeouts,
   type PaymentRail,
   type ToolPolicy,
   type ToolTable,
 } from "./paywall.js";
+export { CASCET_PAYMENT_FLOWS, CascetCasperServerScheme, type ServerSchemeAsset } from "./server-scheme.js";
 export {
   connectUpstream,
   createUpstreamTransport,
