@@ -1,123 +1,158 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { cascetConfigSchema, DEFAULT_FACILITATOR_URL, NETWORK_CASPER_TESTNET } from "@cascet/core";
-import { startGateway } from "@cascet/gateway";
-import { createPayingFetch, runBridge } from "@cascet/client";
+import { cascetConfigSchema } from "@cascet/core";
+import { accountHashFromPublicKey, createPayingFetch, runBridge } from "@cascet/client";
+import { checkArgs, CliError, CONNECT_FLAGS, parseArgs, type ParsedArgs } from "./args.js";
+import { resolveConnectConfig } from "./connect-config.js";
+import { initNextSteps, initTemplate } from "./init-template.js";
+import { facilitatorWarnings, formatConfigIssues } from "./wrap-check.js";
 
-const [, , command, ...rest] = process.argv;
-
-switch (command) {
-  case "wrap":
-    await wrap(rest[0]);
-    break;
-  case "connect":
-    await connect(rest[0]);
-    break;
-  case "init":
-    init(rest[0]);
-    break;
-  default:
-    help();
-    process.exit(command ? 1 : 0);
+try {
+  await main(parseArgs(process.argv.slice(2)));
+} catch (err) {
+  fail(err);
 }
 
-/** `cascet wrap [config path]` — start a paid-MCP gateway in front of the configured upstream. */
+async function main(args: ParsedArgs): Promise<void> {
+  if (args.version) {
+    console.log(version());
+    return;
+  }
+  if (args.help || args.command === undefined || args.command === "help") {
+    help();
+    return;
+  }
+  switch (args.command) {
+    case "init":
+      checkArgs(args, [], 1);
+      init(args.positionals[0]);
+      return;
+    case "wrap":
+      checkArgs(args, [], 1);
+      await wrap(args.positionals[0]);
+      return;
+    case "connect":
+      checkArgs(args, CONNECT_FLAGS, 1);
+      await connect(args);
+      return;
+    case "account-hash":
+      checkArgs(args, [], 1);
+      accountHash(args.positionals[0]);
+      return;
+    default:
+      throw new CliError(`unknown command "${args.command}" (see cascet --help)`);
+  }
+}
+
+/** `cascet wrap [config path]`: start a paid-MCP gateway in front of the configured upstream. */
 async function wrap(configArg?: string): Promise<void> {
   const configPath = resolve(configArg ?? "cascet.config.json");
   if (!existsSync(configPath)) {
-    console.error(`❌ config not found: ${configPath}\n   Run "cascet init" to create one.`);
-    process.exit(1);
+    throw new CliError(`config not found: ${configPath}\n   Run "cascet init" to create one.`);
   }
-  const cfg = cascetConfigSchema.parse(JSON.parse(readFileSync(configPath, "utf8")));
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch (err) {
+    throw new CliError(`${configPath} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const parsed = cascetConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new CliError(`invalid config ${configPath}:\n${formatConfigIssues(parsed.error.issues)}`);
+  }
+  const cfg = parsed.data;
+  for (const warning of facilitatorWarnings(cfg)) console.error(`[cascet] ${warning}`);
+
+  // Loaded lazily so buyers (connect, account-hash) never load the gateway stack.
+  const { startGateway } = await import("@cascet/gateway");
   const gateway = await startGateway(cfg);
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => void gateway.close().finally(() => process.exit(0)));
   }
 }
 
-/** `cascet connect <gateway mcp url>` — stdio bridge that pays x402 challenges transparently. */
-async function connect(url?: string): Promise<void> {
-  if (!url) {
-    console.error("❌ usage: cascet connect <gateway-mcp-url>");
-    process.exit(1);
-  }
-  const keyPath = process.env.CASCET_KEY_PATH;
-  if (!keyPath) {
-    console.error("❌ CASCET_KEY_PATH env var (PEM private key path) is required");
-    process.exit(1);
-  }
-  // A remote gateway over plain http:// can be MITM'd to inject a 402 that
-  // redirects your payment to an attacker. Require TLS off-localhost.
-  try {
-    const u = new URL(url);
-    const isLocal = ["localhost", "127.0.0.1", "::1"].includes(u.hostname);
-    if (u.protocol === "http:" && !isLocal) {
-      console.error(`❌ refusing insecure http:// to remote host ${u.hostname} — use https:// (a MITM could redirect your payment).`);
-      process.exit(1);
-    }
-  } catch {
-    console.error(`❌ invalid gateway URL: ${url}`);
-    process.exit(1);
-  }
-  const splitEnv = (v?: string) => v?.split(",").map(s => s.trim()).filter(Boolean);
-  const paying = await createPayingFetch({
-    privateKeyPath: keyPath,
-    keyAlgorithm: process.env.CASCET_KEY_ALGO === "secp256k1" ? "secp256k1" : "ed25519",
-    budget: {
-      maxPerCallRaw: process.env.CASCET_MAX_PER_CALL,
-      maxSessionRaw: process.env.CASCET_MAX_SESSION,
-    },
-    allowedPayTo: splitEnv(process.env.CASCET_ALLOWED_PAYTO),
-    allowedAssets: splitEnv(process.env.CASCET_ALLOWED_ASSETS),
-    onPayment: info =>
-      console.error(`[cascet] 💸 authorized ${info.amountRaw} raw units → ${info.payTo.slice(0, 10)}…`),
+/** `cascet connect <gateway mcp url>`: stdio bridge that pays x402 challenges within mandatory limits. */
+async function connect(args: ParsedArgs): Promise<void> {
+  const cfg = resolveConnectConfig({
+    url: args.positionals[0],
+    env: process.env,
+    flags: args.flags,
+    cwd: process.cwd(),
+    home: homedir(),
   });
-  console.error(`[cascet] bridge up → ${url} (budget: per-call=${process.env.CASCET_MAX_PER_CALL ?? "∞"}, session=${process.env.CASCET_MAX_SESSION ?? "∞"})`);
-  await runBridge(url, paying);
+  for (const notice of cfg.notices) console.error(notice);
+  const paying = await createPayingFetch({
+    ...cfg.paying,
+    onPayment: info =>
+      console.error(
+        `[cascet] 💸 authorized ${info.amountRaw} raw units of ${info.asset.slice(0, 10)}… → ${info.payTo.slice(0, 12)}…`,
+      ),
+  });
+  console.error(cfg.summary);
+  await runBridge(cfg.url, paying, cfg.bridge);
 }
 
-/** `cascet init [name]` — write a starter config. */
+/** `cascet account-hash <public key>`: print the "00"-prefixed payTo for a Casper public key. */
+function accountHash(publicKey?: string): void {
+  if (!publicKey) throw new CliError("usage: cascet account-hash <public-key-hex>");
+  console.log(accountHashFromPublicKey(publicKey));
+  console.error('[cascet] use this value as "payTo" in cascet.config.json, and buyers use it in CASCET_ALLOWED_PAYTO.');
+}
+
+/** `cascet init [name]`: write a starter config. */
 function init(name = "my-paid-mcp"): void {
   const path = resolve("cascet.config.json");
-  if (existsSync(path)) {
-    console.error(`❌ ${path} already exists`);
-    process.exit(1);
-  }
-  const template = {
-    name,
-    upstream: { type: "stdio", command: "node", args: ["./my-mcp-server.js"] },
-    network: NETWORK_CASPER_TESTNET,
-    payTo: "<your Casper public key>",
-    asset: {
-      packageHash: "<CEP-18 package hash>",
-      name: "Wrapped CSPR",
-      symbol: "WCSPR",
-      decimals: 9,
-      version: "1",
-      tokensPerUsd: 50,
-    },
-    facilitator: { url: DEFAULT_FACILITATOR_URL, apiKey: "<CSPR.cloud access token>" },
-    pricing: { tools: { my_tool: { price: "$0.01", description: "example priced tool" } } },
-    port: 4402,
-  };
-  writeFileSync(path, `${JSON.stringify(template, null, 2)}\n`);
-  console.log(`✅ wrote ${path} — fill in payTo, asset.packageHash and facilitator.apiKey`);
+  if (existsSync(path)) throw new CliError(`${path} already exists`);
+  writeFileSync(path, `${JSON.stringify(initTemplate(name), null, 2)}\n`, { flag: "wx" });
+  console.log(`✅ wrote ${path}\n`);
+  console.log(initNextSteps());
 }
 
 function help(): void {
-  console.log(`CasCet — monetize MCP servers with x402 micropayments on Casper
+  console.log(`CasCet: monetize MCP servers with x402 micropayments on Casper
 
 usage:
-  cascet init [name]              create a starter cascet.config.json
-  cascet wrap [config]            start the paid gateway (default: ./cascet.config.json)
-  cascet connect <mcp-url>        stdio bridge for MCP hosts; pays per call
+  cascet init [name]                  create a starter cascet.config.json
+  cascet wrap [config]                start the paid gateway (default: ./cascet.config.json)
+  cascet connect <mcp-url> [flags]    stdio bridge for MCP hosts; pays per call within your limits
+  cascet account-hash <public-key>    print the payTo value ("00" + account hash) for a public key
+  cascet --version | --help
 
 connect env vars:
-  CASCET_KEY_PATH                 PEM private key path (required)
+  CASCET_KEY_PATH                 PEM private key of the paying wallet (required; prefer an absolute path)
   CASCET_KEY_ALGO                 ed25519 | secp256k1 (default ed25519)
-  CASCET_MAX_PER_CALL             per-call budget in raw token units
-  CASCET_MAX_SESSION              session budget in raw token units (per asset)
-  CASCET_ALLOWED_PAYTO            comma-separated payTo allowlist (pin your sellers)
-  CASCET_ALLOWED_ASSETS           comma-separated CEP-18 package-hash allowlist`);
+  CASCET_NETWORK                  comma-separated CAIP-2 networks to pay on (default casper:casper-test;
+                                  add casper:casper for mainnet)
+  CASCET_ALLOWED_PAYTO            comma-separated payTo account hashes to pay (required*)
+  CASCET_ALLOWED_ASSETS           comma-separated CEP-18 package hashes to pay in (required*)
+  CASCET_MAX_PER_CALL             largest single payment, raw token units (required**)
+  CASCET_MAX_SESSION              session total per token, raw token units (required**)
+  CASCET_TIMEOUT_MS               deadline per call in ms (default 30000)
+  CASCET_TOOL_PINS                tool pin file (default ~/.cascet/tool-pins.json)
+  CASCET_ALLOW_ANY_SELLER=1       same as --allow-any-seller
+  CASCET_ALLOW_UNLIMITED_BUDGET=1 same as --allow-unlimited-budget
+
+connect flags:
+  --allow-any-seller              * run without the payTo/asset allowlists (not recommended)
+  --allow-unlimited-budget        ** run without the per-call/session limits (not recommended)
+  --accept-tool-changes           trust and re-pin tool definitions that changed since they were pinned
+
+Set CASCET_DEBUG=1 to print stack traces.`);
+}
+
+function version(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: string };
+    return pkg.version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function fail(err: unknown): never {
+  console.error(`❌ ${err instanceof Error ? err.message : String(err)}`);
+  if (process.env.CASCET_DEBUG && err instanceof Error && err.stack) console.error(err.stack);
+  process.exit(1);
 }
