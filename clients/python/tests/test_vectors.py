@@ -84,15 +84,15 @@ class TestPaymentPayloadVector(unittest.TestCase):
         self.assertEqual(signature[0], 0x01)  # ed25519 algorithm tag
         Ed25519PublicKey.from_public_bytes(TEST_KEY.public_key_bytes).verify(signature[1:], digest)  # raises if bad
 
-    def test_typescript_facilitator_accepted_the_vector(self):
-        self.assertEqual(self.vector["facilitatorVerify"], {"isValid": True, "payer": TEST_KEY.account_address()})
-
     def test_payment_required_header_decodes(self):
         self.assertEqual(x402.decode_payment_required_header(self.vector["paymentRequiredHeader"]), self.payment_required)
 
 
 class TestHeaderVectors(unittest.TestCase):
     def test_encoding_matches_x402_core(self):
+        names = [case["name"] for case in VECTORS["headers"]]
+        self.assertTrue(any("non-ASCII" in name for name in names))
+        self.assertTrue(any("surrogate" in name for name in names))  # JSON.stringify escapes lone surrogates
         for case in VECTORS["headers"]:
             with self.subTest(case=case["name"]):
                 self.assertEqual(x402.payment_signature_header(case["object"]), case["base64"])

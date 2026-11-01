@@ -215,6 +215,20 @@
         "accepts": []
       },
       "base64": "eyJ4NDAyVmVyc2lvbiI6MiwicmVzb3VyY2UiOnsidXJsIjoiaHR0cHM6Ly9leGFtcGxlLnRlc3QvdG9vbHMvw6l0w6kiLCJkZXNjcmlwdGlvbiI6IlByaXg6IDUg4oKsIOKAlCDDvG7Dr2PDtmTDqSDinJMg8J+agCBcInF1b3RlZFwiIGJhY2tcXHNsYXNoXG5uZXdsaW5lXHR0YWIgXHUwMDAxIn0sImFjY2VwdHMiOltdfQ=="
+    },
+    {
+      "name": "lone UTF-16 surrogates (JSON.stringify escapes them)",
+      "object": {
+        "x402Version": 2,
+        "resource": {
+          "url": "https://example.test/tools/lone",
+          "description": "high \ud800, low \udc00, reversed \ude80\ud83d, pair 🚀, last \udbff"
+        },
+        "extensions": {
+          "key\udfff": "value \udabc"
+        }
+      },
+      "base64": "eyJ4NDAyVmVyc2lvbiI6MiwicmVzb3VyY2UiOnsidXJsIjoiaHR0cHM6Ly9leGFtcGxlLnRlc3QvdG9vbHMvbG9uZSIsImRlc2NyaXB0aW9uIjoiaGlnaCBcdWQ4MDAsIGxvdyBcdWRjMDAsIHJldmVyc2VkIFx1ZGU4MFx1ZDgzZCwgcGFpciDwn5qALCBsYXN0IFx1ZGJmZiJ9LCJleHRlbnNpb25zIjp7ImtleVx1ZGZmZiI6InZhbHVlIFx1ZGFiYyJ9fQ=="
     }
   ]
 }

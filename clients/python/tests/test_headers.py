@@ -28,6 +28,17 @@ class TestPaymentSignatureHeader(unittest.TestCase):
         self.assertNotIn(": ", raw)
         self.assertIn("€", raw)
 
+    def test_lone_surrogates_are_escaped_like_json_stringify(self):
+        # "\ud800" is valid JSON but has no UTF-8 form; JSON.stringify writes it as a lowercase \u escape.
+        payload = {"resource": {"description": "a \ud800 b \udc00 c \U0001F680"}, "k\udfff": "\udabc"}
+        header = x402.payment_signature_header(payload)
+        raw = base64.b64decode(header).decode("utf-8")
+        self.assertEqual(raw, '{"resource":{"description":"a \\ud800 b \\udc00 c \U0001F680"},"k\\udfff":"\\udabc"}')
+        self.assertEqual(x402.decode_payment_signature_header(header), payload)
+        # A backslash next to a surrogate stays a literal backslash.
+        self.assertEqual(x402.decode_payment_signature_header(x402.payment_signature_header({"x": "\\\ud800"})),
+                         {"x": "\\\ud800"})
+
     def test_rejects_non_mapping_and_nan(self):
         with self.assertRaises(TypeError):
             x402.payment_signature_header([1, 2])
@@ -82,6 +93,9 @@ class TestParsePaymentRequired(unittest.TestCase):
             b64({"x402Version": 2}),
             b64({"x402Version": 2, "accepts": {"scheme": "exact"}}),
             base64.b64encode(b"\xff\xfe").decode(),
+            # 1e400 parses to inf, which could never be written back into the PAYMENT-SIGNATURE header.
+            b64('{"x402Version":2,"accepts":[],"resource":{"weight":1e400}}'),
+            b64('{"x402Version":2,"accepts":[],"resource":{"weight":-1e400}}'),
         ):
             with self.subTest(bad=bad):
                 with self.assertRaises(x402.ProtocolError):

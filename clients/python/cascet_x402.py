@@ -6,10 +6,13 @@ an EIP-712 `TransferWithAuthorization` with a Casper ed25519 key and builds the
 payment payload that a CasCet gateway (in the `PAYMENT-SIGNATURE` request
 header) or a facilitator (`/verify`, `/settle`) expects.
 
-The digest, signature, payload and header encoding match the TypeScript client
+The digest, signature and payload match the TypeScript client
 (`@casper-ecosystem/casper-eip-712` + `@make-software/casper-x402` +
-`@x402/core`) byte for byte. `tests/eip712_vectors.json` holds vectors produced
-by those packages and `tests/test_vectors.py` checks this module against them.
+`@x402/core`) byte for byte, and so does the header for the same input JSON
+(numbers written with a fraction or an exponent excepted: Python writes 300.0
+where JavaScript writes 300, which decodes to the same value).
+`tests/eip712_vectors.json` holds vectors produced by those packages and
+`tests/test_vectors.py` checks this module against them.
 
 Two layers:
 
@@ -107,7 +110,8 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 VALID_AFTER_SKEW_SECONDS = 600
 #: Upper bound on how long a signed authorization stays valid, whatever
 #: `maxTimeoutSeconds` a server asks for (a hostile 402 could ask for years).
-MAX_VALIDITY_SECONDS = 3600
+#: The TS client's `maxAuthorizationSeconds` default.
+MAX_VALIDITY_SECONDS = 900
 
 _U64_MAX = 2**64 - 1
 _U256_LIMIT = 2**256
@@ -115,6 +119,9 @@ _HEX64_RE = re.compile(r"[0-9a-fA-F]{64}")
 _KEY_RE = re.compile(r"(?:00|01)[0-9a-fA-F]{64}")  # serialized Casper Key: tag + 32 bytes
 _DIGITS_RE = re.compile(r"[0-9]{1,40}")  # ASCII digits only; used with fullmatch
 _BASE64_RE = re.compile(r"[A-Za-z0-9+/]*={0,2}")
+#: CAIP-2 id in the casper namespace (the TS client's pattern); no wildcards.
+_CASPER_NETWORK_RE = re.compile(r"casper:[-_a-zA-Z0-9]{1,32}")
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
 
 
 # ---- errors ----
@@ -365,8 +372,9 @@ def normalize_asset(value: str) -> str:
     return low
 
 
-def _nonempty_str(value: Any) -> bool:
-    return isinstance(value, str) and value != ""
+def _nonempty_text(value: Any) -> bool:
+    # A lone surrogate (valid in JSON, "\ud800") has no UTF-8 form, so it cannot be hashed into the domain.
+    return isinstance(value, str) and value != "" and not _SURROGATE_RE.search(value)
 
 
 def _max_timeout_seconds(value: Any) -> int:
@@ -389,7 +397,7 @@ def validate_requirements(requirements: Mapping[str, Any]) -> None:
     if scheme != SCHEME_EXACT:
         raise ProtocolError(f"unsupported scheme {scheme!r} (only 'exact' is implemented)")
     network = requirements.get("network")
-    if not isinstance(network, str) or not network.startswith("casper:") or len(network) == len("casper:"):
+    if not isinstance(network, str) or not _CASPER_NETWORK_RE.fullmatch(network):
         raise ProtocolError(f"network must be a Casper CAIP-2 id such as 'casper:casper-test', got {network!r}")
     pay_to = requirements.get("payTo")
     if not isinstance(pay_to, str) or not _KEY_RE.fullmatch(pay_to):
@@ -404,8 +412,11 @@ def validate_requirements(requirements: Mapping[str, Any]) -> None:
         raise ProtocolError(f"asset must be the 64-hex CEP-18 contract package hash{hint}, got {asset!r}")
     parse_amount(requirements.get("amount"))
     extra = requirements.get("extra")
-    if not isinstance(extra, Mapping) or not _nonempty_str(extra.get("name")) or not _nonempty_str(extra.get("version")):
-        raise ProtocolError("extra.name and extra.version (the token's EIP-712 domain) must be non-empty strings")
+    if not isinstance(extra, Mapping) or not _nonempty_text(extra.get("name")) or not _nonempty_text(extra.get("version")):
+        raise ProtocolError(
+            "extra.name and extra.version (the token's EIP-712 domain) must be non-empty strings "
+            "(without lone UTF-16 surrogates)"
+        )
     if "maxTimeoutSeconds" in requirements:
         _max_timeout_seconds(requirements["maxTimeoutSeconds"])
 
@@ -427,6 +438,7 @@ def build_payment_payload(
     resource: Optional[Mapping[str, Any]] = None,
     extensions: Optional[Mapping[str, Any]] = None,
     now: Optional[int] = None,
+    max_validity_seconds: int = MAX_VALIDITY_SECONDS,
 ) -> dict:
     """
     Build the x402 v2 payment payload for one entry of a 402's `accepts` list.
@@ -440,10 +452,13 @@ def build_payment_payload(
 
     Pass `requirements` unchanged from the 402. Without `valid_after` /
     `valid_before` the window is the TS client's: from `now - 600` to `now +
-    maxTimeoutSeconds` (capped at MAX_VALIDITY_SECONDS).
+    maxTimeoutSeconds`, capped at `max_validity_seconds` (default
+    MAX_VALIDITY_SECONDS, 900).
 
     This applies no spending policy: use PayingClient for allowlists and budgets.
     """
+    if isinstance(max_validity_seconds, bool) or not isinstance(max_validity_seconds, int) or max_validity_seconds <= 0:
+        raise ValueError(f"max_validity_seconds must be a positive whole number of seconds, got {max_validity_seconds!r}")
     validate_requirements(requirements)
     if resource is not None and not isinstance(resource, Mapping):
         raise ProtocolError("resource must be a JSON object")
@@ -461,7 +476,7 @@ def build_payment_payload(
     if valid_before is None:
         if "maxTimeoutSeconds" not in requirements:
             raise ProtocolError("requirements have no maxTimeoutSeconds: pass valid_before explicitly")
-        valid_before = now + min(_max_timeout_seconds(requirements["maxTimeoutSeconds"]), MAX_VALIDITY_SECONDS)
+        valid_before = now + min(_max_timeout_seconds(requirements["maxTimeoutSeconds"]), max_validity_seconds)
     valid_after = _check_u64(valid_after, "valid_after")
     valid_before = _check_u64(valid_before, "valid_before")
     if valid_before <= valid_after:
@@ -512,8 +527,22 @@ def _reject_json_constant(name: str) -> Any:
     raise ValueError(f"invalid JSON constant {name}")
 
 
+def _parse_finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):  # "1e400" parses to inf, which JSON cannot carry back
+        raise ValueError(f"number {text[:40]} is out of range")
+    return value
+
+
+def _escape_surrogate(match: re.Match) -> str:
+    return "\\u%04x" % ord(match.group())
+
+
 def _b64_json_encode(obj: Any) -> str:
     text = json.dumps(obj, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    # JSON can carry a lone UTF-16 surrogate ("\ud800") but UTF-8 cannot. Escape it
+    # the way JSON.stringify does (lowercase \uXXXX), so the header still encodes.
+    text = _SURROGATE_RE.sub(_escape_surrogate, text)
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
 
 
@@ -541,7 +570,9 @@ def _b64_json_decode(value: Any, what: str) -> Any:
         raise ProtocolError(f"{what} header is not base64")
     try:
         raw = base64.b64decode(value + "=" * (-len(value) % 4), validate=True)
-        decoded = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
+        decoded = json.loads(
+            raw.decode("utf-8"), parse_constant=_reject_json_constant, parse_float=_parse_finite_float
+        )
     except (binascii.Error, UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise ProtocolError(f"{what} header is not base64-encoded JSON: {exc}") from exc
     if _json_depth(decoded) > _MAX_JSON_DEPTH:

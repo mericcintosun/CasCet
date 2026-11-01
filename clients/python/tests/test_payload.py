@@ -55,8 +55,19 @@ class TestPayloadShape(unittest.TestCase):
         self.assertEqual(auth["validBefore"], str(NOW + 300))
 
     def test_window_is_capped(self):
+        self.assertEqual(x402.MAX_VALIDITY_SECONDS, 900)  # the TS client's maxAuthorizationSeconds default
         auth = build(requirements=make_requirements(maxTimeoutSeconds=10**9))["payload"]["authorization"]
         self.assertEqual(auth["validBefore"], str(NOW + x402.MAX_VALIDITY_SECONDS))
+        auth = build(requirements=make_requirements(maxTimeoutSeconds=10**9), max_validity_seconds=60)["payload"]
+        self.assertEqual(auth["authorization"]["validBefore"], str(NOW + 60))
+        auth = build(requirements=make_requirements(maxTimeoutSeconds=300), max_validity_seconds=3600)["payload"]
+        self.assertEqual(auth["authorization"]["validBefore"], str(NOW + 300))
+
+    def test_max_validity_seconds_validation(self):
+        for bad in (0, -1, True, 1.5, "900", None):
+            with self.subTest(max_validity_seconds=bad):
+                with self.assertRaises(ValueError):
+                    build(max_validity_seconds=bad)
 
     def test_explicit_window(self):
         auth = build(valid_after=NOW - 5, valid_before=NOW + 60)["payload"]["authorization"]
@@ -102,6 +113,11 @@ class TestRequirementValidation(unittest.TestCase):
         self.assertRejected("network", network="eip155:8453")
         self.assertRejected("network", network="casper:")
         self.assertRejected("network", network=DELETE)
+        # The CAIP-2 reference charset the TS client checks: [-_a-zA-Z0-9]{1,32}.
+        for bad in ("casper:casper test", "casper:" + "a" * 33, "casper:caspér", "casper:\ud800", "casper:*"):
+            with self.subTest(network=bad):
+                self.assertRejected("network", network=bad)
+        build(requirements=make_requirements(network="casper:" + "a" * 32))
 
     def test_pay_to_must_be_a_serialized_key(self):
         self.assertRejected("payTo", payTo="account-hash-" + "ab" * 32)
@@ -120,6 +136,9 @@ class TestRequirementValidation(unittest.TestCase):
         self.assertRejected("extra", extra={"name": "CasCet X402 Token"})
         self.assertRejected("extra", extra={"name": "", "version": "1"})
         self.assertRejected("extra", extra={"name": "CasCet X402 Token", "version": 1})
+        # A lone surrogate has no UTF-8 form, so it could not be hashed into the EIP-712 domain.
+        self.assertRejected("surrogates", extra={"name": "CasCet \ud800 Token", "version": "1"})
+        self.assertRejected("surrogates", extra={"name": "CasCet X402 Token", "version": "\udc00"})
 
     def test_max_timeout_seconds(self):
         for bad in (0, -1, True, "300", 1.5, float("inf"), float("nan"), None):
