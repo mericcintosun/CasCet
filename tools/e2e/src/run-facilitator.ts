@@ -49,6 +49,7 @@ try {
     preflight: cfg.preflight,
     preflightDeadlineMs: cfg.preflightDeadlineMs,
     tokenVersion: cfg.tokenVersion,
+    ...(cfg.tokenName ? { tokenName: cfg.tokenName } : {}),
   });
   console.log(`facilitator up at ${fac.url} (net=${fac.network})`);
   const stop = () => {

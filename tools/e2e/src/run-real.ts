@@ -76,6 +76,7 @@ const facilitator = await startRealFacilitator({
   preflight: fac.preflight,
   preflightDeadlineMs: fac.preflightDeadlineMs,
   tokenVersion: fac.tokenVersion,
+  ...(fac.tokenName ? { tokenName: fac.tokenName } : {}),
 });
 
 const dataConfig: CascetConfig = cascetConfigSchema.parse({

@@ -108,7 +108,6 @@ describe("facilitator environment", () => {
         CASCET_SETTLE_PAYMENT_MOTES: "3_500_000_000",
         CASCET_DAILY_GAS_CAP_MOTES: "50_000_000_000",
         CASCET_SETTLE_WAIT_MS: "20000",
-        CASCET_PREFLIGHT: "off",
         CASCET_PREFLIGHT_DEADLINE_MS: "5000",
         PORT: "8080",
         CASCET_FACILITATOR_HOST: "0.0.0.0",
@@ -121,13 +120,29 @@ describe("facilitator environment", () => {
     assert.equal(cfg.paymentMotes, 3_500_000_000);
     assert.equal(cfg.dailyGasCapMotes, 50_000_000_000n);
     assert.equal(cfg.settleWaitMs, 20_000);
-    assert.equal(cfg.preflight, false);
+    assert.equal(cfg.preflight, true);
     assert.equal(cfg.preflightDeadlineMs, 5_000);
     assert.equal(cfg.port, 8080);
     assert.equal(cfg.host, "0.0.0.0");
-    assert.ok(cfg.warnings.some(w => w.includes("CASCET_PREFLIGHT=off")));
+    assert.equal(cfg.tokenName, undefined, "no default name for a token other than the CasCet one");
     // A generic HOST (set by some shells and containers) never changes the bind address.
     assert.equal(readFacilitatorEnv({ HOST: "0.0.0.0" }, ROOT).host, "127.0.0.1");
+  });
+
+  test("the EIP-712 domain name is pinned for the CasCet token; the preflight is required on mainnet", () => {
+    const mainnet = { CASCET_NETWORK: "casper:casper", CASCET_FACILITATOR_KEY: "/k.pem", CASCET_FACILITATOR_TOKEN: TOKEN };
+    assert.equal(readFacilitatorEnv(mainnet, ROOT).tokenName, "CasCet X402 Token");
+    assert.equal(readFacilitatorEnv({}, ROOT).tokenName, "CasCet X402 Token");
+    assert.equal(readFacilitatorEnv({ CASCET_TOKEN_NAME: "Other Token" }, ROOT).tokenName, "Other Token");
+    assert.throws(() => readFacilitatorEnv({ ...mainnet, CASCET_PREFLIGHT: "off" }, ROOT), /refused on mainnet/);
+
+    const off = readFacilitatorEnv({ CASCET_PREFLIGHT: "off" }, ROOT);
+    assert.deepEqual([off.preflight, off.tokenName], [false, "CasCet X402 Token"]);
+    assert.ok(off.warnings.some(w => w.includes("CASCET_PREFLIGHT=off")));
+    // Another token: its name must be given when nothing reads it on-chain.
+    const other = { CASCET_PREFLIGHT: "off", CASCET_ALLOWED_ASSETS: "cb".repeat(32) };
+    assert.throws(() => readFacilitatorEnv(other, ROOT), /CASCET_TOKEN_NAME/);
+    assert.equal(readFacilitatorEnv({ ...other, CASCET_TOKEN_NAME: "Other Token" }, ROOT).tokenName, "Other Token");
   });
 
   test("gas limit guard rails: never below measured consumption, warn above lane 5", () => {

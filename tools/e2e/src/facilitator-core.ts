@@ -103,7 +103,11 @@ export interface FacilitatorCoreConfig {
   allowedAssets?: string[];
   /** Pinned EIP-712 domain version (`extra.version`). */
   tokenVersion?: string;
-  /** Pinned EIP-712 domain name; when unset and preflight is on, the token's on-chain name is used. */
+  /**
+   * Pinned EIP-712 domain name (`extra.name`), checked without any RPC. With the
+   * preflight on, the token's on-chain name is checked as well; without the
+   * preflight this pin is the only guard against a domain the token rejects.
+   */
   tokenName?: string;
   /** Gas limit (motes) of each settlement transaction. */
   paymentMotes: bigint;
@@ -424,7 +428,7 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
       [used, balance, name] = await Promise.all([
         reader.isNonceUsed(a.asset, a.from, a.nonce, opts),
         reader.balanceOf(a.asset, a.from, opts),
-        config.tokenName === undefined ? reader.tokenName(a.asset, opts) : Promise.resolve(undefined),
+        reader.tokenName(a.asset, opts), // cached; also catches a pinned name that is wrong
       ]);
     } catch (err) {
       const detail = err instanceof TokenStateError ? err.message : "unexpected error";

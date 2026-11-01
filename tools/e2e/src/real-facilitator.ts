@@ -61,8 +61,12 @@ import { TokenStateReader } from "./token-state.js";
  *     (default 20 s; casper-x402 alone accepts 6 s, less than one block);
  *   - keeps an in-flight ledger of (network, asset, from, nonce) until the
  *     authorization can no longer execute, answering duplicates with 409;
- *   - checks on-chain, before submitting, that the nonce is unused and that the
- *     payer's balance covers the value plus everything already in flight;
+ *   - checks on-chain, before submitting, that the nonce is unused, that the
+ *     payer's balance covers the value plus everything already in flight, and
+ *     that the EIP-712 domain name is the token's (required on mainnet; a
+ *     testnet facilitator without it must pin the name);
+ *   - re-checks the validity window right before submitting and caps the
+ *     transaction's TTL so it can never execute after validBefore;
  *   - caps sponsored gas per UTC day, reserving it only right before
  *     submission and counting the real on-chain cost when known;
  *   - answers "pending"/"unknown" with the transaction hash instead of a
@@ -109,7 +113,10 @@ export interface RealFacilitatorOptions {
    * (timeouts.settleMs, 90 s by default).
    */
   settleWaitMs?: number;
-  /** On-chain nonce / balance / token-name checks before verifying and settling. Default true. */
+  /**
+   * On-chain nonce / balance / token-name checks before verifying and settling.
+   * Default true. Required on mainnet; turning it off elsewhere requires `tokenName`.
+   */
   preflight?: boolean;
   /**
    * Total time one request's preflight may take (all reads and retries). Default
@@ -118,6 +125,12 @@ export interface RealFacilitatorOptions {
   preflightDeadlineMs?: number;
   /** Pinned EIP-712 domain version (`extra.version`) of the token. Default "1". */
   tokenVersion?: string;
+  /**
+   * Pinned EIP-712 domain name (`extra.name`), e.g. "CasCet X402 Token". Checked
+   * without RPC; with the preflight on, the on-chain name is checked as well.
+   * Required when the preflight is off.
+   */
+  tokenName?: string;
   /** Reject authorizations that stay valid longer than this. Default 3600 s. */
   maxAuthorizationValiditySeconds?: number;
   /** Reject authorizations that expire sooner than this (at /verify and /settle). Default 20 s. */
@@ -367,6 +380,20 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   if (!Number.isSafeInteger(minSettleWindowSeconds) || minSettleWindowSeconds < 6 || minSettleWindowSeconds >= maxValiditySeconds) {
     throw new Error(`minSettleWindowSeconds must be a whole number from 6 to ${maxValiditySeconds - 1}`);
   }
+  const preflight = opts.preflight ?? true;
+  const tokenName = opts.tokenName?.trim();
+  if (tokenName !== undefined && (tokenName === "" || tokenName.length > 100 || /[\u0000-\u001f\u007f]/.test(tokenName))) {
+    throw new Error("tokenName must be 1 to 100 printable characters");
+  }
+  if (!preflight && mainnet) {
+    throw new Error(
+      "the on-chain preflight is required on mainnet (CASCET_PREFLIGHT=off): without it, replayed, unfunded or " +
+        "wrongly signed authorizations are submitted and burn the fee payer's gas",
+    );
+  }
+  if (!preflight && tokenName === undefined) {
+    throw new Error("with the preflight off, set tokenName (CASCET_TOKEN_NAME) so the EIP-712 domain name is still checked");
+  }
   const preflightDeadlineMs = opts.preflightDeadlineMs ?? DEFAULT_PREFLIGHT_DEADLINE_MS;
   if (!Number.isSafeInteger(preflightDeadlineMs) || preflightDeadlineMs < 1_000 || preflightDeadlineMs > 60_000) {
     throw new Error("preflightDeadlineMs must be a whole number of milliseconds from 1000 to 60000");
@@ -411,7 +438,6 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   );
   const ledger = new AuthorizationLedger();
   const gas = new DailyGasBudget({ capMotes: opts.dailyGasCapMotes ?? DEFAULT_DAILY_GAS_CAP_MOTES });
-  const preflight = opts.preflight ?? true;
   if (!preflight) logger.warn("on-chain preflight disabled: replayed or unfunded authorizations are only caught by the in-memory ledger");
 
   const core = createFacilitatorCore(
@@ -420,6 +446,7 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
       ...(allowedPayTo ? { allowedPayTo } : {}),
       ...(allowedAssets ? { allowedAssets } : {}),
       tokenVersion: opts.tokenVersion ?? "1",
+      ...(tokenName !== undefined ? { tokenName } : {}),
       paymentMotes: BigInt(paymentMotes),
       settleWaitMs: opts.settleWaitMs ?? DEFAULT_SETTLE_WAIT_MS,
       maxValiditySeconds,

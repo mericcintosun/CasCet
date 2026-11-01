@@ -475,6 +475,19 @@ describe("/settle", () => {
     assert.equal(h.ledger.peek({ network: NETWORK, asset: ASSET, from: PAYER, nonce: "9c".repeat(32) })?.state, "verified");
   });
 
+  test("a pinned domain name is checked without RPC, and the on-chain name still applies with the preflight on", async () => {
+    const offline = harness({ preflight: false, config: { tokenName: "CasCet X402 Token" } });
+    const wrong = await offline.core.settle(parsed({ extra: { name: "Wrapped CSPR", version: "1" } }));
+    assert.deepEqual([wrong.body.errorReason, offline.chain.builds], [Reason.tokenDomainMismatch, 0]);
+    assert.equal(offline.signatureChecks.count, 0, "rejected before the signature check");
+
+    // A pin that disagrees with the chain is caught by the preflight instead of reverting on-chain.
+    const mispinned = harness({ config: { tokenName: "Wrapped CSPR" } });
+    const r = await mispinned.core.verify(parsed({ extra: { name: "Wrapped CSPR", version: "1" } }));
+    assert.equal(r.body.invalidReason, Reason.tokenDomainMismatch);
+    assert.match(r.body.invalidMessage ?? "", /CasCet X402 Token/);
+  });
+
   test("without preflight the in-flight ledger still blocks duplicates", async () => {
     const h = harness({ preflight: false });
     assert.equal((await h.core.settle(parsed())).body.success, true);

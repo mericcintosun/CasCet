@@ -261,6 +261,13 @@ describe("startRealFacilitator start-up rules (M07)", () => {
     await assert.rejects(startRealFacilitator({ ...mainnet(), paymentMotes: 2_000_000_000 }), /paymentMotes/);
   });
 
+  test("the preflight is required on mainnet; elsewhere turning it off needs a pinned token name", async () => {
+    await assert.rejects(startRealFacilitator({ ...mainnet(), preflight: false }), /preflight is required on mainnet/);
+    await assert.rejects(startRealFacilitator({ port: 0, keyPath: feePayerPem, preflight: false, logger: quiet }), /tokenName/);
+    const fac = await startRealFacilitator({ port: 0, keyPath: feePayerPem, preflight: false, tokenName: "CasCet X402 Token", logger: quiet });
+    await fac.close();
+  });
+
   test("a non-loopback bind needs a token on any network", async () => {
     await assert.rejects(
       startRealFacilitator({ port: 0, host: "0.0.0.0", keyPath: feePayerPem, logger: quiet }),

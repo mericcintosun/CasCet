@@ -17,10 +17,12 @@ import { normalizeAccountHash } from "./facilitator-roles.js";
  *   CASCET_DAILY_GAS_CAP_MOTES    sponsored gas per UTC day (default 500 CSPR)
  *   CASCET_SETTLE_WAIT_MS         time /settle waits for execution before answering "pending" (default 60000;
  *                                 keep it below the gateway's timeouts.settleMs, 90 s by default)
- *   CASCET_PREFLIGHT              on (default) | off — on-chain nonce/balance/name checks
+ *   CASCET_PREFLIGHT              on (default) | off — on-chain nonce/balance/name checks (required on mainnet)
  *   CASCET_PREFLIGHT_DEADLINE_MS  total time one request's preflight may take (default 10000; keep it below
  *                                 the gateway's verify timeout, timeouts.facilitatorMs, 15 s by default)
  *   CASCET_TOKEN_VERSION          pinned EIP-712 domain version (default "1")
+ *   CASCET_TOKEN_NAME             pinned EIP-712 domain name (default "CasCet X402 Token" when only the CasCet
+ *                                 x402 token is allowlisted; required when CASCET_PREFLIGHT=off)
  *   CASCET_RPC_URL                Casper node JSON-RPC URL (default: the public node of the network);
  *                                 use ONE node, not a load balancer, so balance reads follow settlements
  *   CASCET_FACILITATOR_HOST       bind address (default 127.0.0.1; any other address requires the token)
@@ -70,6 +72,8 @@ export const DEFAULT_DAILY_GAS_CAP_MOTES = 500_000_000_000n;
  * outcome and the buyer gets no result). casper-x402 1.0.0 polled up to 60 s too.
  */
 export const DEFAULT_SETTLE_WAIT_MS = 60_000;
+/** On-chain `name` of the CasCet x402 token on both networks (read-only check, 2026-11-01). */
+export const CASCET_TOKEN_NAME = "CasCet X402 Token";
 
 export class FacilitatorConfigError extends Error {
   constructor(message: string) {
@@ -158,6 +162,8 @@ export interface FacilitatorEnvConfig {
   preflight: boolean;
   preflightDeadlineMs: number;
   tokenVersion: string;
+  /** Pinned EIP-712 domain name, when known. */
+  tokenName?: string;
   /** Non-fatal notes for the operator (never contain secrets). */
   warnings: string[];
 }
@@ -243,7 +249,18 @@ export function readFacilitatorEnv(env: Env, repoRoot: string, forceNetwork?: Ca
     throw new FacilitatorConfigError("CASCET_PREFLIGHT must be on or off");
   }
   const preflight = ["on", "1", "true"].includes(preflightRaw);
+  if (!preflight && mainnet) {
+    throw new FacilitatorConfigError("CASCET_PREFLIGHT=off is refused on mainnet: the on-chain nonce and balance checks keep doomed settles from burning gas");
+  }
   if (!preflight) warnings.push("CASCET_PREFLIGHT=off: replayed or unfunded authorizations are only caught by this process's nonce ledger");
+
+  // The pinned name defaults to the CasCet token's when that is the only asset settled.
+  const tokenNameRaw = value(env, "CASCET_TOKEN_NAME");
+  const onlyCascetToken = allowedAssets.length > 0 && allowedAssets.every(a => a === net.token);
+  const tokenName = tokenNameRaw ?? (onlyCascetToken ? CASCET_TOKEN_NAME : undefined);
+  if (!preflight && tokenName === undefined) {
+    throw new FacilitatorConfigError("CASCET_PREFLIGHT=off requires CASCET_TOKEN_NAME (the EIP-712 domain name of the allowlisted token)");
+  }
 
   return {
     network,
@@ -262,6 +279,7 @@ export function readFacilitatorEnv(env: Env, repoRoot: string, forceNetwork?: Ca
     preflight,
     preflightDeadlineMs: integer(env, "CASCET_PREFLIGHT_DEADLINE_MS", DEFAULT_PREFLIGHT_DEADLINE_MS, 1_000, 60_000),
     tokenVersion: value(env, "CASCET_TOKEN_VERSION") ?? "1",
+    ...(tokenName !== undefined ? { tokenName } : {}),
     warnings,
   };
 }
