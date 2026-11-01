@@ -6,6 +6,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useWallet } from "@/lib/wallet-context";
+import { CSPR_LIVE_TX } from "@/lib/casper/constants";
+import { isTimeoutError, timeoutSignal } from "@/lib/timeout";
 import { shortHex } from "@/lib/utils";
 
 interface PayeeRow {
@@ -26,7 +28,30 @@ type RowState =
   | { status: "idle" }
   | { status: "pending"; step: string }
   | { status: "done"; txUrl: string }
-  | { status: "error"; message: string };
+  /** `txUrl`: the transaction may have reached the node; look it up before retrying. */
+  | { status: "error"; message: string; txUrl?: string };
+
+/** Each API call gets a deadline, so a hung node or route never leaves a row on "Submitting…" (L27). */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/** POST JSON and read the JSON answer. A non-JSON body (a proxy error page) reads as {}. */
+async function postJson(url: string, body: unknown): Promise<{ status: number; data: Record<string, unknown> }> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: timeoutSignal(REQUEST_TIMEOUT_MS),
+  });
+  let data: Record<string, unknown> = {};
+  try {
+    data = ((await res.json()) ?? {}) as Record<string, unknown>;
+  } catch {
+    /* not JSON */
+  }
+  return { status: res.status, data };
+}
+
+const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
 
 export function RevenueSplitPanel() {
   const wallet = useWallet();
@@ -35,12 +60,14 @@ export function RevenueSplitPanel() {
   const [rows, setRows] = useState<Record<string, RowState>>({});
 
   useEffect(() => {
-    fetch("/api/revenue")
+    fetch("/api/revenue", { signal: timeoutSignal(15_000) })
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         setData((await r.json()) as RevenueData);
       })
-      .catch((e: unknown) => setLoadError(e instanceof Error ? e.message : "request failed"));
+      .catch((e: unknown) =>
+        setLoadError(isTimeoutError(e) ? "no answer within 15 s" : e instanceof Error ? e.message : "request failed"),
+      );
   }, []);
 
   async function withdraw(payee: PayeeRow) {
@@ -50,29 +77,44 @@ export function RevenueSplitPanel() {
     }
     const pub = wallet.publicKeyHex;
     const set = (s: RowState) => setRows((r) => ({ ...r, [payee.accountHash]: s }));
+    // The prepared transaction's hash, known before it is signed: lets a timed-out submit point at cspr.live.
+    let preparedTxUrl: string | undefined;
+    let submitting = false;
     try {
       set({ status: "pending", step: "Preparing…" });
-      const prep = await fetch("/api/revenue/prepare", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ payee: payee.accountHash, publicKeyHex: pub }),
-      }).then((r) => r.json());
-      if (prep.error) throw new Error(prep.error);
+      const prep = await postJson("/api/revenue/prepare", { payee: payee.accountHash, publicKeyHex: pub });
+      const txJson = prep.data.txJson as { hash?: unknown } | undefined;
+      if (!txJson) throw new Error(str(prep.data.error) ?? `could not prepare the transaction (HTTP ${prep.status})`);
+      const hash = str(txJson.hash);
+      preparedTxUrl = hash ? CSPR_LIVE_TX + hash : undefined;
 
       set({ status: "pending", step: "Sign in wallet…" });
-      const signatureHex = await wallet.signTx(prep.txJson, pub);
+      const signatureHex = await wallet.signTx(txJson, pub);
 
       set({ status: "pending", step: "Submitting…" });
-      const out = await fetch("/api/revenue/submit", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ txJson: prep.txJson, signatureHex, publicKeyHex: pub }),
-      }).then((r) => r.json());
-      if (out.error) throw new Error(out.error);
-
-      set({ status: "done", txUrl: out.txUrl });
+      submitting = true;
+      const out = await postJson("/api/revenue/submit", { txJson, signatureHex, publicKeyHex: pub });
+      const txUrl = str(out.data.txUrl);
+      if (out.status !== 200 || !txUrl) {
+        // A 504 carries the hash: the node may have taken the transaction anyway.
+        const message = str(out.data.error) ?? `the transaction was not submitted (HTTP ${out.status})`;
+        set({ status: "error", message, ...(out.status === 504 ? { txUrl: txUrl ?? preparedTxUrl } : {}) });
+        return;
+      }
+      set({ status: "done", txUrl });
     } catch (e) {
-      set({ status: "error", message: (e as Error).message });
+      const reason = isTimeoutError(e) ? `no answer within ${REQUEST_TIMEOUT_MS / 1000} s` : e instanceof Error ? e.message : String(e);
+      // Once the submit request is out, a timeout or a dropped connection says nothing about the node: the
+      // transaction may have been taken, and a retry would pay gas again.
+      set(
+        submitting
+          ? {
+              status: "error",
+              message: `${reason}. The transaction may still have been submitted: open it on cspr.live before you try again.`,
+              txUrl: preparedTxUrl,
+            }
+          : { status: "error", message: reason },
+      );
     }
   }
 
@@ -155,10 +197,20 @@ export function RevenueSplitPanel() {
                     </Badge>
                   </a>
                 ) : state.status === "error" ? (
-                  <div className="flex items-center gap-2">
-                    <span className="max-w-[16rem] truncate text-xs text-destructive" title={state.message}>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="max-w-[20rem] break-words text-xs text-destructive">
                       {state.message}
                     </span>
+                    {state.txUrl && (
+                      <a
+                        href={state.txUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                      >
+                        check the tx <ArrowUpRight className="h-3 w-3" />
+                      </a>
+                    )}
                     <Button size="sm" variant="outline" onClick={() => withdraw(p)}>
                       Retry
                     </Button>

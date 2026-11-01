@@ -1,8 +1,16 @@
 import { CONTRACTS, CSPR_LIVE_CONTRACT } from "../economy";
 
-/** Casper Testnet endpoints + the deployed RevenueSplit config. */
+/**
+ * Casper Testnet endpoints + the deployed RevenueSplit config.
+ *
+ * Testnet only: the package hashes, payees, token and cspr.live links below are
+ * testnet values, so the chain name is fixed rather than read from the
+ * environment (L26). Overriding it produced transactions that mixed networks.
+ * CASPER_NODE_URL may point at another casper-test node; a node of any other
+ * network rejects a casper-test transaction.
+ */
 export const NODE_URL = process.env.CASPER_NODE_URL ?? "https://node.testnet.casper.network/rpc";
-export const CHAIN_NAME = process.env.CASPER_CHAIN_NAME ?? "casper-test";
+export const CHAIN_NAME = "casper-test";
 
 const DEFAULT_RELEASE_GAS_MOTES = 5_000_000_000;
 /** Gas for the `release` call; a malformed RELEASE_GAS_MOTES falls back to the default instead of NaN. */

@@ -13,6 +13,21 @@ export class RelayRejectedError extends Error {
   override name = "RelayRejectedError";
 }
 
+/**
+ * The node did not answer the submission in time (the API answers 504). The
+ * transaction may still have been accepted, so the hash goes back to the
+ * client to look up before it tries again.
+ */
+export class RelayTimeoutError extends Error {
+  override name = "RelayTimeoutError";
+  constructor(
+    readonly txHash: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`the Casper node did not answer within ${Math.round(timeoutMs / 1000)} s`);
+  }
+}
+
 export interface ReleaseParams {
   /** RevenueSplit contract package hash (bare hex or "hash-" prefixed). */
   packageHash: string;

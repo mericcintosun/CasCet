@@ -1,9 +1,13 @@
 import "server-only";
 import { HttpHandler, RpcClient } from "casper-js-sdk";
+import { withTimeout } from "../timeout";
 import { CHAIN_NAME, NODE_URL, PAYEES, RELEASE_GAS_MOTES, REVENUE_SPLIT_PACKAGE } from "./constants";
-import { attachWalletSignature, buildUnsignedReleaseTx } from "./release-core";
+import { attachWalletSignature, buildUnsignedReleaseTx, RelayTimeoutError } from "./release-core";
 
-export { RelayRejectedError } from "./release-core";
+export { RelayRejectedError, RelayTimeoutError } from "./release-core";
+
+/** How long the relay waits for the node to answer putTransaction (L27). */
+export const SUBMIT_TIMEOUT_MS = 20_000;
 
 function rpc(): InstanceType<typeof RpcClient> {
   return new RpcClient(new HttpHandler(NODE_URL, "fetch"));
@@ -26,7 +30,8 @@ export function buildUnsignedRelease(payeeAccountHash: string, fromPublicKeyHex:
 /**
  * Attach a wallet signature to a prepared tx, verify it locally, and submit it;
  * resolves with the tx hash. Throws RelayRejectedError (a 400) before any RPC
- * call when the transaction or signature is not acceptable.
+ * call when the transaction or signature is not acceptable, and
+ * RelayTimeoutError (a 504) when the node does not answer in time.
  */
 export async function submitSigned(txJson: unknown, signatureHex: string, publicKeyHex: string): Promise<string> {
   const tx = attachWalletSignature(txJson, signatureHex, publicKeyHex, {
@@ -34,7 +39,11 @@ export async function submitSigned(txJson: unknown, signatureHex: string, public
     chainName: CHAIN_NAME,
     allowedPayees: PAYEES.map((p) => p.accountHash),
   });
-  const res = await rpc().putTransaction(tx);
+  const res = await withTimeout(
+    rpc().putTransaction(tx),
+    SUBMIT_TIMEOUT_MS,
+    () => new RelayTimeoutError(tx.hash.toHex(), SUBMIT_TIMEOUT_MS),
+  );
   const h = res.transactionHash as { toHex?: () => string } | string;
   if (typeof h === "string") return h;
   if (h && typeof h.toHex === "function") return h.toHex();
