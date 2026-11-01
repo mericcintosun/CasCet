@@ -8,7 +8,7 @@ type Step = { key: string; icon: LucideIcon; title: string; body: string; cmd: s
 
 const STEPS: Step[] = [
   { key: "wrap", icon: Boxes, title: "Wrap", cmd: "cascet wrap", body: "Put a paywall in front of any MCP server. Price each tool; agents pay per call in CEP-18 over x402. Your tool code stays untouched." },
-  { key: "connect", icon: Plug, title: "Connect", cmd: "cascet connect", body: "A stdio bridge lets any MCP host (Claude, Cursor) call paid servers, answering every 402 challenge automatically under a spending budget." },
+  { key: "connect", icon: Plug, title: "Connect", cmd: "cascet connect", body: "A stdio bridge lets any MCP host (Claude, Cursor) call paid servers, answering every 402 challenge automatically, but only for the sellers and tokens you allow and within your spending caps." },
   { key: "cascade", icon: GitBranch, title: "Cascade", cmd: "→ on-chain", body: "When a paid tool buys from other paid tools, CasCet links every hop to its parent and anchors each receipt on-chain, so the whole chain is verifiable." },
   { key: "see", icon: LayoutDashboard, title: "See it", cmd: "/dashboard", body: "A live dashboard shows revenue, receipts with cspr.live settlement links, and the cascading payment graph, rebuilt from on-chain receipts." },
 ];
@@ -57,12 +57,12 @@ export function Steps() {
       </div>
 
       {/* detail: animates on change via keyed fade */}
-      <div key={active} className="mt-12 grid animate-fade-in items-center gap-8 md:grid-cols-[auto_1fr]">
+      <div key={active} className="mt-12 grid animate-fade-in grid-cols-1 items-center gap-8 md:grid-cols-[auto_minmax(0,1fr)]">
         <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/20">
           <Icon className="h-9 w-9" />
         </div>
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <h3 className="text-2xl font-semibold tracking-tight">{step.title}</h3>
             <code className="rounded bg-secondary px-2 py-0.5 font-mono text-xs text-primary">{step.cmd}</code>
           </div>

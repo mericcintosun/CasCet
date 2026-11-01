@@ -6,6 +6,7 @@ import { ArrowUpRight, Github } from "lucide-react";
 import { Logo } from "@/components/logo";
 import { ModeToggle } from "@/components/mode-toggle";
 import { Button } from "@/components/ui/button";
+import { MobileMenuButton, MobileMenuPanel, mobileMenuLinkClass, useMobileMenu } from "@/components/mobile-menu";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -17,8 +18,23 @@ const NAV = [
   { href: "#roadmap", label: "Roadmap" },
 ];
 
+/** In-page anchors stay plain <a>; routes go through next/link (no full reload, I29). */
+function NavLink({ href, className, onClick, children }: { href: string; className: string; onClick?: () => void; children: React.ReactNode }) {
+  return href.startsWith("#") ? (
+    <a href={href} className={className} onClick={onClick}>
+      {children}
+    </a>
+  ) : (
+    <Link href={href} className={className} onClick={onClick}>
+      {children}
+    </Link>
+  );
+}
+
 export function MarketingHeader() {
   const [scrolled, setScrolled] = React.useState(false);
+  // The six-item nav needs ~840 px, so it is inline only from lg; below that it folds into the menu (L88).
+  const menu = useMobileMenu("lg");
   React.useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 12);
     onScroll();
@@ -30,28 +46,29 @@ export function MarketingHeader() {
     <header
       className={cn(
         "sticky top-0 z-30 transition-colors duration-300",
-        scrolled ? "glass border-b border-border" : "border-b border-transparent",
+        scrolled || menu.open ? "glass border-b border-border" : "border-b border-transparent",
       )}
     >
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-        <Link href="/" aria-label="CasCet home">
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
+        <Link href="/" aria-label="CasCet home" className="shrink-0">
           <Logo />
         </Link>
-        <nav className="hidden items-center gap-1 md:flex">
-          {NAV.map(item => (
-            <a
+        <nav aria-label="Sections" className="hidden items-center gap-1 lg:flex">
+          {NAV.map((item) => (
+            <NavLink
               key={item.href}
               href={item.href}
               className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
               {item.label}
-            </a>
+            </NavLink>
           ))}
         </nav>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <Link
             href="https://github.com/mericcintosun/CasCet"
             target="_blank"
+            rel="noreferrer"
             className="hidden h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground sm:flex"
             aria-label="GitHub"
           >
@@ -60,11 +77,21 @@ export function MarketingHeader() {
           <ModeToggle />
           <Button asChild size="sm" className="gap-1 font-medium">
             <Link href="/dashboard">
-              Launch dashboard <ArrowUpRight className="h-4 w-4" />
+              <span className="sm:hidden">Dashboard</span>
+              <span className="hidden sm:inline">Launch dashboard</span>
+              <ArrowUpRight className="h-4 w-4" />
             </Link>
           </Button>
+          <MobileMenuButton menu={menu} />
         </div>
       </div>
+      <MobileMenuPanel menu={menu} label="Sections">
+        {NAV.map((item) => (
+          <NavLink key={item.href} href={item.href} className={mobileMenuLinkClass(false)} onClick={() => menu.setOpen(false)}>
+            {item.label}
+          </NavLink>
+        ))}
+      </MobileMenuPanel>
     </header>
   );
 }

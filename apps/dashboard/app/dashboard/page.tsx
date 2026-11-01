@@ -37,7 +37,7 @@ export default function DashboardPage() {
             <Badge variant="warning" className="gap-1">
               <FlaskConical className="h-3 w-3" aria-hidden /> {ONCHAIN_NETWORK_LABEL} data
             </Badge>
-            <Badge variant="success" className="gap-1">
+            <Badge variant="outline" className="gap-1" title="Data source: the on-chain ReceiptRegistry (the header badge shows whether the last read succeeded)">
               <Radio className="h-3 w-3" aria-hidden /> on-chain
             </Badge>
           </div>
