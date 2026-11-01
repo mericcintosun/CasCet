@@ -120,7 +120,9 @@ console.log(`\n[agent] paid + received (payment ${paymentId}):\n${text}\n`);
 const receipts = ((await (await fetch("http://localhost:4402/receipts")).json()) as {
   receipts: Array<{ id: string; tool: string; status: string; txHash?: string }>;
 }).receipts;
-const settled = receipts.find(r => r.status === "settled");
+// This payment's own receipt: gateway receipts persist, so "any settled receipt"
+// could be one from an earlier run (L12).
+const settled = receipts.find(r => r.id === paymentId && r.status === "settled");
 console.log("──────── real settlement ────────");
 console.log(`settlement tx: ${settled?.txHash ?? "(pending)"}`);
 if (settled?.txHash) console.log(`  https://testnet.cspr.live/transaction/${settled.txHash}`);
