@@ -11,6 +11,7 @@ import {
   normalizeAsset,
   normalizePayTo,
   parsePaymentRequest,
+  paymentFingerprint,
   Reason,
   type AssetPolicy,
   type FacilitatorCoreConfig,
@@ -683,6 +684,127 @@ describe("/settle", () => {
     await h.core.verify(parsed({ payTo: `00${"99".repeat(32)}` }));
     await h.core.settle(parsed({ extra: { name: "CasCet X402 Token", version: "1", authorizationStyle: "x\ny" } }));
     for (const line of h.logs) assert.doesNotMatch(line, /[\r\n]/);
+  });
+});
+
+describe("pending settlements: a settle retry follows the earlier transaction (never broadcasts twice)", () => {
+  /** A harness whose execution outcomes are taken from `outcomes` in order. */
+  function scripted(outcomes: ExecutionOutcome[], submit?: () => SubmitOutcome) {
+    let n = 0;
+    return harness({ outcome: () => outcomes[Math.min(n++, outcomes.length - 1)]!, ...(submit ? { submit } : {}) });
+  }
+
+  test("the @x402/core 2.29 retry of settlement_pending gets the outcome of the same transaction", async () => {
+    const h = scripted([
+      { kind: "pending", seen: true },
+      { kind: "success", costMotes: 3_010_000_000n },
+    ]);
+    const first = await h.core.settle(parsed());
+    assert.deepEqual([first.body.errorReason, first.body.transaction], [Reason.pending, "1".padStart(64, "0")]);
+    assert.equal(h.gas.snapshot().spentMotes, 4n * CSPR, "counted at the full limit while pending");
+
+    const retry = await h.core.settle(parsed());
+    assert.equal(retry.status, 200);
+    assert.equal(retry.body.success, true);
+    assert.equal(retry.body.transaction, first.body.transaction, "the same transaction");
+    assert.deepEqual(retry.body.extra, {
+      settlementStatus: "success",
+      authorizationStyle: "legacy-amount",
+      gasCostMotes: "3010000000",
+      reconciled: true,
+    });
+    assert.deepEqual([h.chain.builds.length, h.chain.submits], [1, 1], "nothing was built or submitted again");
+    assert.deepEqual(h.chain.waits, [first.body.transaction, first.body.transaction]);
+    assert.equal(h.signatureChecks.count, 1, "the follow path needs no new verification: it submits nothing");
+    assert.equal(h.gas.snapshot().spentMotes, 3_010_000_000n, "corrected to the real cost");
+    assert.equal(h.ledger.peek({ network: NETWORK, asset: ASSET, from: PAYER, nonce: "9c".repeat(32) })?.state, "settled");
+
+    // A third settle of the same payment is a duplicate: one success per authorization.
+    const third = await h.core.settle(parsed());
+    assert.deepEqual([third.body.success, third.body.errorReason, third.body.transaction], [false, Reason.duplicateNonce, first.body.transaction]);
+    assert.equal(h.chain.waits.length, 2);
+  });
+
+  test("followed even when the authorization is now too close to expiry for a new settlement", async () => {
+    const h = scripted([
+      { kind: "pending", seen: true },
+      { kind: "success", costMotes: 3n * CSPR },
+    ]);
+    const now = Math.floor(T0 / 1000);
+    const first = await h.core.settle(parsed({ validBefore: now + 60 }));
+    assert.equal(first.body.errorReason, Reason.pending);
+    h.clock.advance(50_000); // 10 s left: a new settle would be refused
+    const retry = await h.core.settle(parsed({ validBefore: now + 60 }));
+    assert.deepEqual([retry.body.success, retry.body.transaction], [true, first.body.transaction]);
+  });
+
+  test("only the identical payment may follow: another payment for the same nonce is a duplicate", async () => {
+    const h = scripted([{ kind: "pending", seen: true }]);
+    const first = await h.core.settle(parsed());
+    const other = await h.core.settle(parsed({ signature: `01${"ac".repeat(64)}` }));
+    assert.deepEqual([other.body.errorReason, other.body.transaction], [Reason.duplicateNonce, first.body.transaction]);
+    assert.deepEqual(other.body.extra, { settlementStatus: "duplicate" });
+    assert.equal(h.chain.waits.length, 1, "nothing followed the transaction for it");
+    // The fingerprint covers the signature, the authorization and the terms it pays.
+    assert.notEqual(paymentFingerprint(parsed(), NETWORK), paymentFingerprint(parsed({ signature: `01${"ac".repeat(64)}` }), NETWORK));
+    assert.equal(paymentFingerprint(parsed({ asset: `hash-${ASSET.toUpperCase()}` }), NETWORK), paymentFingerprint(parsed(), NETWORK));
+  });
+
+  test("a transaction still unseen answers pending again and can be followed again; concurrent retries follow once", async () => {
+    let releaseWait!: () => void;
+    const gate = new Promise<void>(r => (releaseWait = r));
+    const outcomes: Array<() => Promise<ExecutionOutcome>> = [
+      async () => ({ kind: "pending", seen: true }),
+      async () => {
+        await gate;
+        return { kind: "pending", seen: true, lastError: "timeout" };
+      },
+      async () => ({ kind: "failure", errorMessage: "User error: 4", costMotes: 4n * CSPR }),
+    ];
+    let n = 0;
+    const h = harness({ outcome: () => outcomes[n++]!() });
+    const first = await h.core.settle(parsed());
+    assert.equal(first.body.errorReason, Reason.pending);
+
+    const follower = h.core.settle(parsed());
+    const concurrent = await h.core.settle(parsed());
+    assert.deepEqual([concurrent.body.errorReason, concurrent.body.transaction], [Reason.duplicateNonce, first.body.transaction]);
+    releaseWait();
+    const stillPending = await follower;
+    assert.deepEqual([stillPending.body.errorReason, stillPending.body.transaction], [Reason.pending, first.body.transaction]);
+    assert.deepEqual(stillPending.body.extra, { settlementStatus: "pending", authorizationStyle: "legacy-amount" });
+
+    const reverted = await h.core.settle(parsed());
+    assert.deepEqual([reverted.body.errorReason, reverted.body.transaction], [Reason.failedOnChain, first.body.transaction]);
+    assert.deepEqual(reverted.body.extra, { settlementStatus: "failed", authorizationStyle: "legacy-amount", reconciled: true });
+    assert.equal(h.chain.submits, 1);
+    assert.equal(h.gas.snapshot().spentMotes, 4n * CSPR);
+  });
+
+  test("an unknown submission stays unknown while the node never shows it", async () => {
+    const h = scripted([{ kind: "pending", seen: false }], () => ({ kind: "unknown", hash: "77".repeat(32), error: "socket hang up" }));
+    const first = await h.core.settle(parsed());
+    assert.equal(first.body.errorReason, Reason.unknown);
+    const retry = await h.core.settle(parsed());
+    assert.deepEqual([retry.body.errorReason, retry.body.transaction], [Reason.unknown, "77".repeat(32)]);
+    assert.equal(h.chain.submits, 1);
+  });
+
+  test("a follower polls the stored hash for the settle wait, from its own start", async () => {
+    const h = scripted([
+      { kind: "pending", seen: true },
+      { kind: "pending", seen: true },
+    ]);
+    const deadlines: number[] = [];
+    const wait = h.chain.waitForExecution.bind(h.chain);
+    h.chain.waitForExecution = async (hash: string, deadlineMs: number) => {
+      deadlines.push(deadlineMs);
+      return wait(hash, deadlineMs);
+    };
+    await h.core.settle(parsed());
+    h.clock.advance(1_000);
+    await h.core.settle(parsed());
+    assert.deepEqual(deadlines, [T0 + 12_000, T0 + 13_000]);
   });
 });
 

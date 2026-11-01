@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Network, PaymentPayload, PaymentRequirements, SettleResponse, SupportedResponse, VerifyResponse } from "@x402/core/types";
 import {
   AUTHORIZATION_STYLE_EXTRA_KEY,
@@ -7,7 +8,7 @@ import {
   type AuthorizationStyle,
 } from "@cascet/core";
 import { TokenStateError, TokenUnsupportedError, type TokenProbe } from "@cascet/gateway";
-import type { AuthorizationId, AuthorizationLedger } from "./authorization-ledger.js";
+import type { AuthorizationId, AuthorizationLedger, FollowClaim } from "./authorization-ledger.js";
 import type { DailyGasBudget } from "./gas-budget.js";
 import {
   AMOUNT_ARGUMENT_BY_STYLE,
@@ -45,7 +46,9 @@ import {
  * at the authorization's validBefore, builds it in the token's style with the
  * asset's own gas limit, reserves that gas only right before submission (M08)
  * and never reports a failure for a transaction whose outcome is merely
- * unknown (M22).
+ * unknown (M22). A settle retry of a payment whose earlier settle answered
+ * "pending" or "unknown" follows that transaction (the pending-settlement
+ * store in the ledger) instead of submitting another one.
  *
  * HTTP statuses: every verdict about a payment, including allowlist and
  * duplicate rejections, is HTTP 200 with `isValid: false` / `success: false`
@@ -114,8 +117,10 @@ export const Reason = {
  *  - unknown:       the outcome is indeterminate (ambiguous submission the node
  *                   never showed, or an internal error on the /settle route)
  * For pending/unknown the response carries the transaction hash when one
- * exists; reconcile it over RPC (`info_get_transaction`, or the token's
- * `used_nonces`) before treating the payment as failed.
+ * exists. Settling the same payment again follows that transaction (it is
+ * never submitted twice) and answers its outcome; otherwise reconcile it over
+ * RPC (`info_get_transaction`, or the token's `used_nonces`) before treating
+ * the payment as failed.
  */
 export type SettlementStatus = "not_submitted" | "duplicate" | "success" | "failed" | "pending" | "unknown";
 
@@ -474,6 +479,45 @@ export function checkAuthorization(
   };
 }
 
+/**
+ * The (network, asset, payer, nonce) of a payment, normalized like
+ * {@link checkAuthorization} normalizes them; undefined when malformed.
+ */
+export function authorizationIdOf(p: ParsedPayment, network: string): AuthorizationId | undefined {
+  const asset = p.requirements.asset.toLowerCase().replace(/^hash-/, "");
+  const from = p.authorization.from.toLowerCase();
+  const nonce = p.authorization.nonce.toLowerCase().replace(/^0x/, "");
+  if (!HEX64.test(asset) || !ACCOUNT_KEY.test(from) || !HEX64.test(nonce)) return undefined;
+  return { network, asset, from, nonce };
+}
+
+/**
+ * Fingerprint of a payment: the signed authorization, its signature and the
+ * terms it pays (network, asset, payee, amount), normalized like the checks
+ * normalize them. Two settle requests carry the same payment exactly when
+ * their fingerprints are equal; only that payment may follow a pending
+ * settlement.
+ */
+export function paymentFingerprint(p: ParsedPayment, network: string): string {
+  const a = p.authorization;
+  const r = p.requirements;
+  const fields = [
+    network,
+    r.asset.toLowerCase().replace(/^hash-/, ""),
+    r.payTo.toLowerCase(),
+    r.amount,
+    a.from.toLowerCase(),
+    a.to.toLowerCase(),
+    a.value,
+    a.validAfter,
+    a.validBefore,
+    a.nonce.toLowerCase().replace(/^0x/, ""),
+    p.publicKey.toLowerCase(),
+    p.signature.toLowerCase().replace(/^0x/, ""),
+  ];
+  return createHash("sha256").update(JSON.stringify(fields)).digest("hex");
+}
+
 export interface FacilitatorCore {
   verify(p: ParsedPayment): Promise<CoreResult<VerifyResponse>>;
   settle(p: ParsedPayment): Promise<CoreResult<SettleResponse>>;
@@ -690,8 +734,14 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
     }
   }
 
-  /** The transfer executed. */
-  const settledResult = (hash: string, payer: string, style: AuthorizationStyle, costMotes: bigint | undefined): CoreResult<SettleResponse> => ({
+  /** The transfer executed. `reconciled`: the answer of a retry that followed an earlier pending settle. */
+  const settledResult = (
+    hash: string,
+    payer: string,
+    style: AuthorizationStyle,
+    costMotes: bigint | undefined,
+    reconciled: boolean,
+  ): CoreResult<SettleResponse> => ({
     status: 200,
     body: {
       success: true,
@@ -702,12 +752,19 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
         settlementStatus: "success" satisfies SettlementStatus,
         authorizationStyle: style,
         ...(costMotes !== undefined ? { gasCostMotes: costMotes.toString() } : {}),
+        ...(reconciled ? { reconciled: true } : {}),
       },
     },
   });
 
   /** The transaction executed and reverted: nothing moved. */
-  const revertedResult = (hash: string, payer: string, style: AuthorizationStyle, errorMessage: string): CoreResult<SettleResponse> => ({
+  const revertedResult = (
+    hash: string,
+    payer: string,
+    style: AuthorizationStyle,
+    errorMessage: string,
+    reconciled: boolean,
+  ): CoreResult<SettleResponse> => ({
     status: 200,
     body: {
       success: false,
@@ -716,7 +773,7 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
       transaction: hash,
       network,
       payer,
-      extra: { settlementStatus: "failed" satisfies SettlementStatus, authorizationStyle: style },
+      extra: { settlementStatus: "failed" satisfies SettlementStatus, authorizationStyle: style, ...(reconciled ? { reconciled: true } : {}) },
     },
   });
 
@@ -733,7 +790,7 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
       errorReason: status === "pending" ? Reason.pending : Reason.unknown,
       errorMessage:
         status === "pending"
-          ? "transaction submitted; its execution was not observed yet — reconcile by transaction hash"
+          ? "transaction submitted; its execution was not observed yet — settle the same payment again, or reconcile by transaction hash"
           : "submission outcome unknown — reconcile by transaction hash before treating the payment as failed",
       transaction: hash,
       network,
@@ -742,8 +799,51 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
     },
   });
 
+  /**
+   * A settle retry of a payment whose earlier settle answered "pending" or
+   * "unknown" (x402 resource servers retry `settlement_pending` once, with the
+   * identical payload): follow that transaction and answer its outcome. Nothing
+   * is built, signed or submitted, so a retry can never broadcast twice.
+   */
+  async function followSettlement(id: AuthorizationId, claim: FollowClaim, payer: string, startedMs: number): Promise<CoreResult<SettleResponse>> {
+    const { txHash: hash, unresolved } = claim;
+    deps.log.info(`settle retry: following ${unresolved.status} tx=${logText(hash)} payer=${short(payer)} instead of submitting again`);
+    let outcome: ExecutionOutcome;
+    try {
+      outcome = await waitSafely(hash, startedMs + config.settleWaitMs);
+    } catch (err) {
+      // Never leave the claim taken: the next retry must be able to follow the transaction.
+      deps.ledger.stopFollowing(id, unresolved.status);
+      throw err;
+    }
+    if (outcome.kind === "success") {
+      if (unresolved.gas) deps.gas.correct(unresolved.gas, outcome.costMotes);
+      deps.ledger.markSettled(id, hash);
+      deps.log.info(`settled tx=${logText(hash)} payer=${short(payer)} (reconciled)`);
+      return settledResult(hash, payer, unresolved.style, outcome.costMotes, true);
+    }
+    if (outcome.kind === "failure") {
+      if (unresolved.gas) deps.gas.correct(unresolved.gas, outcome.costMotes);
+      deps.ledger.markFailed(id, hash);
+      deps.log.warn(`settlement reverted tx=${logText(hash)} payer=${short(payer)}: ${logText(outcome.errorMessage)} (reconciled)`);
+      return revertedResult(hash, payer, unresolved.style, outcome.errorMessage, true);
+    }
+    const status: "pending" | "unknown" = unresolved.status === "unknown" && !outcome.seen ? "unknown" : "pending";
+    deps.ledger.stopFollowing(id, status);
+    deps.log.warn(`settlement still ${status} tx=${logText(hash)} payer=${short(payer)}${outcome.lastError ? ` (${logText(outcome.lastError)})` : ""}`);
+    return unresolvedResult(hash, payer, unresolved.style, status);
+  }
+
   async function settle(p: ParsedPayment): Promise<CoreResult<SettleResponse>> {
     const startedMs = deps.now();
+
+    // Pending-settlement store first, before any other check: the authorization
+    // may now be too close to expiry for a NEW settlement, but the transaction
+    // submitted for it earlier can still execute (or already has).
+    const retryId = authorizationIdOf(p, network);
+    const follow = retryId ? deps.ledger.followUnresolved(retryId, paymentFingerprint(p, network)) : undefined;
+    if (retryId && follow) return followSettlement(retryId, follow, retryId.from, startedMs);
+
     const checked = checkAuthorization(p, config, nowSec());
     if (!checked.ok) return settlementRejected(checked.rejection);
     const { auth: a, policy } = checked;
@@ -826,20 +926,27 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
         `settled tx=${logText(hash)} payer=${short(payer)} payTo=${short(a.payTo)} amount=${logText(a.value)} style=${style}` +
           (outcome.costMotes !== undefined ? ` gas=${logText(outcome.costMotes)}` : ""),
       );
-      return settledResult(hash, payer, style, outcome.costMotes);
+      return settledResult(hash, payer, style, outcome.costMotes, false);
     }
 
     if (outcome.kind === "failure") {
       deps.gas.commit(reservation, outcome.costMotes);
       deps.ledger.markFailed(id, hash);
       deps.log.warn(`settlement reverted tx=${logText(hash)} payer=${short(payer)} style=${style}: ${logText(outcome.errorMessage)}`);
-      return revertedResult(hash, payer, style, outcome.errorMessage);
+      return revertedResult(hash, payer, style, outcome.errorMessage, false);
     }
 
     // Outcome not observed before the deadline: count the full gas limit, keep the
-    // nonce locked, and hand back the hash so the caller can reconcile (M22).
-    deps.gas.commit(reservation);
+    // nonce locked, remember the transaction for a retry of this payment, and hand
+    // back the hash so the caller can reconcile (M22).
+    const charge = deps.gas.commit(reservation);
     const status: "pending" | "unknown" = submitted.kind === "unknown" && !outcome.seen ? "unknown" : "pending";
+    deps.ledger.markUnresolved(id, hash, {
+      status,
+      fingerprint: paymentFingerprint(p, network),
+      style,
+      ...(charge ? { gas: charge } : {}),
+    });
     deps.log.warn(
       `settlement ${status} tx=${logText(hash)} payer=${short(payer)}${outcome.lastError ? ` (${logText(outcome.lastError)})` : ""}`,
     );

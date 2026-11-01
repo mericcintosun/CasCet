@@ -7,9 +7,10 @@ import { after, before, describe, test } from "node:test";
 import casperSdk from "casper-js-sdk";
 import { toClientCasperSigner } from "@make-software/casper-x402";
 import { ExactCasperScheme as ClientScheme } from "@make-software/casper-x402/exact/client";
-import type { PaymentRequirements, SettleResponse, VerifyResponse } from "@x402/core/types";
+import { HTTPFacilitatorClient, x402ResourceServer } from "@x402/core/server";
+import type { PaymentPayload, PaymentRequirements, SettleResponse, VerifyResponse } from "@x402/core/types";
 import { clientSignerFromPem, createCasperClientScheme } from "@cascet/client";
-import { balanceItemKey, dictionaryAddress } from "@cascet/gateway";
+import { balanceItemKey, CascetCasperServerScheme, dictionaryAddress } from "@cascet/gateway";
 import type { CoreResult, FacilitatorCore, FacilitatorLogger, ParsedPayment } from "./facilitator-core.js";
 import { NETWORKS } from "./facilitator-env.js";
 import {
@@ -754,6 +755,68 @@ describe("startRealFacilitator end to end against a local fake node (no network)
       assert.deepEqual([crossed.status, crossed.body["errorReason"], crossed.body["transaction"]], [200, "token_domain_mismatch", ""]);
       assert.equal(submitted.length, before + 2);
     } finally {
+      await fac.close();
+    }
+  });
+
+  test("settlement_pending: a retry of the same payment follows the transaction instead of broadcasting again", async () => {
+    const fac = await start({ settleWaitMs: 1_500 });
+    executed = false;
+    try {
+      const body = await signedByBuyer(requirements());
+      const before = submitted.length;
+      const first = await post(fac.url, "/settle", body);
+      assert.deepEqual([first.status, first.body["success"], first.body["errorReason"]], [200, false, "settlement_pending"]);
+      assert.equal(first.body["transaction"], submitted.at(-1)!.Version1["hash"]);
+
+      executed = true; // the transaction executes in the meantime
+      const retry = await post(fac.url, "/settle", body);
+      assert.deepEqual([retry.status, retry.body["success"], retry.body["transaction"]], [200, true, first.body["transaction"]]);
+      assert.deepEqual(retry.body["extra"], {
+        settlementStatus: "success",
+        authorizationStyle: "legacy-amount",
+        gasCostMotes: "3010000000",
+        reconciled: true,
+      });
+      assert.equal(submitted.length, before + 1, "one broadcast");
+
+      const third = await post(fac.url, "/settle", body);
+      assert.deepEqual([third.status, third.body["errorReason"], third.body["transaction"]], [200, "duplicate_nonce", first.body["transaction"]]);
+    } finally {
+      executed = true;
+      await fac.close();
+    }
+  });
+
+  test("@x402/core 2.29's automatic settlement_pending retry is followed, never re-broadcast", async () => {
+    const logs: string[] = [];
+    const fac = await start({ settleWaitMs: 1_500, logger: { ...quiet, info: m => logs.push(m) } });
+    executed = false; // the node never shows the transaction while the gateway waits
+    try {
+      const auth = { Authorization: TOKEN };
+      const facilitator = new HTTPFacilitatorClient({
+        url: fac.url,
+        createAuthHeaders: async () => ({ verify: auth, settle: auth, supported: auth }),
+      });
+      const server = new x402ResourceServer(facilitator).register(
+        NETWORK,
+        new CascetCasperServerScheme([{ network: NETWORK, asset: TOKEN_PKG, decimals: 9 }]),
+      );
+      await server.initialize();
+
+      const body = await signedByBuyer(requirements());
+      const before = submitted.length;
+      const result = await server.settlePayment(
+        body.paymentPayload as unknown as PaymentPayload,
+        body.paymentRequirements as unknown as PaymentRequirements,
+      );
+      assert.equal(submitted.length, before + 1, "x402 settled twice; the facilitator broadcast once");
+      const hash = submitted.at(-1)!.Version1["hash"];
+      // The retry's answer: the same transaction, still pending (not a duplicate_nonce rejection).
+      assert.deepEqual([result.success, result.errorReason, result.transaction], [false, "settlement_pending", hash]);
+      assert.ok(logs.some(l => l.includes(`following pending tx=${hash}`)), "the retry followed the stored transaction");
+    } finally {
+      executed = true;
       await fac.close();
     }
   });

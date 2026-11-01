@@ -1,14 +1,22 @@
+import type { AuthorizationStyle } from "@cascet/core";
+import type { GasCharge } from "./gas-budget.js";
+
 /**
  * In-memory ledger of x402 authorizations this facilitator has seen (M09, M21).
  *
  * Every authorization is identified by (network, asset, from, nonce). The
- * ledger answers two questions without touching the chain:
+ * ledger answers three questions without touching the chain:
  *  - "is this a duplicate?" — a nonce that is being verified, settled, or was
- *    already submitted by us is rejected (HTTP 409) instead of burning the
- *    fee payer's gas on a second, doomed deploy;
+ *    already submitted by us is rejected (`duplicate_nonce`) instead of burning
+ *    the fee payer's gas on a second, doomed deploy;
  *  - "how much of this payer's balance is already spoken for?" — the values
  *    of in-flight authorizations, so one funded balance cannot back several
- *    concurrent payments.
+ *    concurrent payments;
+ *  - "is this settle a retry of one whose outcome we never saw?" — the pending
+ *    settlement store: a submitted transaction whose settle answered "pending"
+ *    or "unknown" is remembered with the fingerprint of the exact payment, so
+ *    a retry of that payment (x402 resource servers retry `settlement_pending`
+ *    once) follows the same transaction instead of broadcasting another one.
  *
  * Lifecycle: verified → settling → submitted → settled | failed.
  *  - `verified` entries are held briefly (the gateway runs the tool between
@@ -24,6 +32,23 @@
  */
 
 export type LedgerState = "verified" | "settling" | "submitted" | "settled" | "failed";
+
+/**
+ * A submitted settlement whose outcome the settle that submitted it did not
+ * observe: it answered "pending" (accepted by the node, execution not seen
+ * yet) or "unknown" (ambiguous submission).
+ */
+export interface UnresolvedSettlement {
+  status: "pending" | "unknown";
+  /** Fingerprint of the exact payment that was submitted: only that payment may follow the transaction. */
+  fingerprint: string;
+  /** Authorization style the transaction was built with. */
+  style: AuthorizationStyle;
+  /** Gas counted for the transaction (its full limit), to correct once its real cost is known. */
+  gas?: GasCharge;
+  /** True while a settle retry is following the transaction (one at a time). */
+  following: boolean;
+}
 
 export interface AuthorizationId {
   network: string;
@@ -45,6 +70,14 @@ export interface LedgerEntry {
   txHash?: string;
   /** Expiry of the `verified` hold this settlement claimed, restored by `release`. */
   verifiedExpiresAtMs?: number;
+  /** Set while the submitted transaction's outcome is unknown to the payment's settles. */
+  unresolved?: UnresolvedSettlement;
+}
+
+/** A claim on an unresolved settlement, for a settle retry of the same payment. */
+export interface FollowClaim {
+  txHash: string;
+  unresolved: Readonly<Omit<UnresolvedSettlement, "following">>;
 }
 
 export type LedgerAcquire =
@@ -182,7 +215,49 @@ export class AuthorizationLedger {
     if (!entry) return;
     entry.state = state;
     entry.txHash = txHash;
+    delete entry.unresolved;
     entry.expiresAtMs = this.settleRetention(entry.validBeforeMs);
+  }
+
+  /**
+   * The settle that submitted `txHash` answers without a final outcome
+   * ("pending" or "unknown"): remember the transaction with the fingerprint of
+   * the exact payment, so a retry of that payment can follow it
+   * ({@link followUnresolved}) instead of submitting another transaction.
+   */
+  markUnresolved(id: AuthorizationId, txHash: string, unresolved: Omit<UnresolvedSettlement, "following">): void {
+    const entry = this.entries.get(ledgerKey(id));
+    if (!entry || entry.state !== "submitted" || entry.txHash !== txHash) return;
+    entry.unresolved = { ...unresolved, following: false };
+  }
+
+  /**
+   * Pending-settlement lookup for a settle retry: when this authorization has
+   * an unresolved transaction, was submitted for the SAME payment
+   * (`fingerprint`) and no other request is following it, claim it and return
+   * its hash. Anything else (no entry, a final outcome, another payment for the
+   * same nonce, a concurrent follower) returns `undefined`, and the request
+   * goes through the normal checks, which answer it as a duplicate.
+   */
+  followUnresolved(id: AuthorizationId, fingerprint: string): FollowClaim | undefined {
+    const entry = this.peek(id);
+    const unresolved = entry?.unresolved;
+    if (!entry || entry.state !== "submitted" || !entry.txHash || !unresolved) return undefined;
+    if (unresolved.following || unresolved.fingerprint !== fingerprint) return undefined;
+    unresolved.following = true;
+    const { following: _following, ...rest } = unresolved;
+    return { txHash: entry.txHash, unresolved: rest };
+  }
+
+  /**
+   * A follower saw no final outcome either: the next retry may follow the
+   * transaction again (`status` records what this follower answered).
+   */
+  stopFollowing(id: AuthorizationId, status: UnresolvedSettlement["status"]): void {
+    const unresolved = this.entries.get(ledgerKey(id))?.unresolved;
+    if (!unresolved) return;
+    unresolved.following = false;
+    unresolved.status = status;
   }
 
   /**
