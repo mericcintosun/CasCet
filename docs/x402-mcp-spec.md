@@ -14,6 +14,13 @@ implements every part of this document today; the goal here is to describe the
 convention precisely enough that other MCP servers and agent runtimes can
 interoperate without depending on CasCet's code.
 
+> **Transport note.** x402 v2 now defines a dedicated MCP transport, in which an
+> unpaid call returns a JSON-RPC result carrying the payment requirements and
+> the payment travels in `params._meta["x402/payment"]`. CasCet currently uses
+> x402's HTTP transport on the MCP endpoint (Layer 2 below), so a client built
+> only for the x402 MCP transport cannot pay a CasCet gateway yet. Supporting
+> that transport is planned.
+
 ## Why
 
 MCP standardized *how agents call tools*. It says nothing about *paying for
@@ -76,8 +83,12 @@ tools by price and stay within a budget **before** spending anything.
 2. Buyer signs an [EIP-3009-style](https://eips.ethereum.org/EIPS/eip-3009)
    `transfer_with_authorization` (via `casper-eip-712`) and retries with
    `PAYMENT-SIGNATURE`.
-3. Gateway settles through the x402 facilitator, runs the upstream tool, and
-   returns the MCP result.
+3. Gateway verifies the authorization with the x402 facilitator, runs the
+   upstream tool, and settles through the facilitator only if the tool
+   succeeded, then returns the MCP result. A failed call is never charged.
+   A gateway MAY mark tools that are expensive or have side effects as
+   settle-before-execute: such a tool is settled first and runs only after
+   settlement succeeds.
 
 On success the gateway MUST return the response header:
 
@@ -87,9 +98,14 @@ x-cascet-payment-id: <uuid>
 
 `payTo` MUST be the payee's serialized **account-hash Key** (`00` + 32-byte
 hash), not a public key — the authorization signs `to` as this 33-byte value and
-the on-chain digest is computed over it. (Passing a public key verifies
-structurally but fails settlement; this is the single most common integration
-bug.)
+the on-chain digest is computed over it. Passing an ed25519 public key (`01` +
+32 bytes) verifies structurally but settles to an account nobody controls; this
+is the single most common integration bug. CasCet's config validation therefore
+rejects public keys, and `cascet account-hash <public-key>` prints the correct
+`00…` value. A contract package payee would be the serialized hash Key (`01` +
+32-byte package hash), but `@make-software/casper-x402` 1.0.0 settles every
+`payTo` as an account hash, so contract payees only work with a settlement stack
+that keeps the key tag.
 
 ## Layer 3 — Cascade attribution
 
@@ -135,13 +151,15 @@ the authoritative `accepts` block (scheme, network, amount, asset, `payTo`) plus
 
 An implementation is **conformant** if it:
 
-- advertises `_meta.cascet.priceUsd` on every payable tool in `tools/list`; and
-- settles `tools/call` via the standard x402 `exact` scheme; and
-- returns `x-cascet-payment-id` on settled calls; and
-- forwards `x-cascet-parent-id` when it buys downstream while serving a call.
+- advertises `_meta.cascet.priceUsd` on every payable tool in `tools/list`
+  (Layer 1); and
+- settles `tools/call` via the standard x402 `exact` scheme and returns
+  `x-cascet-payment-id` on settled calls (Layer 2); and
+- forwards `x-cascet-parent-id` when it buys downstream while serving a call
+  (Layer 3, cascade attribution).
 
-Layers 3 (budget enforcement) and 4 (Bazaar discovery) are RECOMMENDED but not
-required for basic interoperability.
+The optional on-chain budget controller in Layer 3 and the Bazaar discovery of
+Layer 4 are RECOMMENDED but not required for basic interoperability.
 
 ## Reference implementation
 

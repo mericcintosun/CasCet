@@ -245,9 +245,10 @@ Then edit `cascet.config.json`:
 - `upstream`: how to start your MCP server (a stdio command, or an HTTP URL).
 - `payTo`: the `00…` value printed by `account-hash`. It must be an account
   hash, never a public key: a public key (`01…` or `02…`) is rejected, because a
-  payment to it would land in an account nobody controls. The config also
-  accepts a contract package as the payee, written `hash-<package hash>` (for
-  example a `RevenueSplit`).
+  payment to it would land in an account nobody controls. Do not point `payTo`
+  at a contract package (such as a `RevenueSplit`) yet: the settlement library,
+  `@make-software/casper-x402` 1.0.0, always settles to an account hash, so such
+  a payment would be lost.
 - `asset`: a token your facilitator can settle (see the table below). On testnet
   that is CasCet's x402 token, `hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3`
   (name `CasCet X402 Token`, version `1`, 9 decimals).
@@ -366,7 +367,7 @@ as a stdio server with the same variables (use absolute paths):
 Five Odra contracts (Rust), unit-tested against a real CEP-18 in Odra's mock VM (`cargo test` or `cargo odra test`):
 
 - **`ReceiptRegistry`** — anchors settled tool-call receipts on-chain, each carrying its cascade `parent_id`. Makes two things verifiable without trusting the gateway: that a call was paid, and how payments compose. Permissioned recorders, duplicate protection, events.
-- **`RevenueSplit`** — an OpenZeppelin-style PaymentSplitter for CEP-18. A gateway can set its `payTo` to this contract (`hash-<package hash>`) so a server's earnings split between payees by fixed weights, pull-based, enforced on-chain.
+- **`RevenueSplit`** — an OpenZeppelin-style PaymentSplitter for CEP-18: tokens sent to it are split between payees by fixed weights, pull-based, enforced on-chain. A seller forwards earnings to it with a CEP-18 transfer; pointing an x402 `payTo` straight at it needs a settlement stack that can pay contract packages, which `@make-software/casper-x402` 1.0.0 cannot.
 - **`CascadeController`** — the budget-bounded cascade primitive: one deposit caps a whole call tree (enforced on-chain), with recursive revenue attribution up the tree. A standalone primitive for now: proven on mainnet, not yet called by the gateway.
 - **`PaymentChannel`** — prepaid channels for high-frequency traffic: deposit once, authorize usage off-chain with signed vouchers, redeem/reclaim on-chain. Vouchers verified in-contract via Casper `verify_signature`.
 - **`DemoToken`** — CasCet's own CEP-18 token (WCSPR-style), used by the cascade and revenue-split demos. **`Cep18X402`**, the token x402 payments settle in, is *not* CasCet code: it is the reference `transfer_with_authorization` (EIP-3009) token from [make-software/casper-x402](https://github.com/make-software/casper-x402), which CasCet installed on testnet and on mainnet (as "CasCet X402 Token") so its facilitator can settle real x402 payments (see [`contracts/external/`](contracts/external/) and [`NOTICE`](NOTICE)).

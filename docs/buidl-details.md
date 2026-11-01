@@ -42,7 +42,7 @@ You can run it for free with real Claude on a Max or Pro plan through the connec
 
 ## Two clients: TypeScript and Python
 
-Agents are written in both languages, so CasCet ships a paying client for each. The Python client builds the same EIP-712 authorization digest as the TypeScript one, checked byte-for-byte, and signs it with a Casper key. Both have settled real payments on-chain, on mainnet and testnet.
+Agents are written in both languages, so CasCet ships a paying client for each. The Python client builds the same EIP-712 authorization digest as the TypeScript one and signs it with a Casper key. Both have settled real payments on-chain, on mainnet and testnet.
 
 ## Live on Casper mainnet
 
@@ -57,7 +57,7 @@ Mainnet, chain "casper" (open at cspr.live/contract-package/HASH):
 - PaymentChannel: db2dc42b76f354e7716cafea8619ae6bc85fe50bc3e73979c2360dbba1458c57
 - DemoToken (CEP-18): 3da88daf3f276d915ea4f6734e0d4b3d4781358734c369b95de028a2c094fe74
 
-Real x402 settlements on mainnet (0.5 WCSPR via transfer_with_authorization, status Success):
+Real x402 settlements on mainnet (0.5 CasCet X402 Token via transfer_with_authorization, status Success; the token's on-chain symbol is WCSPR, but it is not the official Wrapped CSPR):
 
 - TypeScript client: https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1
 - Python client: https://cspr.live/transaction/754224da36db9ecaef8399e720fc04fc2bc4605b383c63964788860db25533b7
@@ -70,19 +70,19 @@ The cascade primitive itself is proven on mainnet, not just deployed. A full cas
 - an over-budget hop reverts BudgetExceeded (User error 5), the cap enforced by construction: https://cspr.live/transaction/abf672055e5c2fe7c6407a3ebffa1954598583724871dd35b9fe0a08434c1a09
 - close and refund the unspent 40 to the owner: https://cspr.live/transaction/2c1aa62c6114b436e9214ac1fdfa9efbaf77c1c0a406a893e592bb9a9565d406
 
-After close the contract holds zero tokens and the analyst's balance is exactly 44 (40 from the root hop plus the 4-token attribution from its child): the recursive revenue split, settled on Casper mainnet.
+After close the contract holds zero tokens and the analyst's balance is exactly 44 (40 from the root hop plus the 4-token attribution from its child): the recursive revenue split, settled on Casper mainnet. The analyst and data-provider payees in this run were two accounts CasCet controls, so it proves the contract's accounting rather than third-party usage.
 
 Everything is also live on testnet. The full address list for both networks is in the repo: https://github.com/mericcintosun/CasCet/blob/main/docs/onchain.md
 
 ## Security
 
-Because real value now flows through it, CasCet went through an adversarial security review before mainnet, across the Odra contracts, the payment path, and the dashboard. Findings were fixed and verified. The facilitator refuses to sponsor any payment outside an allowlist, the paying client pins the recipient and asset it will pay, payment-channel vouchers are bound to their contract and chain so they cannot be replayed across deployments, and the fund-moving contracts follow checks-effects-interactions. The contracts have no admin drain and no mint path, and no secrets are committed to the repo. All 13 contract tests pass, and the contracts were redeployed to mainnet with the fixes.
+CasCet has not been externally audited. Before mainnet, an internal review covered the Odra contracts, the payment path and the dashboard, and the contracts were redeployed to mainnet with its fixes: the facilitator refuses to sponsor payments outside its payTo and asset allowlists, the paying client can pin the sellers and token it will pay, payment-channel vouchers are bound to their contract and chain so they cannot be replayed across deployments, and the fund-moving contracts follow checks-effects-interactions. A second internal review, a multi-agent review of the whole repository on 2026-10-20, drives the current hardening work (npm 0.1.1, where `cascet connect` requires the allowlists and budgets); an external audit is planned. The five CasCet contract packages on mainnet are locked (not upgradable); the payment token package is upgradable by the operator key. No secrets are committed to the repository. The full policy is in SECURITY.md.
 
 One detail explains why CasCet self-hosts its facilitator. In July 2026 the Casper x402 stack renamed the settle argument from "amount" to "value" to follow CEP-3009 (make-software/casper-x402 commit 3ee705ec), and the hosted facilitator moved with it. CasCet's x402 token is the earlier reference build that expects "amount", and the published npm SDK (1.0.0) still sends "amount", so CasCet runs its own fee-sponsored facilitator from that SDK. Migrating to "value" and the official Wrapped CSPR is on the roadmap.
 
 ## SDK on npm
 
-The toolchain is published: @cascet/core, @cascet/client, @cascet/gateway, and @cascet/cli. A developer runs npx @cascet/cli init, wrap, or connect to price a server or to pay one.
+The toolchain is published: @cascet/core, @cascet/client, @cascet/gateway, and @cascet/cli. A developer runs npx @cascet/cli init, wrap, or connect to price a server or to pay one. Use version 0.1.1 or later; 0.1.0 predates the payment-path fixes and is unsupported.
 
 ## Also built
 
