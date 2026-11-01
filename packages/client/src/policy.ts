@@ -81,6 +81,29 @@ export function normalizeAllowedPayTo(value: string): string {
   return payTo;
 }
 
+/**
+ * Validate an authorization-style preference (most preferred first): known
+ * styles only, duplicates dropped. Undefined means no preference, so the
+ * gateway's order of the acceptable options decides. `label` names the setting in errors.
+ */
+export function normalizePreferStyles(styles: readonly unknown[] | undefined, label = "preferStyles"): AuthorizationStyle[] | undefined {
+  if (styles === undefined) return undefined;
+  if (!Array.isArray(styles) || styles.length === 0) {
+    throw new Error(
+      `${label} must list at least one authorization style (${AUTHORIZATION_STYLES.join(", ")}); omit it to keep the gateway's order`,
+    );
+  }
+  const out: AuthorizationStyle[] = [];
+  for (const entry of styles) {
+    const style = typeof entry === "string" ? entry.trim() : entry;
+    if (!isAuthorizationStyle(style)) {
+      throw new Error(`${label}: unknown authorization style ${show(entry)}; known styles: ${AUTHORIZATION_STYLES.join(", ")}`);
+    }
+    if (!out.includes(style)) out.push(style);
+  }
+  return out;
+}
+
 /** Normalize a CEP-18 contract package hash to bare lower-case hex (accepts "hash-", "contract-package-" or "0x"). */
 export function normalizeAssetHash(value: string): string {
   const bare = value.trim().toLowerCase().replace(/^(?:hash-|contract-package-|0x)/, "");

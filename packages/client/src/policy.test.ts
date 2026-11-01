@@ -6,6 +6,7 @@ import {
   normalizeAllowedPayTo,
   normalizeAssetHash,
   normalizeNetworks,
+  normalizePreferStyles,
   parseRawAmount,
   SpendPolicy,
   type SpendDecision,
@@ -97,6 +98,22 @@ describe("normalizeAllowedPayTo", () => {
 
   it("still rejects a public key with the account-hash hint", () => {
     assert.throws(() => normalizeAllowedPayTo(`01${CONTRACT}`), /public key.*account-hash/);
+  });
+});
+
+describe("normalizePreferStyles", () => {
+  it("keeps known styles in order, trimmed and de-duplicated", () => {
+    assert.equal(normalizePreferStyles(undefined), undefined);
+    assert.deepEqual(normalizePreferStyles([" cep3009-value", "legacy-amount", "cep3009-value"]), ["cep3009-value", "legacy-amount"]);
+    assert.deepEqual(normalizePreferStyles(["legacy-amount"]), ["legacy-amount"]);
+  });
+
+  it("rejects unknown styles and empty lists, naming the setting", () => {
+    assert.throws(() => normalizePreferStyles([]), /preferStyles must list at least one authorization style/);
+    for (const bad of ["permit2", "", "AMOUNT", "Cep3009-Value", 1, null]) {
+      assert.throws(() => normalizePreferStyles([bad]), /preferStyles: unknown authorization style/, JSON.stringify(bad));
+    }
+    assert.throws(() => normalizePreferStyles(["value"], "CASCET_PREFER_STYLES"), /^Error: CASCET_PREFER_STYLES: unknown authorization style "value"/);
   });
 });
 
