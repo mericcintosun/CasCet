@@ -14,8 +14,8 @@ path (`packages/client`, `packages/gateway`, `tools/e2e/src/real-facilitator.ts`
 - **pnpm** 10.20.0 (`corepack enable` provisions the version pinned in
   `package.json`)
 - **Rust**, only for the smart contracts under [`contracts/`](contracts/): the
-  toolchain is pinned in `contracts/rust-toolchain`, and rustup installs it on
-  first use. Add the `rustfmt` and `clippy` components;
+  toolchain is pinned by the toolchain file in `contracts/`, and rustup
+  installs it on first use. Add the `rustfmt` and `clippy` components;
   [`cargo-odra`](https://odra.dev) is optional (`cargo test` works without it).
 - **Python** 3 (CI uses 3.12), only for the Python client under `clients/python`
 
@@ -35,6 +35,7 @@ This is a pnpm workspace monorepo:
 | `apps/dashboard` | Next.js live dashboard, playground and landing page |
 | `contracts` | Odra (Rust) smart contracts + deploy CLI |
 | `tools/e2e` | Self-hosted x402 facilitator and the end-to-end demos |
+| `tools/discord` | Optional one-command setup script for a CasCet Discord server (support runs on GitHub issues) |
 | `examples` | Wrapping a third-party MCP server, end to end on testnet |
 | `registry` | MCP Registry listing (`server.json`) |
 | `docs` | Spec, on-chain addresses, testing playbook, submission pack |
@@ -86,8 +87,8 @@ cargo test          # Odra unit tests in the mock VM (or: cargo odra test)
 
 Every pull request to `main` runs ([`.github/workflows`](.github/workflows)):
 
-- `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm typecheck` and
-  `pnpm test` on Node 22;
+- `pnpm install --frozen-lockfile`, `pnpm build`, the dashboard's
+  `next build`, `pnpm typecheck` and `pnpm test` on Node 22;
 - the Python client's unit tests;
 - `pnpm audit --prod --audit-level=high`;
 - `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test` and

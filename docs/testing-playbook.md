@@ -25,8 +25,8 @@ without a chain, except where it says mainnet.
 
 - Node.js 22 or newer
 - pnpm 10.20.0 (`corepack enable`)
-- (Contracts only) Rust; rustup installs the toolchain pinned in
-  `contracts/rust-toolchain`
+- (Contracts only) Rust; rustup installs the toolchain pinned by the
+  toolchain file in `contracts/`
 - (Python client only) Python 3
 
 ### 1. Install, build, typecheck
