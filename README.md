@@ -290,11 +290,12 @@ the [faucet](https://testnet.cspr.live/tools/faucet); buyers need no CSPR. The
 facilitator settles only payments to `CASCET_SELLER_ACCOUNT_HASH` in CasCet's x402
 token. `CASCET_SETTLE_PAYMENT_MOTES` sets the gas limit per settlement (default
 4 CSPR). For mainnet (`CASCET_NET=mainnet`) it also requires a bearer token in
-`CASCET_FACILITATOR_TOKEN` (put the same value into `facilitator.apiKey`), and it
-refuses to start when its fee-payer account is the owner account
-(`CASCET_OWNER_ACCOUNT_HASH`) or the seller account. Read [`SECURITY.md`](SECURITY.md)
-and [`docs/mainnet-readiness.md`](docs/mainnet-readiness.md) before you run
-anything with real funds.
+`CASCET_FACILITATOR_TOKEN` of at least 32 characters (`openssl rand -hex 32`;
+put the same value into `facilitator.apiKey`), and it refuses to start when its
+fee-payer account is the owner account (`CASCET_OWNER_ACCOUNT_HASH`) or the
+seller account. Read [`SECURITY.md`](SECURITY.md) and
+[`docs/mainnet-readiness.md`](docs/mainnet-readiness.md) before you run anything
+with real funds.
 
 ### Point an agent at it
 

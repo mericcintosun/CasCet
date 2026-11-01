@@ -113,8 +113,10 @@ both budgets. The bridge then pays only this seller, only in this token, only
 on testnet, at most 2.5 tokens per call and 10 tokens per session, and gives
 each call up to 90 s.
 
-If the facilitator should be reachable from anywhere but this machine, start
-it with a secret `CASCET_FACILITATOR_TOKEN` and put the same value in
+The facilitator listens on 127.0.0.1 only. To reach it from another machine,
+start it with `CASCET_FACILITATOR_HOST=<address>` and a secret
+`CASCET_FACILITATOR_TOKEN` (for example from `openssl rand -hex 32`; it refuses
+a non-loopback address without one), and put the same token in
 `facilitator.apiKey`; the gateway sends it in the `Authorization` header.
 
 ## Why the self-hosted facilitator?
