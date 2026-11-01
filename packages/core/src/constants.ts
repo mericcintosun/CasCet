@@ -31,8 +31,9 @@ export const HEADER_CASCET_PARENT_ID = "x-cascet-parent-id";
  * `@make-software/casper-x402` 1.0.0 still sends `amount`. Every hosted settle
  * against that token reverts with `User error: 64658` (Odra `MissingArg`), so a
  * gateway that sells it must use a self-hosted facilitator instead (see
- * {@link DEFAULT_SELF_HOSTED_FACILITATOR_URL}). `cascet wrap` warns when this URL
- * is paired with an asset that is not known to be CEP-3009.
+ * {@link DEFAULT_SELF_HOSTED_FACILITATOR_URL}). The config schema refuses a
+ * legacy-amount asset settled by this facilitator, and `cascet wrap` warns when
+ * it is paired with any other asset that is not known to be CEP-3009.
  */
 export const DEFAULT_FACILITATOR_URL = "https://x402-facilitator.cspr.cloud";
 
