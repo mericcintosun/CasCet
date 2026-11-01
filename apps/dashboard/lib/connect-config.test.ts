@@ -96,12 +96,16 @@ test("an opt-out is dropped once the safety fields are filled in", () => {
   assert.equal(env.has("CASCET_ALLOW_UNLIMITED_BUDGET"), false);
 });
 
-test("other warnings: per-call above session, mainnet, local gateway, relative key path", () => {
-  const w = connectWarnings({ ...base, maxPerCallRaw: "10", maxSessionRaw: "5", network: "mainnet", keyPath: "./agent.pem" }, true);
+test("other warnings: per-call above session, mainnet, local gateway, relative key and pin paths", () => {
+  const w = connectWarnings(
+    { ...base, maxPerCallRaw: "10", maxSessionRaw: "5", network: "mainnet", keyPath: "./agent.pem", toolPinsPath: "~/.cascet/pins.json" },
+    true,
+  );
   assert.deepEqual(
     w.map((x) => `${x.level}:${x.field}`),
-    ["warning:budget", "warning:network", "info:gateway", "info:key"],
+    ["warning:budget", "warning:network", "info:gateway", "info:key", "info:key"],
   );
+  assert.deepEqual(connectWarnings({ ...base, keyPath: "C:\\keys\\agent.pem", toolPinsPath: "/home/me/pins.json" }), []);
 });
 
 test("shell quoting keeps injection out of the copied command", () => {

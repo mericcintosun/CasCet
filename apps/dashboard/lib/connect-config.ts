@@ -167,15 +167,24 @@ export function connectWarnings(s: ConnectSettings, gatewayIsLocal = false): Con
       message: "Local gateway: plain http is accepted on this machine only. A remote gateway must use https.",
     });
   }
-  if (!s.keyPath.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(s.keyPath)) {
+  if (!isAbsolutePath(s.keyPath)) {
     out.push({
       level: "info",
       field: "key",
       message: "MCP clients start the bridge in their own working directory and do not expand ~, so use an absolute key path in the JSON config.",
     });
   }
+  if (s.toolPinsPath && !isAbsolutePath(s.toolPinsPath)) {
+    out.push({
+      level: "info",
+      field: "key",
+      message: "The tool pin file path is not absolute; in the JSON config ~ is not expanded. Use an absolute path, or leave it empty for the CLI default.",
+    });
+  }
   return out;
 }
+
+const isAbsolutePath = (p: string): boolean => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
 
 export type AmountResult = { ok: true; raw: string } | { ok: false; error: string };
 
