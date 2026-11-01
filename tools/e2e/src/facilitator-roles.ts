@@ -61,3 +61,40 @@ export function checkRoleSeparation(input: RoleCheckInput): RoleCheckResult {
   }
   return { errors, warnings };
 }
+
+export interface RecorderCheckInput {
+  network: string;
+  /** Account hash of the ReceiptRegistry recorder key (the gateway's anchoring.keyPath). */
+  recorderAccountHash: string;
+  feePayerAccountHash: string;
+  ownerAccountHash?: string;
+  sellerAccountHashes: string[];
+}
+
+/**
+ * The anchoring recorder is its own hot key (M07). On mainnet it must not be
+ * the fee payer, the contract owner or a seller: the owner key stays offline
+ * and authorizes a dedicated recorder on ReceiptRegistry instead. On testnet
+ * the same overlaps only warn.
+ */
+export function checkRecorderSeparation(input: RecorderCheckInput): RoleCheckResult {
+  const mainnet = input.network === "casper:casper";
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const problem = (msg: string) => (mainnet ? errors : warnings).push(msg);
+
+  const recorder = normalizeAccountHash(input.recorderAccountHash);
+  if (recorder === normalizeAccountHash(input.feePayerAccountHash)) {
+    problem("the recorder key is also the fee-payer key; use one key per role");
+  }
+  if (input.ownerAccountHash && recorder === normalizeAccountHash(input.ownerAccountHash)) {
+    problem(
+      `the recorder key is the contract owner account (${recorder.slice(0, 10)}…); authorize a dedicated recorder on ` +
+        "ReceiptRegistry and keep the owner key offline",
+    );
+  }
+  if (input.sellerAccountHashes.map(normalizeAccountHash).includes(recorder)) {
+    problem(`the recorder key is also a seller (payTo) account (${recorder.slice(0, 10)}…); revenue must not land on a hot key`);
+  }
+  return { errors, warnings };
+}

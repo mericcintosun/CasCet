@@ -1,4 +1,3 @@
-import { readFileSync, statSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import express, { type NextFunction, type Request, type Response } from "express";
 // Default import on purpose: CodeQL's js/missing-rate-limiting model recognizes
@@ -6,7 +5,6 @@ import express, { type NextFunction, type Request, type Response } from "express
 import rateLimit from "express-rate-limit";
 import type { Network } from "@x402/core/types";
 import { ExactCasperScheme } from "@make-software/casper-x402/exact/facilitator";
-import casperSdk from "casper-js-sdk";
 import { AuthorizationLedger } from "./authorization-ledger.js";
 import { createCasperRpc } from "./casper-rpc.js";
 import { assertUsableToken, authorizationMatches, MIN_MAINNET_TOKEN_LENGTH } from "./facilitator-auth.js";
@@ -32,6 +30,7 @@ import {
 } from "./facilitator-env.js";
 import { checkRoleSeparation, normalizeAccountHash } from "./facilitator-roles.js";
 import { DailyGasBudget } from "./gas-budget.js";
+import { loadSecretKeyFile } from "./key-file.js";
 import { createCasperSettlementChain } from "./settlement.js";
 import { TokenStateReader } from "./token-state.js";
 
@@ -285,28 +284,6 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
   return app;
 }
 
-function loadFeePayerKey(path: string, algo: "ed25519" | "secp256k1", logger: FacilitatorLogger) {
-  let pem: string;
-  try {
-    pem = readFileSync(path, "utf8");
-  } catch (err) {
-    throw new Error(`cannot read the fee-payer key file ${path}: ${(err as NodeJS.ErrnoException).code ?? "error"}`);
-  }
-  try {
-    if ((statSync(path).mode & 0o077) !== 0) {
-      logger.warn(`fee-payer key file ${path} is readable by group/others; run: chmod 600 ${path}`);
-    }
-  } catch {
-    /* permissions are advisory */
-  }
-  const algorithm = algo === "secp256k1" ? casperSdk.KeyAlgorithm.SECP256K1 : casperSdk.KeyAlgorithm.ED25519;
-  try {
-    return casperSdk.PrivateKey.fromPem(pem, algorithm);
-  } catch {
-    throw new Error(`the fee-payer key file ${path} is not a valid ${algo} PEM`);
-  }
-}
-
 function listen(app: express.Express, port: number, host: string): Promise<Server> {
   return new Promise((resolvePromise, reject) => {
     const server = createServer(app);
@@ -358,7 +335,7 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   const ownerAccountHash = opts.ownerAccountHash ? normalizeAccountHash(opts.ownerAccountHash) : undefined;
 
   // --- fee payer and key-role separation (M07) ---
-  const privateKey = loadFeePayerKey(opts.keyPath, opts.keyAlgo ?? "ed25519", logger);
+  const privateKey = loadSecretKeyFile(opts.keyPath, opts.keyAlgo ?? "ed25519", "fee-payer", m => logger.warn(m));
   const feePayer = privateKey.publicKey.accountHash().toHex();
   const roles = checkRoleSeparation({
     network,

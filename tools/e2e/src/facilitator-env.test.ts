@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { FacilitatorConfigError, NETWORKS, readFacilitatorEnv, resolveNetwork } from "./facilitator-env.js";
-import { checkRoleSeparation, normalizeAccountHash } from "./facilitator-roles.js";
+import { checkRecorderSeparation, checkRoleSeparation, normalizeAccountHash } from "./facilitator-roles.js";
 
 const ROOT = "/repo";
 const TOKEN = "f".repeat(64);
@@ -35,6 +35,17 @@ describe("key-role separation rules (M07)", () => {
   test("mainnet: the owner account must be known", () => {
     const r = checkRoleSeparation({ network: "casper:casper", feePayerAccountHash: FEE_PAYER, sellerAccountHashes: [SELLER] });
     assert.match(r.errors.join(), /CASCET_OWNER_ACCOUNT_HASH/);
+  });
+
+  test("mainnet: the anchoring recorder is its own key (not the fee payer, owner or a seller)", () => {
+    const RECORDER = "7e".repeat(32);
+    const base = { network: "casper:casper", feePayerAccountHash: FEE_PAYER, ownerAccountHash: DEPLOYER, sellerAccountHashes: [SELLER] };
+    assert.deepEqual(checkRecorderSeparation({ ...base, recorderAccountHash: RECORDER }), { errors: [], warnings: [] });
+    assert.match(checkRecorderSeparation({ ...base, recorderAccountHash: `00${FEE_PAYER}` }).errors.join(), /fee-payer/);
+    assert.match(checkRecorderSeparation({ ...base, recorderAccountHash: DEPLOYER }).errors.join(), /contract owner/);
+    assert.match(checkRecorderSeparation({ ...base, recorderAccountHash: SELLER }).errors.join(), /seller/);
+    const testnet = checkRecorderSeparation({ ...base, network: "casper:casper-test", recorderAccountHash: FEE_PAYER });
+    assert.deepEqual([testnet.errors.length, testnet.warnings.length], [0, 1]);
   });
 
   test("testnet: overlaps are warnings, not errors", () => {

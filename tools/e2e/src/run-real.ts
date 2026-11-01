@@ -3,6 +3,8 @@ import { cascetConfigSchema, type CascetConfig } from "@cascet/core";
 import { startGateway } from "@cascet/gateway";
 import { createPayingFetch, PaidMcpHttpClient } from "@cascet/client";
 import { NETWORKS, readFacilitatorEnv } from "./facilitator-env.js";
+import { checkRecorderSeparation } from "./facilitator-roles.js";
+import { accountHashOfKeyFile } from "./key-file.js";
 import { startRealFacilitator } from "./real-facilitator.js";
 
 /**
@@ -38,6 +40,16 @@ const fac = readFacilitatorEnv(process.env, ROOT, "casper:casper-test");
 for (const warning of fac.warnings) console.warn(`[demo] warning: ${warning}`);
 const recorderEnv = process.env.CASCET_RECORDER_KEY?.trim();
 const RECORDER_KEY = recorderEnv ? resolve(recorderEnv) : resolve(ROOT, "contracts/keys/deployer_secret_key.pem");
+// Same role rules as mainnet, as warnings: the testnet demo may run on one key.
+for (const warning of checkRecorderSeparation({
+  network: "casper:casper-test",
+  recorderAccountHash: accountHashOfKeyFile(RECORDER_KEY, "ed25519", "recorder"),
+  feePayerAccountHash: accountHashOfKeyFile(fac.keyPath, fac.keyAlgo, "fee-payer"),
+  ...(fac.ownerAccountHash ? { ownerAccountHash: fac.ownerAccountHash } : {}),
+  sellerAccountHashes: fac.allowedPayTo,
+}).warnings) {
+  console.warn(`[demo] warning: ${warning}`);
+}
 
 // Real x402 payment token deployed by CasCet (transfer_with_authorization).
 const X402_TOKEN = `hash-${TESTNET.token}`;
