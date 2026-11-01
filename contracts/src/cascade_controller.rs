@@ -687,7 +687,7 @@ mod tests {
     // that re-enters from the token's `transfer` sees the updated spend and
     // cannot push the payouts past the budget.
     #[test]
-    fn reentrant_charge_cannot_exceed_the_budget() {
+    fn reentrant_charge_cannot_exceed_the_budget_mockvm_only() {
         if on_casper_backend() {
             eprintln!("skipped on the Casper backend: ReentrantToken has no wasm");
             return;
@@ -710,7 +710,7 @@ mod tests {
     // paid, and `spent` still equals the payouts. Before C2 the outer call
     // wrote back a stale `spent` (40 recorded, 80 paid).
     #[test]
-    fn reentrant_charge_within_budget_keeps_spent_equal_to_payouts() {
+    fn reentrant_charge_within_budget_keeps_spent_equal_to_payouts_mockvm_only() {
         if on_casper_backend() {
             eprintln!("skipped on the Casper backend: ReentrantToken has no wasm");
             return;
