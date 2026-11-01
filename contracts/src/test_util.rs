@@ -12,13 +12,19 @@ use odra::host::{Deployer, HostEnv};
 
 /// Deploy a DemoToken whose whole `supply` goes to the current caller.
 pub fn deploy_demo_token(env: &HostEnv, supply: u64) -> DemoTokenHostRef {
+    deploy_demo_token_u256(env, U256::from(supply))
+}
+
+/// Like [`deploy_demo_token`], for supplies beyond `u64` (up to `U256::MAX`),
+/// so tests can reach the arithmetic edges of the contracts.
+pub fn deploy_demo_token_u256(env: &HostEnv, supply: U256) -> DemoTokenHostRef {
     DemoToken::deploy(
         env,
         DemoTokenInitArgs {
             symbol: "WCSPR".to_string(),
             name: "Wrapped CSPR".to_string(),
             decimals: 9,
-            initial_supply: U256::from(supply),
+            initial_supply: supply,
         },
     )
 }

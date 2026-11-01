@@ -11,6 +11,7 @@
 //! init, and `releasable` is computed from lifetime received value, so funds
 //! that arrive at any time are always split by the exact configured weights.
 
+use crate::math::mul_div_floor;
 use odra::casper_types::U256;
 use odra::prelude::*;
 use odra::ContractRef;
@@ -105,8 +106,14 @@ impl RevenueSplit {
         if shares == 0 {
             return U256::zero();
         }
-        let total_received = self.total_received();
-        let owed = total_received * U256::from(shares) / U256::from(self.total_shares());
+        // floor(total_received * shares / total_shares) without the full
+        // product, which would overflow (and make `release` impossible) once
+        // total_received passed U256::MAX / shares. `shares <= total_shares`.
+        let owed = mul_div_floor(
+            self.total_received(),
+            shares.into(),
+            self.total_shares().into(),
+        );
         let already = self.released.get_or_default(&account);
         if owed > already {
             owed - already
@@ -167,7 +174,7 @@ impl RevenueSplit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{deploy_demo_token as deploy_token, Lcg};
+    use crate::test_util::{deploy_demo_token as deploy_token, deploy_demo_token_u256, Lcg};
     use odra::casper_types::U256;
     use odra::host::{Deployer, HostEnv};
 
@@ -406,5 +413,36 @@ mod tests {
             paid += entitled;
         }
         assert!(deposited - paid < U256::from(payees.len()));
+    }
+
+    // `releasable` computes floor(received * shares / total_shares) without
+    // the full product, so no balance can make `release` impossible. Before,
+    // `received * shares` trapped once received passed U256::MAX / shares.
+    #[test]
+    fn huge_revenue_stays_releasable() {
+        let env = odra_test::env();
+        let alice = env.get_account(1);
+        let bob = env.get_account(2);
+        let mut token = deploy_demo_token_u256(&env, U256::MAX);
+        let mut split = RevenueSplit::deploy(
+            &env,
+            RevenueSplitInitArgs {
+                token: token.address(),
+                payees: vec![alice, bob],
+                shares: vec![2, 2],
+            },
+        );
+        token.transfer(split.address(), U256::MAX);
+
+        // Each payee is owed floor(U256::MAX * 2 / 4) = U256::MAX / 2.
+        assert_eq!(split.releasable(alice), U256::MAX / 2);
+        split.release(alice);
+        assert_eq!(split.releasable(bob), U256::MAX / 2);
+        split.release(bob);
+        assert_eq!(token.balance_of(alice), U256::MAX / 2);
+        assert_eq!(token.balance_of(bob), U256::MAX / 2);
+        // U256::MAX is odd: one unit of rounding dust stays behind.
+        assert_eq!(split.total_received(), U256::MAX);
+        assert_eq!(token.balance_of(split.address()), U256::one());
     }
 }

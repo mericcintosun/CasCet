@@ -4,6 +4,7 @@ extern crate alloc;
 
 pub mod cascade_controller;
 pub mod demo_token;
+mod math;
 pub mod payment_channel;
 pub mod receipt_registry;
 pub mod revenue_split;

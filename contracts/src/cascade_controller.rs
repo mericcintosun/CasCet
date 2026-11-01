@@ -18,6 +18,7 @@
 //! Casper's instant deterministic finality is what makes a multi-hop tree
 //! settle without stalls; the on-chain hop records reconstruct the whole tree.
 
+use crate::math::mul_div_floor;
 use odra::casper_types::U256;
 use odra::prelude::*;
 use odra::ContractRef;
@@ -187,7 +188,10 @@ impl CascadeController {
                 .hops
                 .get(&(cascade_id, parent))
                 .unwrap_or_revert_with(&self.env(), Error::UnknownParent);
-            let cut = gross * U256::from(attribution_bps) / U256::from(BPS_DENOMINATOR);
+            // floor(gross * bps / 10_000) without the full product, which
+            // overflowed (an opaque trap) for any gross above
+            // U256::MAX / 10_000, even when the hop fit the budget.
+            let cut = mul_div_floor(gross, attribution_bps, BPS_DENOMINATOR);
             (cut, Some(parent_hop.payee))
         };
         let net = gross - to_parent;
@@ -288,7 +292,9 @@ impl CascadeController {
 mod tests {
     use super::*;
     use crate::demo_token::DemoTokenHostRef;
-    use crate::test_util::{deploy_demo_token as deploy_token, on_casper_backend, Lcg};
+    use crate::test_util::{
+        deploy_demo_token as deploy_token, deploy_demo_token_u256, on_casper_backend, Lcg,
+    };
     use odra::casper_types::U256;
     use odra::host::{Deployer, HostEnv, NoArgs};
 
@@ -478,6 +484,47 @@ mod tests {
             Err(Error::BudgetExceeded.into())
         );
         assert_eq!(token.balance_of(payee), U256::from(1_000u64));
+    }
+
+    // The attribution cut is computed without the full `gross * bps`
+    // product, so every hop that fits the budget can be charged. Before, a
+    // child hop with a gross above U256::MAX / 10_000 and a non-zero
+    // attribution trapped even inside the budget. Such budgets are possible:
+    // the cascade owner picks the token.
+    #[test]
+    fn a_huge_child_hop_within_budget_is_charged_without_overflow() {
+        let env = odra_test::env();
+        let gateway = env.get_account(1);
+        let parent_payee = env.get_account(2);
+        let child_payee = env.get_account(3);
+        env.set_caller(env.get_account(0));
+        let mut token = deploy_demo_token_u256(&env, U256::MAX);
+        let mut controller = CascadeController::deploy(&env, NoArgs);
+        token.approve(controller.address(), U256::MAX);
+        let cid = controller.open(gateway, token.address(), U256::MAX);
+
+        env.set_caller(gateway);
+        let root = controller.charge(cid, 0, parent_payee, U256::one(), 0);
+        let gross = U256::MAX / 2;
+        let child = controller
+            .try_charge(cid, root, child_payee, gross, 5_000)
+            .expect("a hop within the budget must not trap");
+        let hop = controller.get_hop(cid, child);
+        assert_eq!(hop.to_parent, gross / 2);
+        assert_eq!(hop.net_to_payee, gross - gross / 2);
+        assert_eq!(token.balance_of(parent_payee), U256::one() + gross / 2);
+        assert_eq!(token.balance_of(child_payee), gross - gross / 2);
+
+        // The rest of the budget, at 25% attribution, splits exactly as well.
+        let rest = controller.remaining(cid);
+        let last = controller.charge(cid, child, parent_payee, rest, 2_500);
+        assert_eq!(controller.get_hop(cid, last).to_parent, rest / 4);
+        assert_eq!(controller.get_cascade(cid).spent, U256::MAX);
+        assert_eq!(token.balance_of(controller.address()), U256::zero());
+        assert_eq!(
+            token.balance_of(parent_payee) + token.balance_of(child_payee),
+            U256::MAX
+        );
     }
 
     #[test]
