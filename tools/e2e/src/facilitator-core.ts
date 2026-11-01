@@ -234,11 +234,21 @@ export function logText(value: unknown): string {
   return s.replace(/[\r\n\u2028\u2029]+/g, " ").slice(0, 300);
 }
 
+/**
+ * Contract-package payees ("01" + hash, configured as hash-… / package-hash-…)
+ * are refused: casper-x402 1.0.0 and MAKE's Go facilitator always settle to
+ * Key::Account, and no testnet settle has shown the CasCet token crediting a
+ * Key::Hash payee. Refusing up front costs nothing; a wrong guess would revert
+ * every settle and burn its gas.
+ */
+const CONTRACT_PAYEE_UNSUPPORTED = "contract-package payees (01…, hash-…, package-hash-…) are not supported by this facilitator";
+
 /** Normalize an allowlist payee entry to "00" + 64 hex. */
 export function normalizePayTo(entry: string): string {
   const s = entry.trim().toLowerCase().replace(/^0x/, "");
   if (s.startsWith("account-hash-") && HEX64.test(s.slice(13))) return `00${s.slice(13)}`;
   if (ACCOUNT_KEY.test(s)) return s;
+  if (/^(hash-|package-hash-|contract-package-)[0-9a-f]{64}$/.test(s)) throw new Error(`${CONTRACT_PAYEE_UNSUPPORTED}: ${entry.slice(0, 80)}`);
   throw new Error(`payee must be an account hash ("00" + 64 hex or account-hash-<hex>): ${entry.slice(0, 80)}`);
 }
 
@@ -314,9 +324,11 @@ export function checkAuthorization(
 
   const payTo = req.payTo.toLowerCase();
   if (!ACCOUNT_KEY.test(payTo)) {
-    // A "01" (contract-package) payee would be settled to Key::Account(hash) by
-    // casper-x402 1.0.0 and revert on the signature check, burning gas.
-    return reject(200, Reason.invalidPayTo, "payTo must be an account-hash Key: 00 + 64 hex");
+    return reject(
+      200,
+      Reason.invalidPayTo,
+      /^01[0-9a-f]{64}$/.test(payTo) ? `${CONTRACT_PAYEE_UNSUPPORTED}; payTo must be 00 + 64 hex` : "payTo must be an account-hash Key: 00 + 64 hex",
+    );
   }
   if (config.allowedPayTo && !config.allowedPayTo.includes(payTo)) return reject(403, Reason.payToNotAllowlisted, "payTo not allowlisted");
 

@@ -190,6 +190,8 @@ describe("request parsing (HTTP 400)", () => {
     assert.equal(normalizePayTo(`account-hash-${"AA".repeat(32)}`), `00${"aa".repeat(32)}`);
     assert.equal(normalizeAsset(`hash-${ASSET}`), ASSET);
     assert.throws(() => normalizePayTo(`01${"aa".repeat(32)}`));
+    assert.throws(() => normalizePayTo(`hash-${"aa".repeat(32)}`), /contract-package payees .* not supported/);
+    assert.throws(() => normalizePayTo(`package-hash-${"aa".repeat(32)}`), /not supported/);
     assert.throws(() => normalizeAsset("hash-123"));
   });
 });
@@ -228,6 +230,8 @@ describe("/verify", () => {
       assert.equal(r.body.invalidReason, reason);
     }
     assert.equal(h.signatureChecks.count, 0, "rejected before the signature check");
+    const contractPayee = await h.core.verify(parsed({ payTo: `01${"88".repeat(32)}` }));
+    assert.match(contractPayee.body.invalidMessage ?? "", /contract-package payees .* not supported/);
   });
 
   test("the minimum settle window is configurable", async () => {
