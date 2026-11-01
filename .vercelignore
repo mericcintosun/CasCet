@@ -1,14 +1,43 @@
+# The Vercel CLI uploads the linked project root and never reads .gitignore,
+# so anything that must not leave this machine has to be listed here as well.
+
+# Secrets: signing keys and env files, at any depth
+**/*.pem
+**/keys/
+**/.env
+**/.env.*
+contracts/.env*
+
+# Local tooling state (includes agent worktrees, i.e. full copies of the repo)
+.claude/
+
+# Build output and dependencies
 .git
 **/node_modules
 **/.next
 contracts/target
 contracts/wasm
 contracts/bin/*/
+tools/e2e/.cascet
+**/.cascet
+*.log
+
+# Not needed to build the dashboard (it only links to these on GitHub)
+docs/
+clients/
+examples/
+
+# Root documents, decks and media: local or published elsewhere
+/*.md
+/*.pdf
+/*.pptx
+/*.mp4
+/*.mov
+/*.webm
+/*.opus
+/*.wav
+/*.m4a
 *.mp3
 /isometric.png
 /logo.png
 /social-share.png
-/cinematic-cascet.mp4
-tools/e2e/.cascet
-**/.cascet
-*.log

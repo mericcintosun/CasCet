@@ -10,15 +10,18 @@ README badges.
 | Platform | Handle | Status | URL |
 |---|---|---|---|
 | X (Twitter) | `@cascet_xyz` | live | `https://x.com/cascet_xyz` |
-| Discord | server "CasCet" | live | `https://discord.gg/fcjevk47k` |
 | GitHub | `mericcintosun/CasCet` | live | `https://github.com/mericcintosun/CasCet` |
+| Support | GitHub issues | live | `https://github.com/mericcintosun/CasCet/issues` |
+| Discord | server "CasCet" | no public invite (the old one expired) | — |
 | Telegram | — | not planned | — |
 
-> X, Discord and GitHub are wired into `SOCIALS` in
-> `apps/dashboard/app/page.tsx` (site footer + CTA), the README badges, and this
-> kit. Telegram is not planned. To configure the Discord server (channels,
-> welcome message, announcements) via a Discord MCP server, see
-> [docs/discord-mcp-handoff.md](discord-mcp-handoff.md).
+> X and GitHub are linked from the README and this kit, and questions and
+> support go to GitHub issues. The site's `SOCIALS` object in
+> `apps/dashboard/app/page.tsx` (footer + CTA) must not link Discord until there
+> is a working invite. If the Discord server reopens, create a non-expiring
+> invite and add it to the README, `SOCIALS` and this kit in the same change;
+> [docs/discord-mcp-handoff.md](discord-mcp-handoff.md) describes the server
+> setup.
 
 ## Brand basics (already in `apps/dashboard/public/`)
 
@@ -32,7 +35,7 @@ README badges.
 **Bio (160 chars):**
 > Stripe for MCP on Casper. Charge AI agents per tool call over x402 — and settle the multi-hop payment chains nobody else does. Payments that cascade. ⛓️
 
-**Location:** `Casper Testnet` · **Link:** the deployed site URL.
+**Location:** `Casper` · **Link:** https://cascet.vercel.app
 
 **Pinned launch thread:**
 
@@ -51,20 +54,20 @@ Real agent work composes: a "portfolio analysis" tool internally buys a price fe
 
 4/ The headline is a new primitive: budget-bounded cascades.
 
-An agent opens a cascade with ONE deposit that caps the whole call tree. Our CascadeController contract pays each hop out of it and rejects any hop that would overspend — enforcement by construction, on-chain.
+An agent opens a cascade with ONE deposit that caps the whole call tree. Our CascadeController contract pays each hop out of it and rejects any hop that would overspend — enforcement by construction, on-chain. (A standalone primitive today; wiring it into the gateway is next.)
 
 5/ Plus recursive attribution: a share of a child hop's earnings flows *up* to the parent's payee. The payment graph IS the revenue-sharing graph.
 
-Verified end-to-end on testnet — including an over-budget hop rejected on-chain.
+Verified end-to-end on Casper mainnet — including an over-budget hop rejected on-chain.
 
 6/ And it's autonomous: Claude reads the paid tools' prices, decides what to buy for a DeFi/RWA goal, pays x402 per call under budget, and cites the data it bought.
 
-7/ 7 contracts live on Casper Testnet. Real x402 settlement, no mock. Live dashboard + an interactive cascade playground.
+7/ Live on Casper mainnet and testnet. Real x402 settlement, no mock. Live dashboard + an interactive cascade playground.
 
 Built for the Casper Agentic Buildathon 2026.
 
 Code 👉 github.com/mericcintosun/CasCet
-Try it 👉 <site url>
+Try it 👉 https://cascet.vercel.app
 
 **A few standalone posts to schedule:**
 - "an over-budget payment, rejected *on-chain* by the contract, not by trusting a gateway 👇" + the playground `BudgetExceeded` clip.
@@ -82,9 +85,11 @@ Try it 👉 <site url>
 
 **Pinned message:** the site URL + the one-line pitch + "questions welcome."
 
-## Discord
+## Discord (no public invite)
 
-**Server name:** CasCet · invite `https://discord.gg/fcjevk47k`
+**Server name:** CasCet. The public invite expired and is no longer linked
+anywhere; questions and support go to GitHub issues. The layout below is kept for
+reference, for when the server reopens with a non-expiring invite.
 
 The whole server (roles, channels, welcome, onboarding, pinned content, a Demo Day
 event) is built by a one-command script — [`tools/discord`](../tools/discord).
@@ -103,4 +108,7 @@ Create a bot, run `pnpm --filter @cascet/discord-setup setup`. Structure:
 
 1. `apps/dashboard/app/page.tsx` → update the `SOCIALS` object (footer + CTA use it).
 2. `README.md` → the socials line under the title.
-3. `docs/submission.md` → list the live social links for the judges.
+3. `docs/submission.md` and `docs/buidl-page.md` → list the live social links for the judges.
+
+Never link an invite or account that does not resolve; check it before every
+release.

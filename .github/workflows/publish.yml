@@ -1,72 +1,227 @@
 name: Publish to npm
 
-# Publishes the public packages (@cascet/core, @cascet/client, @cascet/gateway,
-# and the `cascet` CLI) to npm. Private packages (servers, dashboard, e2e, agent,
-# discord-setup) are skipped automatically by pnpm.
+# Publishes the four public packages (@cascet/core, @cascet/client,
+# @cascet/gateway, @cascet/cli) with npm trusted publishing: GitHub's OIDC
+# token is exchanged for a short-lived npm token at publish time, and every
+# version gets a provenance attestation. No npm token is stored anywhere.
 #
-# Auth: a repo secret NPM_TOKEN (npm Automation token — bypasses 2FA).
-# Trigger: the "Run workflow" button (workflow_dispatch) or pushing a v* tag.
+# Two jobs keep that OIDC credential away from dependency code:
+#   build    installs, builds, typechecks, tests and packs. Install scripts,
+#            the build and the tests run third-party code, so this job gets
+#            no id-token.
+#   publish  holds id-token: write but runs no repository or dependency code:
+#            it sets up Node, downloads the packed tarballs and runs
+#            npm publish on them (no checkout, no install, no package scripts).
+#
+# One-time setup on npmjs.com, for EACH of the four packages:
+#   package page -> Settings -> Trusted Publisher -> GitHub Actions
+#     Organization or user: mericcintosun
+#     Repository:           CasCet
+#     Workflow filename:    publish.yml
+#     Environment name:     npm
+#   Then, under Settings -> Publishing access, choose "Require two-factor
+#   authentication and disallow tokens", revoke the old automation token, and
+#   delete the NPM_TOKEN repository secret. (npm does not validate this form when
+#   you save it; a typo only shows up as a failed publish.)
+# One-time setup on GitHub: Settings -> Environments -> "npm" (created by the
+# first run): allow only the main branch and v* tags, and add a required
+# reviewer if every publish should wait for a manual approval.
+#
+# Triggers: pushing a v* tag (the tag must point at a commit on main and equal
+# the version of all four packages), or "Run workflow" from main or a v* tag,
+# which is a dry run unless you untick it. Only versions that are not on npm
+# yet are packed and published, in dependency order: core, client, gateway,
+# cli. When every version is already on npm, the publish job is skipped.
 
 on:
-  workflow_dispatch:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: pack and run npm publish --dry-run, publish nothing"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
 jobs:
-  publish:
+  build:
+    name: Build, test and pack @cascet/*
+    # Never publish from a topic branch.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      count: ${{ steps.pack.outputs.count }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          version: 10.20.0
+          persist-credentials: false
+          fetch-depth: 0 # full history, to check that a release tag is on main
 
-      - uses: actions/setup-node@v4
+      # The pnpm version comes from "packageManager" in the root package.json.
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      # No dependency cache in a release job.
+      - name: Install Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
-          cache: pnpm
+          node-version: 22
+          package-manager-cache: false
 
-      - name: Install
-        run: pnpm install --no-frozen-lockfile
+      - name: Check the release tag
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME does not point at a commit on main"
+            exit 1
+          fi
+          want="${GITHUB_REF_NAME#v}"
+          for dir in packages/core packages/client packages/gateway packages/cli; do
+            ver="$(node -p "require('./$dir/package.json').version")"
+            if [ "$ver" != "$want" ]; then
+              echo "::error::$dir is at $ver but the tag is $GITHUB_REF_NAME"
+              exit 1
+            fi
+          done
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm build
 
-      - name: Authenticate to npm (trim + verify)
-        run: |
-          TOKEN="$(printf '%s' "${NPM_TOKEN}" | tr -d '[:space:]')"
-          printf '//registry.npmjs.org/:_authToken=%s\nregistry=https://registry.npmjs.org/\n' "$TOKEN" > "$HOME/.npmrc"
-          echo "trimmed token length: ${#TOKEN} (a classic npm token is ~40 chars)"
-          if who="$(npm whoami 2>&1)"; then
-            echo "authenticated as: $who"
-            echo "--- org membership (cascet) ---"
-            npm org ls cascet 2>&1 | head -20 || true
-          else
-            echo "::error::npm auth failed ($who). The NPM_TOKEN secret is not a valid npm token — regenerate a Classic > Automation token on npmjs.com and re-add it as NPM_TOKEN (paste into the *Secret* field, no spaces/newlines)."
-            exit 1
-          fi
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Typecheck
+        run: pnpm typecheck
 
-      - name: Publish new versions only (in dependency order)
+      - name: Test
+        run: pnpm test
+
+      - name: Pack new versions (core, client, gateway, cli)
+        id: pack
         run: |
           set -euo pipefail
+          out="$RUNNER_TEMP/npm-pack"
+          mkdir -p "$out"
+          order="$out/publish-order.txt"
+          : > "$order"
           for dir in packages/core packages/client packages/gateway packages/cli; do
-            name=$(node -p "require('./$dir/package.json').name")
-            ver=$(node -p "require('./$dir/package.json').version")
-            if npm view "$name@$ver" version >/dev/null 2>&1; then
-              echo "= $name@$ver already on npm — skipping"
-            else
-              echo "+ publishing $name@$ver"
-              ( cd "$dir" && pnpm publish --access public --no-git-checks )
-            fi
-          done
+            name="$(node -p "require('./$dir/package.json').name")"
+            ver="$(node -p "require('./$dir/package.json').version")"
 
-      - name: Clean up credentials
-        if: always()
-        run: rm -f "$HOME/.npmrc"
+            # 200: this exact version is on npm already. 404: not yet. Anything
+            # else is a registry problem, so stop instead of guessing.
+            code="$(curl -sS -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/${name/\//%2f}/$ver")"
+            case "$code" in
+              200) echo "= $name@$ver is already on npm, skipping"; continue ;;
+              404) ;;
+              *) echo "::error::npm registry answered HTTP $code for $name@$ver"; exit 1 ;;
+            esac
+
+            # pnpm pack rewrites workspace:* to real versions; publishing the
+            # folder with npm would ship the workspace: protocol verbatim.
+            tgz="$(cd "$dir" && pnpm pack --pack-destination "$out" --json \
+              | node -e 'let s = ""; process.stdin.on("data", d => (s += d)).on("end", () => process.stdout.write(JSON.parse(s).filename))')"
+            if tar -xOzf "$tgz" package/package.json | grep -q '"workspace:'; then
+              echo "::error::$tgz still contains a workspace: dependency"
+              exit 1
+            fi
+            if ! tar -tzf "$tgz" | grep -q '^package/dist/'; then
+              echo "::error::$tgz contains no dist/ build output"
+              exit 1
+            fi
+            if tar -tzf "$tgz" | grep -Eq '\.pem$|(^|/)\.env(\.|$)|(^|/)keys/'; then
+              echo "::error::$tgz contains a key or .env file"
+              exit 1
+            fi
+
+            basename "$tgz" >> "$order"
+            echo "+ packed $name@$ver"
+          done
+          count="$(grep -c . "$order" || true)"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" = "0" ]; then
+            echo "::notice::Every package version is already on npm; nothing to publish."
+          fi
+
+      - name: Upload the tarballs
+        if: steps.pack.outputs.count != '0'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-tarballs
+          path: ${{ runner.temp }}/npm-pack/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish @cascet/* to npm
+    needs: build
+    if: needs.build.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # OIDC token for npm trusted publishing and provenance
+    steps:
+      # Node 24.5.0 and later bundle npm 11.5.1 or newer, which trusted
+      # publishing needs, so nothing is installed from the registry in this
+      # job; check-latest avoids an older cached 24.x. No registry-url: npm
+      # takes its token from the OIDC exchange, not from an .npmrc.
+      - name: Install Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+
+      - name: Check Node >= 22.14.0 and npm >= 11.5.1 (trusted publishing)
+        run: |
+          set -euo pipefail
+          node -e '
+            const atLeast = (v, min) => {
+              const a = v.split(".").map(Number), b = min.split(".").map(Number);
+              for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+              return true;
+            };
+            const npmV = process.argv[1], nodeV = process.versions.node;
+            if (!atLeast(nodeV, "22.14.0")) { console.error(`Node ${nodeV} < 22.14.0`); process.exit(1); }
+            if (!atLeast(npmV, "11.5.1")) { console.error(`npm ${npmV} < 11.5.1`); process.exit(1); }
+            console.log(`node ${nodeV}, npm ${npmV}`);
+          ' "$(npm --version)"
+
+      - name: Download the tarballs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-tarballs
+          path: ${{ runner.temp }}/npm-pack
+
+      # Tarballs only: npm runs no package scripts for them, and
+      # --ignore-scripts makes sure of it.
+      - name: Publish new versions (core, client, gateway, cli)
+        env:
+          DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/npm-pack"
+          while IFS= read -r tgz; do
+            [ -n "$tgz" ] || continue
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "~ dry run: $tgz"
+              npm publish "./$tgz" --access public --ignore-scripts --dry-run
+            else
+              echo "+ publishing $tgz"
+              npm publish "./$tgz" --provenance --access public --ignore-scripts
+            fi
+          done < publish-order.txt

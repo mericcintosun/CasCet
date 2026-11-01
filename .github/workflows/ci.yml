@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Weekly run so new advisories (pnpm audit, cargo audit) and toolchain or
+    # registry drift surface even when nobody pushes. Mondays 05:00 UTC.
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref
 concurrency:
@@ -14,49 +19,182 @@ concurrency:
 permissions:
   contents: read
 
+# Every third-party action is pinned to a full commit SHA with its version in a
+# trailing comment; Dependabot's github-actions updater bumps both together.
+# Rust is installed with the runner's preinstalled rustup instead of a
+# third-party toolchain action.
+
 jobs:
   build:
-    name: Build & typecheck
+    name: Build, typecheck & test (TypeScript)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          version: 10.20.0
+          persist-credentials: false
+
+      # The pnpm version comes from "packageManager" in the root package.json.
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - name: Install Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
+      # Fails if pnpm-lock.yaml is out of date with any package.json.
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Build workspace packages
         run: pnpm build
 
+      # `pnpm build` covers packages/* and servers/* only. The dashboard builds
+      # without secrets: the on-chain views stay empty without CSPR_CLOUD_TOKEN.
+      - name: Build dashboard
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: pnpm --filter @cascet/dashboard build
+
       - name: Typecheck
         run: pnpm typecheck
 
-  contracts:
-    name: Contract tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      # pnpm -r test: runs every package that defines a "test" script
+      # (Node's built-in runner through tsx); packages without one are skipped.
+      - name: Unit tests
+        run: pnpm test
 
-      - name: Install Rust (pinned nightly)
-        uses: dtolnay/rust-toolchain@master
+  python:
+    name: Python client tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          toolchain: nightly-2026-01-01
+          persist-credentials: false
+
+      - name: Install Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          # requirements.txt and, where it exists, requirements-lock.txt
+          cache-dependency-path: clients/python/requirements*.txt
+
+      # Prefer the hash-pinned lock file: the same, verified packages on every
+      # run. Fall back to the minimum versions while no lock file exists.
+      - name: Install client dependencies
+        run: |
+          if [ -f clients/python/requirements-lock.txt ]; then
+            python3 -m pip install --require-hashes -r clients/python/requirements-lock.txt
+          else
+            python3 -m pip install -r clients/python/requirements.txt
+          fi
+
+      - name: Unit tests
+        run: |
+          if [ -d clients/python/tests ]; then
+            PYTHONPATH=clients/python python3 -m unittest discover -s clients/python/tests -v
+          else
+            echo "::notice::clients/python/tests does not exist yet; skipping the Python unit tests."
+          fi
+
+  audit-npm:
+    name: Dependency audit (npm, production)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Install Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # Reads pnpm-lock.yaml; no install needed. High and critical advisories
+      # fail the build. Advisories accepted on purpose are listed, each with its
+      # reason and exit condition, under auditConfig in pnpm-workspace.yaml.
+      - name: pnpm audit --prod --audit-level=high
+        run: pnpm audit --prod --audit-level=high
+
+  contracts:
+    name: Contracts (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Installs the toolchain pinned by the toolchain file in contracts/
+      # (rust-toolchain.toml; the legacy one-line rust-toolchain works too).
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install --no-self-update --profile minimal
+          rustup component add rustfmt clippy
+          rustc --version
+          cargo --version
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: contracts
 
-      - name: cargo test (Odra mock VM — 13 tests)
-        working-directory: contracts
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      # Fails on clippy errors; warnings are reported but do not fail the job yet.
+      - name: cargo clippy --all-targets
+        run: cargo clippy --all-targets
+
+      - name: cargo test (Odra mock VM)
         run: cargo test
+
+  audit-cargo:
+    name: Dependency audit (cargo, contracts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_AUDIT_VERSION: 0.22.2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Restore cargo-audit
+        id: cargo-audit-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ env.CARGO_AUDIT_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      # Runs from the repository root, so it uses the runner's stable toolchain.
+      - name: Install cargo-audit
+        if: steps.cargo-audit-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --locked --version "$CARGO_AUDIT_VERSION"
+
+      # Audit the committed contracts/Cargo.lock; without one, resolve the tree
+      # the same way a fresh build of the contracts does.
+      - name: Resolve the contracts dependency tree
+        run: test -f contracts/Cargo.lock || cargo generate-lockfile --manifest-path contracts/Cargo.toml
+
+      # Vulnerabilities fail the job; "unmaintained" notices are reported only.
+      # Accepted advisory, with its reason:
+      # - RUSTSEC-2026-0387 (crypto-bigint 0.5.5, timing side channels in
+      #   constant-time arithmetic). It enters only through casper-types 6.x ->
+      #   k256 0.13 -> elliptic-curve 0.13, which cannot take the patched
+      #   crypto-bigint 0.7.6. The contracts CLI signs with ed25519 keys and the
+      #   Wasm contracts hold no secrets. Remove the ignore once casper-types or
+      #   odra move to elliptic-curve 0.14.
+      - name: cargo audit
+        run: cargo audit --file contracts/Cargo.lock --ignore RUSTSEC-2026-0387
