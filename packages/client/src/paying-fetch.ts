@@ -272,7 +272,8 @@ export interface PaymentClientOptions {
  * The x402 client behind {@link createPayingFetch}:
  *
  * - one exact scheme per network the policy pays on, bound to that network
- *   (never a "casper:*" pattern) and capped at the per-call budget;
+ *   (never a "casper:*" pattern) and capped at the per-call budget and the
+ *   policy's longest validity window;
  * - x402's spend controls derived from the policy ({@link buildSpendControls});
  * - the policy filter, then the optional style preference, before selection;
  * - hooks that reserve the budget before signing (the binding decision,
@@ -288,12 +289,14 @@ export function createPaymentClient(opts: PaymentClientOptions): x402Client {
   const log = opts.log ?? defaultLogger;
   const client = new x402Client();
   // @x402/casper signs both authorization styles the same way (one EIP-712 message), and each
-  // scheme refuses to sign above the per-call budget even if every check before it were bypassed.
+  // scheme refuses to sign above the per-call budget or for longer than the policy's validity
+  // window even if every check before it were bypassed.
   for (const network of policy.networks) {
     client.register(
       network as Network,
       createCasperClientScheme(opts.signer, {
         network,
+        maxAuthorizationSeconds: policy.maxAuthorizationSeconds,
         ...(policy.maxPerCall !== undefined ? { maxAmountPerPayment: policy.maxPerCall } : {}),
       }),
     );

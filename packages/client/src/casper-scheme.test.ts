@@ -7,6 +7,7 @@ import { buildTransferWithAuthorizationDigest } from "@x402/casper";
 import type { PaymentRequirements } from "@x402/core/types";
 import casperSdk from "casper-js-sdk";
 import { clientSignerFromPem, createCasperClientScheme, loadClientSigner } from "./casper-scheme.js";
+import { DEFAULT_MAX_AUTHORIZATION_SECONDS } from "./policy.js";
 
 const { KeyAlgorithm, PrivateKey, PublicKey } = casperSdk;
 
@@ -162,6 +163,56 @@ describe("createCasperClientScheme: last checks before a signature", () => {
     const scheme = createCasperClientScheme(neverSigns);
     for (const payTo of [`01${"c3".repeat(32)}`, `account-hash-${SELLER.slice(2)}`, "00abc", 7]) {
       await assert.rejects(scheme.createPaymentPayload(2, requirements({ payTo })), /refusing to sign: payTo .* is not an account hash/);
+    }
+  });
+
+  it("refuses a validity window that is malformed or longer than its limit (default 900 s)", async () => {
+    assert.equal(DEFAULT_MAX_AUTHORIZATION_SECONDS, 900);
+    const scheme = createCasperClientScheme(neverSigns, { network: "casper:casper-test", maxAmountPerPayment: 1000n });
+    // "300" would be concatenated by @x402/casper (validBefore = now + "300"), 1e9 s is about 31 years.
+    for (const maxTimeoutSeconds of ["300", 1e9, 0, -1, 1.5, null, undefined, Number.NaN, DEFAULT_MAX_AUTHORIZATION_SECONDS + 1]) {
+      await assert.rejects(
+        scheme.createPaymentPayload(2, requirements({ maxTimeoutSeconds })),
+        /^Error: refusing to sign: (malformed validity window|validity window .* is longer than 900 s)/,
+        `maxTimeoutSeconds ${String(maxTimeoutSeconds)}`,
+      );
+    }
+    await assert.rejects(
+      scheme.createPaymentPayload(2, requirements({ maxTimeoutSeconds: "300" })),
+      /refusing to sign: malformed validity window maxTimeoutSeconds "300"/,
+    );
+    await assert.rejects(
+      scheme.createPaymentPayload(2, requirements({ maxTimeoutSeconds: 901 })),
+      /refusing to sign: validity window 901 s is longer than 900 s$/,
+    );
+
+    const before = Math.floor(Date.now() / 1000);
+    const signed = await createCasperClientScheme(signer).createPaymentPayload(2, requirements({ maxTimeoutSeconds: 300 }));
+    const validBefore = Number((signed.payload as { authorization: { validBefore: string } }).authorization.validBefore);
+    assert.ok(validBefore >= before + 300 && validBefore <= Math.floor(Date.now() / 1000) + 300, `validBefore ${validBefore}`);
+    assert.equal(
+      (await createCasperClientScheme(signer).createPaymentPayload(2, requirements({ maxTimeoutSeconds: 900 }))).x402Version,
+      2,
+    );
+  });
+
+  it("takes a tighter validity-window limit, and validates it when it is built", async () => {
+    const tight = createCasperClientScheme(neverSigns, { maxAuthorizationSeconds: 60 });
+    await assert.rejects(
+      tight.createPaymentPayload(2, requirements({ maxTimeoutSeconds: 61 })),
+      /refusing to sign: validity window 61 s is longer than 60 s/,
+    );
+    assert.equal(
+      (await createCasperClientScheme(signer, { maxAuthorizationSeconds: 60 }).createPaymentPayload(2, requirements({ maxTimeoutSeconds: 60 })))
+        .x402Version,
+      2,
+    );
+    for (const maxAuthorizationSeconds of [0, -1, 1.5, "900", Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(
+        () => createCasperClientScheme(signer, { maxAuthorizationSeconds: maxAuthorizationSeconds as number }),
+        /maxAuthorizationSeconds must be a positive whole number of seconds/,
+        String(maxAuthorizationSeconds),
+      );
     }
   });
 

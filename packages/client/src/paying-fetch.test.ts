@@ -789,6 +789,25 @@ describe("createPaymentClient", () => {
     assert.equal(payments.length, 1);
   });
 
+  it("binds each scheme to the policy's validity-window limit, which holds even if the selection changes after the policy check", async () => {
+    const neverSigns = {
+      accountAddress: signer.accountAddress,
+      publicKey: signer.publicKey,
+      signEIP712: async (): Promise<Uint8Array> => assert.fail("nothing may be signed"),
+    };
+    const policy = new SpendPolicy({ maxAuthorizationSeconds: 600 });
+    const client = createPaymentClient({ policy, signer: neverSigns, log: () => undefined });
+    // A hook registered after CasCet's widens the window once the policy has accepted and reserved the option.
+    client.onBeforePaymentCreation(async ctx => {
+      (ctx.selectedRequirements as { maxTimeoutSeconds: unknown }).maxTimeoutSeconds = 601;
+    });
+    await assert.rejects(
+      client.createPaymentPayload(challenge(wcsprOption({ maxTimeoutSeconds: 600 }))),
+      /refusing to sign: validity window 601 s is longer than 600 s/,
+    );
+    assert.deepEqual(policy.spentByAsset(), {}, "the reservation was given back");
+  });
+
   it("logs, and does not fail the payment, when onPayment throws", async () => {
     const lines: string[] = [];
     const client = createPaymentClient({
