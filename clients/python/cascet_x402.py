@@ -22,8 +22,9 @@ Two layers:
 * `PayingClient`: the same guard rails as the TypeScript `createPayingFetch`
   around a 402 -> sign -> retry flow: network, payTo and asset allowlists,
   strict amount parsing, per-call and per-asset session budgets, a cap on how
-  long a signed authorization stays valid, and a request timeout. It also
-  refuses to pay over plain HTTP to a non-loopback host.
+  long a signed authorization stays valid, and a deadline for the whole call.
+  It never follows redirects and refuses to pay over plain HTTP to a
+  non-loopback host.
 
 Deps: cryptography (ed25519 PEM), pycryptodome (keccak-256); requests is only
 needed by `PayingClient`.
@@ -105,7 +106,8 @@ HEADER_CASCET_PAYMENT_ID = "x-cascet-payment-id"
 
 #: Networks a PayingClient pays on unless told otherwise (TS client default too).
 DEFAULT_NETWORKS: Tuple[str, ...] = (NETWORK_CASPER_TESTNET,)
-#: Per-request HTTP timeout, the TypeScript client's `timeoutMs: 30000`.
+#: Deadline for one PayingClient call (first request, 402, signing, paid retry
+#: and reading the response), the TypeScript client's `timeoutMs: 30000`.
 DEFAULT_TIMEOUT_SECONDS = 30.0
 #: validAfter is back-dated by this much to tolerate clock skew (same as the TS scheme).
 VALID_AFTER_SKEW_SECONDS = 600
@@ -123,6 +125,8 @@ _BASE64_RE = re.compile(r"[A-Za-z0-9+/]*={0,2}")
 #: CAIP-2 id in the casper namespace (the TS client's pattern); no wildcards.
 _CASPER_NETWORK_RE = re.compile(r"casper:[-_a-zA-Z0-9]{1,32}")
 _SURROGATE_RE = re.compile("[\ud800-\udfff]")
+#: Largest deadline accepted, the TS client's limit of 2^31 - 1 ms.
+_MAX_TIMEOUT_SECONDS = 2_147_483.647
 
 
 # ---- errors ----
@@ -687,18 +691,149 @@ def _is_loopback_host(host: Optional[str]) -> bool:
         return False
 
 
-Timeout = Union[float, Tuple[float, float], None]
+#: A deadline in seconds for a whole PayingClient call, or None for no deadline.
+Timeout = Optional[float]
+
+_READ_CHUNK_BYTES = 64 * 1024
+#: A 402's body is read (so its connection can carry the paid retry) only up to this size.
+_DRAIN_LIMIT_BYTES = 64 * 1024
 
 
 def _check_timeout(timeout: Any) -> Timeout:
-    def positive(x: Any) -> bool:
-        return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and x > 0
+    if timeout is None:
+        return None
+    if (
+        isinstance(timeout, (int, float))
+        and not isinstance(timeout, bool)
+        and math.isfinite(timeout)
+        and 0 < timeout <= _MAX_TIMEOUT_SECONDS
+    ):
+        return float(timeout)
+    hint = ""
+    if isinstance(timeout, tuple):
+        hint = "; (connect, read) tuples are not supported because the timeout is a deadline for the whole call"
+    raise ValueError(f"timeout must be seconds (> 0 and at most 2147483.647) or None, got {timeout!r}{hint}")
 
-    if timeout is None or positive(timeout):
-        return timeout
-    if isinstance(timeout, tuple) and len(timeout) == 2 and all(positive(x) for x in timeout):
-        return timeout
-    raise ValueError(f"timeout must be positive seconds, a (connect, read) tuple, or None, got {timeout!r}")
+
+def _deadline_error(url: str, timeout: Timeout) -> Exception:
+    import requests  # deferred like in PayingClient._http
+
+    return requests.exceptions.Timeout(f"request to {url} did not complete within the {timeout:g} s deadline")
+
+
+def _close_quietly(response: Any) -> None:
+    close = getattr(response, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # best effort: the response is being abandoned anyway
+            pass
+
+
+def _read_body(response: Any, deadline: Optional[float], timeout: Timeout, url: str, limit: Optional[int] = None) -> bool:
+    """
+    Read a streamed requests.Response body into `response.content` before `deadline`.
+
+    Raises requests.exceptions.Timeout once the deadline passes, so a gateway
+    that sends its body a byte at a time cannot hold the caller. With urllib3
+    2.3 or newer (the lock pins 2.8) a read still blocked at the deadline is
+    cut off by shutting the socket down; with older versions the deadline is
+    checked between chunks. Returns False, and closes the response, when the
+    body is larger than `limit`. A response that is already read (or is not a
+    requests.Response) is left as it is.
+    """
+    if getattr(response, "_content", None) is not False:
+        return True
+    fired = threading.Event()
+
+    def expired() -> bool:
+        return fired.is_set() or (deadline is not None and time.monotonic() >= deadline)
+
+    watchdog = None
+    shutdown = getattr(getattr(response, "raw", None), "shutdown", None)
+    if deadline is not None and callable(shutdown):
+        def cut_off() -> None:
+            fired.set()  # set first, so a read that the shutdown cuts short always sees it
+            try:
+                shutdown()
+            except Exception:  # already released to the pool (fully read) or closed: nothing is blocked
+                pass
+
+        watchdog = threading.Timer(max(0.0, deadline - time.monotonic()), cut_off)
+        watchdog.daemon = True
+        watchdog.start()
+    chunks: List[bytes] = []
+    size = 0
+    try:
+        for chunk in response.iter_content(_READ_CHUNK_BYTES):
+            if expired():
+                break
+            size += len(chunk)
+            if limit is not None and size > limit:
+                _close_quietly(response)
+                return False
+            chunks.append(chunk)
+    except Exception as exc:
+        _close_quietly(response)
+        if expired():
+            raise _deadline_error(url, timeout) from exc
+        raise
+    finally:
+        if watchdog is not None:
+            watchdog.cancel()
+    if expired():  # never hand back a body that the deadline may have cut short
+        _close_quietly(response)
+        raise _deadline_error(url, timeout)
+    response._content = b"".join(chunks)
+    response._content_consumed = True
+    return True
+
+
+def _call_before(deadline: float, url: str, timeout: Timeout, call: Callable[[], Any]) -> Any:
+    """
+    Run `call` (one streamed request: it returns once the status line and the
+    headers are in) on a helper thread, and stop waiting for it at `deadline`.
+
+    requests' timeouts bound each socket operation, not the whole exchange: a
+    server that sends its status line and headers a byte at a time, or a slow
+    DNS lookup (which ignores socket timeouts), could otherwise hold the caller
+    past the deadline. An abandoned call is left to finish in the background:
+    each of its socket reads is still bounded by the time that was left when it
+    started, and a response that arrives after the caller gave up is closed
+    unread. A paid retry abandoned this way may still settle.
+    """
+    state: Dict[str, Any] = {}
+    lock = threading.Lock()
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            result = call()
+        except BaseException as exc:  # handed to the waiting caller below
+            with lock:
+                state["error"] = exc
+        else:
+            with lock:
+                abandoned = state.get("abandoned", False)
+                if not abandoned:
+                    state["result"] = result
+            if abandoned:
+                _close_quietly(result)
+        finally:
+            done.set()
+
+    threading.Thread(target=run, name="cascet-x402-request", daemon=True).start()
+    try:
+        done.wait(max(0.0, deadline - time.monotonic()))
+    finally:
+        with lock:
+            if "result" not in state and "error" not in state:
+                state["abandoned"] = True
+    if "error" in state:
+        raise state["error"]
+    if "result" in state:
+        return state["result"]
+    raise _deadline_error(url, timeout)
 
 
 def _split_env(value: Optional[str]) -> List[str]:
@@ -745,18 +880,29 @@ class PayingClient:
     * `max_authorization_seconds`: longest validity window it signs (default
       900, the TS default). An `accepts` entry without a positive whole
       `maxTimeoutSeconds`, or with a longer one, is refused.
-    * `timeout`: seconds per HTTP request (default 30, like the TS `timeoutMs`).
+    * `timeout`: deadline in seconds for a whole call: the first request, the
+      402, signing, the paid retry and reading the response (default 30, like
+      the TS `timeoutMs`). Every connect and socket read is also bounded by
+      the time left, and the status line and headers are awaited on a helper
+      thread, so a server that trickles them (or a slow DNS lookup) cannot
+      hold the call past the deadline. None disables it. A call that times
+      out after the paid retry was sent may still settle.
     * `allow_insecure_http`: pay over plain http:// to a non-loopback host only
       when this is True.
     * `parent_id`: sent as x-cascet-parent-id so a cascade's receipts link up.
     * `on_payment`: called with {amount_raw, pay_to, asset, network} after each
       authorization is signed and encoded, before it is sent. An exception it
       raises is reported as a RuntimeWarning and does not stop the payment.
+    * `session`: a requests.Session (or compatible object honoring
+      `allow_redirects=False` and `stream=True`); one is created by default.
 
     `request()` sends the request; on a 402 it reads PAYMENT-REQUIRED, picks the
     first acceptable `accepts` entry, signs it and retries once with
-    PAYMENT-SIGNATURE. A second 402 is returned as is, never paid again. The
-    request body must be replayable (json=, data= bytes/str/dict).
+    PAYMENT-SIGNATURE. A second 402 is returned as is, never paid again. It
+    never follows redirects: a 3xx response comes back to the caller unpaid,
+    so PAYMENT-SIGNATURE, the parent id and the request body never reach
+    another origin. The request body must be replayable (json=, data=
+    bytes/str/dict).
     """
 
     def __init__(
@@ -846,6 +992,7 @@ class PayingClient:
           unless CASCET_ALLOW_ANY_SELLER is 1, true or yes.
         * CASCET_MAX_PER_CALL, CASCET_MAX_SESSION: raw token units (> 0),
           required unless CASCET_ALLOW_UNLIMITED_BUDGET is 1, true or yes.
+        * CASCET_TIMEOUT_MS: deadline per call in milliseconds (default 30000).
 
         Every value is validated here, and an error names its variable.
         Keyword arguments go to PayingClient and take precedence over the
@@ -898,6 +1045,14 @@ class PayingClient:
             )
         attribute("CASCET_MAX_PER_CALL", _parse_budget, max_per_call, "the per-call budget")
         attribute("CASCET_MAX_SESSION", _parse_budget, max_session, "the session budget")
+
+        timeout_ms = _env_value(env, "CASCET_TIMEOUT_MS")
+        if timeout_ms is not None:
+            if not re.fullmatch(r"[0-9]{1,10}", timeout_ms) or not 0 < int(timeout_ms) <= 2_147_483_647:
+                raise ValueError(
+                    f'CASCET_TIMEOUT_MS must be a whole number of milliseconds (e.g. 30000); got "{timeout_ms}"'
+                )
+            kwargs.setdefault("timeout", int(timeout_ms) / 1000)
 
         options: Dict[str, Any] = {
             "networks": networks or list(DEFAULT_NETWORKS),
@@ -1042,23 +1197,73 @@ class PayingClient:
             )
 
     def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
-        """Send a request; answer a 402 with one payment within the limits, then retry once."""
+        """
+        Send a request; answer a 402 with one payment within the limits, then retry once.
+
+        Takes the keyword arguments of requests.Session.request. `timeout`
+        (seconds or None) replaces the client's deadline for this call.
+        `allow_redirects` is ignored: redirects are never followed. With
+        `stream=True` the deadline covers the exchange up to the response
+        headers, and reading the body is left to the caller.
+        """
         http = self._http()
-        kwargs.setdefault("timeout", self._timeout)
+        timeout = _check_timeout(kwargs.pop("timeout", self._timeout))
+        deadline = None if timeout is None else time.monotonic() + timeout
+        stream = bool(kwargs.pop("stream", False))
+        # Following a redirect would carry PAYMENT-SIGNATURE, the parent id and
+        # the body to whatever origin the Location header names (the TS client
+        # uses redirect: "error" for the same reason).
+        kwargs.pop("allow_redirects", None)
         headers = dict(kwargs.pop("headers", None) or {})
         if self._parent_id and not _has_header(headers, HEADER_CASCET_PARENT_ID):
             headers[HEADER_CASCET_PARENT_ID] = self._parent_id
-        response = http.request(method, url, headers=headers, **kwargs)
+
+        response = self._send(http, method, url, headers, kwargs, deadline, timeout)
         if response.status_code != 402 or _has_header(headers, HEADER_PAYMENT_SIGNATURE):
-            return response
-        self._check_transport(url, getattr(response, "url", None) or url)
-        payment_required = parse_payment_required(response)
+            return self._finish(response, stream, deadline, timeout, url)
+        try:
+            self._check_transport(url, getattr(response, "url", None) or url)
+            payment_required = parse_payment_required(response)
+            # Read the small 402 body so its connection can carry the paid retry.
+            _read_body(response, deadline, timeout, url, limit=_DRAIN_LIMIT_BYTES)
+        finally:
+            _close_quietly(response)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise _deadline_error(url, timeout)  # nothing has been signed yet
         _, header = self._create_payment(payment_required)
         headers[HEADER_PAYMENT_SIGNATURE] = header
-        close = getattr(response, "close", None)
-        if callable(close):
-            close()  # release the connection of the 402 (matters with stream=True)
-        return http.request(method, url, headers=headers, **kwargs)
+        retry = self._send(http, method, url, headers, kwargs, deadline, timeout)
+        return self._finish(retry, stream, deadline, timeout, url)
+
+    def _send(
+        self,
+        http: Any,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        kwargs: Mapping[str, Any],
+        deadline: Optional[float],
+        timeout: Timeout,
+    ) -> Any:
+        io_timeout = None
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _deadline_error(url, timeout)
+            io_timeout = (remaining, remaining)  # connect, then each socket read: never past the deadline alone
+
+        def call() -> Any:
+            return http.request(
+                method, url, headers=dict(headers), timeout=io_timeout, stream=True, allow_redirects=False, **kwargs
+            )
+
+        return call() if deadline is None else _call_before(deadline, url, timeout, call)
+
+    @staticmethod
+    def _finish(response: Any, stream: bool, deadline: Optional[float], timeout: Timeout, url: str) -> Any:
+        if not stream:
+            _read_body(response, deadline, timeout, url)
+        return response
 
     def get(self, url: str, **kwargs: Any) -> requests.Response:
         return self.request("GET", url, **kwargs)

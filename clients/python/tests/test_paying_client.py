@@ -1,5 +1,6 @@
-"""PayingClient: the TypeScript client's guard rails (allowlists, networks, amounts, budgets, validity, timeout)."""
+"""PayingClient: the TypeScript client's guard rails (allowlists, networks, amounts, budgets, deadline, redirects)."""
 import base64
+import json
 import os
 import socket
 import sys
@@ -10,11 +11,13 @@ import unittest
 import warnings
 from unittest import mock
 
+import requests
 from cryptography.hazmat.primitives import serialization
 
 from helpers import (
     DELETE, MAINNET, NOW, OTHER_SELLER, OTHER_TOKEN, SELLER, TEST_KEY, TESTNET, TOKEN,
-    FakeResponse, FakeSession, challenge, make_payment_required, make_requirements, quiet_client, reset_warnings, x402,
+    CaseInsensitive, FakeResponse, FakeSession, LocalServer, challenge, direct_session, drip, make_payment_required,
+    make_requirements, quiet_client, reset_warnings, send, send_challenge, x402,
 )
 
 OK = FakeResponse(200, {}, body={"jsonrpc": "2.0", "id": 1, "result": {}})
@@ -396,23 +399,88 @@ class TestHttpFlow(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     quiet_client(parent_id=bad)
 
-    def test_timeout_default_and_overrides(self):
-        session = FakeSession(challenge(), OK, OK)
+    def test_redirects_are_never_followed(self):
+        session = FakeSession(challenge(), OK)
+        client = quiet_client(session=session)
+        client.post("https://gw.test/mcp", json={}, allow_redirects=True)  # the caller's value is overridden
+        self.assertEqual([c["allow_redirects"] for c in session.calls], [False, False])
+        self.assertEqual([c["stream"] for c in session.calls], [True, True])
+
+    def test_deadline_is_passed_on_as_the_time_left(self):
+        def slow_challenge(call):
+            time.sleep(0.1)
+            return challenge()
+
+        session = FakeSession(slow_challenge, OK, OK)
         client = quiet_client(session=session)
         client.post("https://gw.test/mcp", json={})
-        self.assertEqual([c["timeout"] for c in session.calls], [30.0, 30.0])
+        first, retry = (c["timeout"] for c in session.calls[:2])
+        for connect, read in (first, retry):
+            self.assertEqual(connect, read)
+            self.assertTrue(29 < connect <= 30, connect)
+        self.assertLess(retry[0], first[0] - 0.09)  # the retry only gets what the 402 left over
         client.get("https://gw.test/health", timeout=2)
-        self.assertEqual(session.calls[-1]["timeout"], 2)
+        self.assertTrue(1.5 < session.calls[-1]["timeout"][0] <= 2)
         self.assertEqual(x402.DEFAULT_TIMEOUT_SECONDS, 30.0)
 
+    def test_no_deadline(self):
+        session = FakeSession(challenge(), OK)
+        quiet_client(session=session, timeout=None).post("https://gw.test/mcp", json={})
+        self.assertEqual([c["timeout"] for c in session.calls], [None, None])
+
     def test_timeout_validation(self):
-        quiet_client(timeout=(3.05, 27))
         quiet_client(timeout=None)
-        for bad in (0, -1, "30", True, float("inf"), (1, 0), (1,)):
+        quiet_client(timeout=0.5)
+        quiet_client(timeout=2_147_483.647)
+        for bad in (0, -1, "30", True, float("inf"), float("nan"), 2_147_484, (3.05, 27), (1, 0), (1,)):
             with self.subTest(timeout=bad):
                 with self.assertRaises(ValueError):
                     quiet_client(timeout=bad)
+        with self.assertRaises(ValueError):
+            quiet_client(session=FakeSession(OK)).get("https://gw.test/health", timeout=(3.05, 27))
 
+    def test_nothing_is_signed_once_the_deadline_has_passed(self):
+        # The 402 arrives in time, but reading it uses up the deadline: the client must not sign.
+        class SlowHeaders(CaseInsensitive):
+            def get(self, key, default=None):
+                time.sleep(0.3)
+                return super().get(key, default)
+
+        slow = challenge()
+        slow.headers = SlowHeaders(slow.headers)
+        session = FakeSession(slow)
+        client = quiet_client(session=session, timeout=0.2)
+        with self.assertRaises(requests.exceptions.Timeout):
+            client.post("https://gw.test/mcp", json={})
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(client.spending(), {})
+
+    def test_a_response_that_arrives_after_the_deadline_is_closed(self):
+        closed = threading.Event()
+
+        class LateResponse(FakeResponse):
+            def close(self):
+                closed.set()
+
+        def late(call):
+            time.sleep(0.4)
+            return LateResponse(200, {}, body={})
+
+        client = quiet_client(session=FakeSession(late), timeout=0.1)
+        started = time.monotonic()
+        with self.assertRaises(requests.exceptions.Timeout):
+            client.get("https://gw.test/health")
+        self.assertLess(time.monotonic() - started, 0.35)  # the caller did not wait for the session
+        self.assertTrue(closed.wait(2))  # nobody will read it, so it is closed
+
+    def test_session_errors_reach_the_caller(self):
+        def refused(call):
+            raise requests.exceptions.ConnectionError("connection refused")
+
+        client = quiet_client(session=FakeSession(refused))
+        with self.assertRaises(requests.exceptions.ConnectionError):
+            client.get("https://gw.test/health")
+        self.assertEqual(client.spending(), {})
 
     def test_on_payment_errors_are_reported_not_raised(self):
         def broken_hook(info):
@@ -464,7 +532,8 @@ class TestTransportGuard(unittest.TestCase):
                 self.assertEqual(client.spending(), {})
                 self.assertEqual(len(session.calls), 1)
 
-    def test_redirect_to_plain_http_is_refused(self):
+    def test_a_session_that_ends_on_plain_http_is_refused(self):
+        # Defence in depth for a custom session that followed a redirect despite allow_redirects=False.
         session = FakeSession(challenge(url="http://gw.example.com/mcp"))
         client = quiet_client(session=session)
         with self.assertRaises(x402.PaymentAborted):
@@ -484,12 +553,15 @@ class TestTransportGuard(unittest.TestCase):
         self.assertEqual(len(session.calls), 2)
 
 
-class TestRealHttpTimeout(unittest.TestCase):
-    """A gateway that accepts the connection and never answers must not hang the buyer."""
+class TestRealHttp(unittest.TestCase):
+    """The same guarantees over real sockets and the real requests/urllib3 stack."""
 
-    def test_read_timeout(self):
-        import requests
+    def client(self, **kwargs):
+        session = direct_session()
+        self.addCleanup(session.close)
+        return quiet_client(session=session, **kwargs)
 
+    def test_silent_gateway_times_out(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.bind(("127.0.0.1", 0))
         server.listen(1)
@@ -506,17 +578,133 @@ class TestRealHttpTimeout(unittest.TestCase):
 
         thread = threading.Thread(target=silent_server, daemon=True)
         thread.start()
-        client = quiet_client(timeout=0.3)
         try:
             started = time.monotonic()
             with self.assertRaises(requests.exceptions.Timeout):
-                client.get(f"http://127.0.0.1:{port}/mcp")
+                self.client(timeout=0.3).get(f"http://127.0.0.1:{port}/mcp")
             self.assertLess(time.monotonic() - started, 4)
         finally:
-            client.close()
             release.set()
             server.close()
             thread.join(2)
+
+    def test_slow_drip_body_is_cut_off_at_the_deadline(self):
+        # Each byte arrives well within a socket read timeout, so only a deadline for the whole call stops it.
+        with LocalServer(lambda handler, srv: drip(handler, srv, b'{"result":1}', 0.5)) as gateway:
+            started = time.monotonic()
+            with self.assertRaises(requests.exceptions.Timeout):
+                self.client(timeout=1.0).get(gateway.url + "/mcp")
+            elapsed = time.monotonic() - started
+        self.assertGreaterEqual(elapsed, 0.9)
+        self.assertLess(elapsed, 3.0)  # the whole 12-byte drip takes 6 s
+
+    def test_trickled_headers_are_cut_off_at_the_deadline(self):
+        # A read timeout applies per socket read, so headers sent a byte at a time would never trip it.
+        def app(handler, srv):
+            handler.wfile.write(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+            handler.wfile.flush()
+            for _ in range(24):  # 6 s in all, unless the test ends first
+                if srv.stop.wait(0.25):
+                    break
+                handler.wfile.write(b"a")
+                handler.wfile.flush()
+            handler.close_connection = True
+
+        with LocalServer(app) as gateway:
+            started = time.monotonic()
+            with self.assertRaises(requests.exceptions.Timeout):
+                self.client(timeout=1.0).get(gateway.url + "/mcp")
+            elapsed = time.monotonic() - started
+        self.assertGreaterEqual(elapsed, 0.9)
+        self.assertLess(elapsed, 2.0)
+
+    def test_deadline_covers_the_402_and_the_paid_retry_together(self):
+        def app(handler, srv):
+            if handler.headers.get(x402.HEADER_PAYMENT_SIGNATURE) is None:
+                srv.stop.wait(0.6)  # a slow 402
+                send_challenge(handler)
+            else:
+                srv.stop.wait(5)  # the paid retry never gets an answer
+
+        with LocalServer(app) as gateway:
+            client = self.client(timeout=1.0)
+            started = time.monotonic()
+            with self.assertRaises(requests.exceptions.Timeout):
+                client.post(gateway.url + "/mcp", json={"jsonrpc": "2.0", "id": 1})
+            elapsed = time.monotonic() - started
+            self.assertEqual(len(gateway.requests), 2)
+        self.assertGreaterEqual(elapsed, 0.9)
+        self.assertLess(elapsed, 1.4)  # a fresh timeout for the retry would take 0.6 s + 1.0 s
+        self.assertEqual(client.spent_raw(TOKEN), PRICE)  # the payment was sent, so it stays counted
+
+    def test_slow_drip_of_the_paid_response_is_cut_off_at_the_deadline(self):
+        def app(handler, srv):
+            if handler.headers.get(x402.HEADER_PAYMENT_SIGNATURE) is None:
+                send_challenge(handler)
+            else:
+                drip(handler, srv, b'{"jsonrpc":"2.0","id":1,"result":{}}', 0.3)
+
+        with LocalServer(app) as gateway:
+            client = self.client(timeout=1.0)
+            started = time.monotonic()
+            with self.assertRaises(requests.exceptions.Timeout):
+                client.post(gateway.url + "/mcp", json={"jsonrpc": "2.0", "id": 1})
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 2.5)  # the whole drip takes about 11 s
+
+    def test_paid_call_reuses_the_402_connection_and_returns_the_body(self):
+        def app(handler, srv):
+            if handler.headers.get(x402.HEADER_PAYMENT_SIGNATURE) is None:
+                send_challenge(handler)
+            else:
+                send(handler, 200, {"Content-Type": "application/json"}, b'{"jsonrpc":"2.0","id":1,"result":{}}')
+
+        with LocalServer(app) as gateway:
+            client = self.client()
+            response = client.post(gateway.url + "/mcp", json={"jsonrpc": "2.0", "id": 1})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"jsonrpc": "2.0", "id": 1, "result": {}})
+            first, retry = gateway.requests
+        self.assertEqual(first["port"], retry["port"])  # the 402 body was drained, so keep-alive works
+        self.assertEqual(json.loads(retry["body"]), {"jsonrpc": "2.0", "id": 1})
+        payload = x402.decode_payment_signature_header(retry["headers"][x402.HEADER_PAYMENT_SIGNATURE])
+        self.assertEqual(payload["accepted"], make_requirements())
+
+    def test_redirect_of_the_paid_retry_is_not_followed(self):
+        # Reproduces the review finding: the retry got a 307 to another origin, which then received
+        # PAYMENT-SIGNATURE and the body and answered in the gateway's name.
+        with LocalServer(lambda handler, srv: send(handler, 200, body=b"stolen")) as thief:
+            def app(handler, srv):
+                if handler.headers.get(x402.HEADER_PAYMENT_SIGNATURE) is None:
+                    send_challenge(handler)
+                else:
+                    send(handler, 307, {"Location": thief.url + "/steal"})
+
+            with LocalServer(app) as gateway:
+                client = self.client()
+                response = client.post(gateway.url + "/mcp", json={"jsonrpc": "2.0", "id": 1})
+                self.assertEqual(response.status_code, 307)
+                self.assertEqual(response.headers["Location"], thief.url + "/steal")
+                self.assertEqual(len(gateway.requests), 2)
+            self.assertEqual(thief.requests, [])
+        self.assertEqual(client.spent_raw(TOKEN), PRICE)
+
+    def test_redirect_before_payment_is_returned_unpaid(self):
+        with LocalServer(lambda handler, srv: send_challenge(handler)) as elsewhere:
+            with LocalServer(lambda handler, srv: send(handler, 302, {"Location": elsewhere.url + "/mcp"})) as gateway:
+                client = self.client()
+                response = client.post(gateway.url + "/mcp", json={})
+                self.assertEqual(response.status_code, 302)
+            self.assertEqual(elsewhere.requests, [])
+        self.assertEqual(client.spending(), {})
+
+    def test_stream_true_leaves_the_body_to_the_caller(self):
+        with LocalServer(lambda handler, srv: drip(handler, srv, b'{"result":1}', 0.5)) as gateway:
+            started = time.monotonic()
+            response = self.client(timeout=1.0).get(gateway.url + "/mcp", stream=True)
+            self.assertLess(time.monotonic() - started, 1.0)  # returned once the headers arrived
+            self.assertEqual(response.status_code, 200)
+            response.close()
 
 
 class TestFromEnv(unittest.TestCase):
@@ -624,6 +812,21 @@ class TestFromEnv(unittest.TestCase):
                             "CASCET_ALLOWED_PAYTO", "account-hash")
         self.assertEnvError({**self.env, "CASCET_ALLOWED_ASSETS": "hash-xyz"}, "CASCET_ALLOWED_ASSETS")
 
+    def test_timeout_ms(self):
+        session = FakeSession(OK)
+        self.from_env({**self.env, "CASCET_TIMEOUT_MS": " 1500 "}, session=session).get("https://gw.test/health")
+        self.assertTrue(1.4 < session.calls[0]["timeout"][0] <= 1.5)
+        session = FakeSession(OK)
+        self.from_env(self.env, session=session).get("https://gw.test/health")
+        self.assertTrue(29 < session.calls[0]["timeout"][0] <= 30)  # the default
+        session = FakeSession(OK)
+        self.from_env({**self.env, "CASCET_TIMEOUT_MS": "1500"}, session=session, timeout=5).get("https://gw.test/x")
+        self.assertTrue(4.5 < session.calls[0]["timeout"][0] <= 5)  # an explicit argument wins
+
+    def test_bad_timeout_ms(self):
+        for value in ("0", "-1", "1.5", "30s", "abc", "2147483648", "99999999999"):
+            with self.subTest(value=value):
+                self.assertEnvError({**self.env, "CASCET_TIMEOUT_MS": value}, "CASCET_TIMEOUT_MS")
 
 
 if __name__ == "__main__":

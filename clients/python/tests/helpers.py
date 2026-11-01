@@ -4,9 +4,11 @@ from __future__ import annotations
 import copy
 import json
 import sys
+import threading
 import warnings
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 CLIENT_DIR = Path(__file__).resolve().parents[1]
 if str(CLIENT_DIR) not in sys.path:
@@ -116,3 +118,91 @@ def challenge(payment_required: Optional[Dict[str, Any]] = None, url: str = "htt
 
 def reset_warnings() -> None:
     x402._warned.clear()
+
+
+# ---- a real HTTP server on 127.0.0.1, for tests that need actual sockets ----
+class LocalServer:
+    """
+    A threaded HTTP/1.1 server on an ephemeral 127.0.0.1 port.
+
+    `app(handler, server)` answers each request; `requests` records what
+    arrived (method, path, headers, body and the client's port). Use it as a
+    context manager. `stop` is set on exit so slow handlers can end early.
+    """
+
+    def __init__(self, app: Callable[[BaseHTTPRequestHandler, "LocalServer"], None]):
+        server = self
+        self.requests: List[Dict[str, Any]] = []
+        self.stop = threading.Event()
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def answer(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length) if length else b""
+                server.requests.append({
+                    "method": self.command, "path": self.path, "headers": self.headers,
+                    "body": body, "port": self.client_address[1],
+                })
+                try:
+                    app(self, server)
+                except (BrokenPipeError, ConnectionResetError):  # the client gave up first
+                    self.close_connection = True
+
+            do_GET = do_POST = answer
+
+            def log_message(self, format: str, *args: Any) -> None:  # keep the test output clean
+                pass
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self._thread = threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+
+    def __enter__(self) -> "LocalServer":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.stop.set()
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self._thread.join(5)
+
+
+def send(handler: BaseHTTPRequestHandler, status: int, headers: Optional[Dict[str, str]] = None, body: bytes = b"") -> None:
+    handler.send_response(status)
+    for name, value in (headers or {}).items():
+        handler.send_header(name, value)
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def send_challenge(handler: BaseHTTPRequestHandler, payment_required: Optional[Dict[str, Any]] = None) -> None:
+    pr = payment_required or make_payment_required()
+    body = json.dumps({"error": "payment required"}).encode()
+    send(handler, 402, {"PAYMENT-REQUIRED": x402._b64_json_encode(pr), "Content-Type": "application/json"}, body)
+
+
+def drip(handler: BaseHTTPRequestHandler, server: LocalServer, body: bytes, interval: float) -> None:
+    """Send the headers at once, then the body one byte per `interval` seconds."""
+    handler.send_response(200)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    for index in range(len(body)):
+        handler.wfile.write(body[index:index + 1])
+        handler.wfile.flush()
+        if server.stop.wait(interval):
+            break
+    handler.close_connection = True
+
+
+def direct_session() -> Any:
+    """A requests.Session that ignores proxy settings from the environment (tests talk to 127.0.0.1)."""
+    import requests
+
+    session = requests.Session()
+    session.trust_env = False
+    return session
