@@ -8,6 +8,7 @@ import type {
   SupportedKind,
 } from "@x402/core/types";
 import { ExactCasperScheme } from "@x402/casper/exact/server";
+import { normalizePackageHash } from "@cascet/core";
 
 /**
  * Payment flows a CasCet route may use. "authorization" (verify before the
@@ -27,8 +28,7 @@ export interface ServerSchemeAsset {
   decimals: number;
 }
 
-const bareAsset = (asset: string): string => asset.trim().toLowerCase().replace(/^hash-/, "");
-const assetKey = (network: string, asset: string): string => `${network}|${bareAsset(asset)}`;
+const assetKey = (network: string, asset: string): string => `${network}|${normalizePackageHash(asset)}`;
 
 /**
  * The x402 "exact" server scheme of a CasCet gateway: the official
