@@ -39,7 +39,13 @@ export function logSafe(value: unknown, max = 300): string {
       text = String(value);
     }
   }
-  const cleaned = text.replace(/[\r\n\t]+/g, " ").replace(UNSAFE_CHARS, "?");
+  // Fold line breaks and tabs into one space so words stay apart and a value cannot
+  // start a forged log line. The empty-string CR/LF replacement after it changes
+  // nothing on the folded text; it is the exact sanitizer form CodeQL's
+  // js/log-injection query recognizes (a `replace` of "\n" with ""), which the fold
+  // alone is not, so keep it.
+  const singleLine = text.replace(/[\r\n\t]+/g, " ").replace(/\n|\r/g, "");
+  const cleaned = singleLine.replace(UNSAFE_CHARS, "?");
   return cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
 }
 

@@ -12,6 +12,12 @@ describe("logSafe", () => {
     assert.equal(logSafe(value), "a?[31m?b?c?");
   });
 
+  it("keeps the CR/LF removal that CodeQL's js/log-injection query recognizes as a sanitizer", () => {
+    // The fold to spaces already removes line breaks; this guards the extra, CodeQL-visible form.
+    assert.match(logSafe.toString(), /\.replace\(\/\\n\|\\r\/g,\s*""\)/);
+    assert.doesNotMatch(logSafe("a\rb\nc\r\nd"), /[\r\n]/);
+  });
+
   it("caps the length and renders non-strings", () => {
     assert.equal(logSafe("x".repeat(500)).length, 301);
     assert.equal(logSafe({ a: 1 }), '{"a":1}');
