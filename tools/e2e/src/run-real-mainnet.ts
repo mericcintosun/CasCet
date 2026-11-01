@@ -66,6 +66,7 @@ console.log("\n──────── REAL x402 payment on Casper MAINNET ─�
 
 const paying = await createPayingFetch({
   privateKeyPath: resolve(KEYS, "agent.pem"),
+  networks: ["casper:casper"], // the client pays on testnet only unless mainnet is listed
   allowedPayTo: [SELLER],
   allowedAssets: [X402_TOKEN],
   onPayment: info => console.log(`[agent] 💸 authorizing ${info.amountRaw} raw token units → ${info.payTo.slice(0, 12)}…`),

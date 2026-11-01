@@ -80,6 +80,8 @@ function banner(): void {
 }
 
 const maxSessionRaw = (25n * 10n ** 9n).toString();
+// cascet connect requires a per-call cap too; the dearest tool here costs 1 token.
+const maxPerCallRaw = (2n * 10n ** 9n).toString();
 
 async function main(): Promise<void> {
   banner();
@@ -106,6 +108,9 @@ async function main(): Promise<void> {
   // Point Claude Code at the paid tools through the paying `cascet connect` bridge.
   mkdirSync(SCRATCH, { recursive: true });
   const mcpConfigPath = resolve(SCRATCH, "connect-demo.mcp.json");
+  // Fresh tool pins per run (trust on first use), kept out of ~/.cascet.
+  const toolPinsPath = resolve(SCRATCH, "connect-demo.tool-pins.json");
+  rmSync(toolPinsPath, { force: true });
   writeFileSync(
     mcpConfigPath,
     JSON.stringify({
@@ -116,9 +121,11 @@ async function main(): Promise<void> {
           env: {
             CASCET_KEY_PATH: resolve(KEYS, "agent.pem"),
             CASCET_KEY_ALGO: "ed25519",
+            CASCET_MAX_PER_CALL: maxPerCallRaw,
             CASCET_MAX_SESSION: maxSessionRaw,
             CASCET_ALLOWED_PAYTO: SELLER_DATA_ACCOUNT_HASH,
             CASCET_ALLOWED_ASSETS: X402_TOKEN,
+            CASCET_TOOL_PINS: toolPinsPath,
           },
         },
       },
