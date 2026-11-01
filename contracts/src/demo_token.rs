@@ -6,8 +6,8 @@
 //! CEP-18 entry points we need yields a proper, deployable contract while
 //! reusing the audited CEP-18 logic.
 
-use odra::prelude::*;
 use odra::casper_types::U256;
+use odra::prelude::*;
 use odra_modules::cep18_token::Cep18;
 
 #[odra::module]

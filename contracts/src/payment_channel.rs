@@ -11,9 +11,9 @@
 //! Voucher signatures are verified in-contract with Casper's native
 //! `verify_signature`, so the channel needs no trusted intermediary.
 
-use odra::prelude::*;
 use odra::casper_types::bytesrepr::{Bytes, ToBytes};
 use odra::casper_types::{PublicKey, U256};
+use odra::prelude::*;
 use odra::ContractRef;
 
 /// CEP-18 surface the channel needs (pull deposit in, push redeemed out).
@@ -117,7 +117,11 @@ impl PaymentChannel {
             .get_block_time()
             .checked_add(duration_ms)
             .unwrap_or_revert_with(&self.env(), Error::InvalidDuration);
-        ChannelTokenContractRef::new(self.env(), token).transfer_from(sender, self.env().self_address(), deposit);
+        ChannelTokenContractRef::new(self.env(), token).transfer_from(
+            sender,
+            self.env().self_address(),
+            deposit,
+        );
 
         let id = self.next_id.get_or_default();
         self.next_id.set(id + 1);
@@ -133,7 +137,12 @@ impl PaymentChannel {
         self.channels.set(&id, channel);
         self.sender_keys.set(&id, sender_public_key);
         self.exists.set(&id, true);
-        self.env().emit_event(ChannelOpened { channel_id: id, sender, payee, deposit });
+        self.env().emit_event(ChannelOpened {
+            channel_id: id,
+            sender,
+            payee,
+            deposit,
+        });
         id
     }
 
@@ -144,7 +153,10 @@ impl PaymentChannel {
         if channel.closed {
             self.env().revert(Error::ChannelClosed);
         }
-        let key = self.sender_keys.get(&channel_id).unwrap_or_revert_with(&self.env(), Error::UnknownChannel);
+        let key = self
+            .sender_keys
+            .get(&channel_id)
+            .unwrap_or_revert_with(&self.env(), Error::UnknownChannel);
         let contract = contract_hash_bytes(&self.env().self_address());
         let message = Bytes::from(voucher_message(contract, channel_id, &cumulative));
         if !self.env().verify_signature(&message, &signature, &key) {
@@ -162,7 +174,11 @@ impl PaymentChannel {
         let token = channel.token;
         self.channels.set(&channel_id, channel);
         ChannelTokenContractRef::new(self.env(), token).transfer(payee, paid);
-        self.env().emit_event(VoucherRedeemed { channel_id, cumulative, paid });
+        self.env().emit_event(VoucherRedeemed {
+            channel_id,
+            cumulative,
+            paid,
+        });
     }
 
     /// After expiry the sender reclaims the unredeemed remainder and closes the
@@ -186,7 +202,10 @@ impl PaymentChannel {
         if !refund.is_zero() {
             ChannelTokenContractRef::new(self.env(), token).transfer(sender, refund);
         }
-        self.env().emit_event(ChannelClosed { channel_id, refunded: refund });
+        self.env().emit_event(ChannelClosed {
+            channel_id,
+            refunded: refund,
+        });
     }
 
     /// Full channel state.
@@ -208,7 +227,9 @@ impl PaymentChannel {
         if !self.exists.get_or_default(&channel_id) {
             self.env().revert(Error::UnknownChannel);
         }
-        self.channels.get(&channel_id).unwrap_or_revert_with(&self.env(), Error::UnknownChannel)
+        self.channels
+            .get(&channel_id)
+            .unwrap_or_revert_with(&self.env(), Error::UnknownChannel)
     }
 }
 
@@ -282,7 +303,13 @@ mod tests {
         // Sender approves the channel to pull the deposit, then opens.
         env.set_caller(sender);
         token.approve(&channel.address(), &U256::from(1_000u64));
-        let id = channel.open(sender_pk.clone(), payee, token.address(), U256::from(1_000u64), 10_000);
+        let id = channel.open(
+            sender_pk.clone(),
+            payee,
+            token.address(),
+            U256::from(1_000u64),
+            10_000,
+        );
         assert_eq!(channel.redeemable(id), U256::from(1_000u64));
 
         // Off-chain: sender signs a voucher for cumulative 400.
@@ -300,7 +327,11 @@ mod tests {
 
         // A second, larger voucher pays only the delta.
         let cumulative2 = U256::from(650u64);
-        let sig2 = crypto::sign(&voucher_message(contract, id, &cumulative2), &secret, &sender_pk);
+        let sig2 = crypto::sign(
+            voucher_message(contract, id, &cumulative2),
+            &secret,
+            &sender_pk,
+        );
         channel.redeem(id, cumulative2, Bytes::from(sig2.to_bytes().unwrap()));
         assert_eq!(token.balance_of(&payee), U256::from(650u64));
 
@@ -325,14 +356,24 @@ mod tests {
         let mut channel = PaymentChannel::deploy(&env, odra::host::NoArgs);
         env.set_caller(sender);
         token.approve(&channel.address(), &U256::from(1_000u64));
-        let id = channel.open(sender_pk.clone(), payee, token.address(), U256::from(1_000u64), 10_000);
+        let id = channel.open(
+            sender_pk.clone(),
+            payee,
+            token.address(),
+            U256::from(1_000u64),
+            10_000,
+        );
 
         // Wrong signer forges a voucher.
         let attacker = SecretKey::generate_ed25519().unwrap();
         let attacker_pk = PublicKey::from(&attacker);
         let cumulative = U256::from(400u64);
         let contract = contract_hash_bytes(&channel.address());
-        let forged = crypto::sign(&voucher_message(contract, id, &cumulative), &attacker, &attacker_pk);
+        let forged = crypto::sign(
+            voucher_message(contract, id, &cumulative),
+            &attacker,
+            &attacker_pk,
+        );
 
         env.set_caller(payee);
         let err = channel.try_redeem(id, cumulative, Bytes::from(forged.to_bytes().unwrap()));
@@ -353,7 +394,13 @@ mod tests {
         let mut channel = PaymentChannel::deploy(&env, odra::host::NoArgs);
         env.set_caller(sender);
         token.approve(&channel.address(), &U256::from(1_000u64));
-        let id = channel.open(sender_pk, payee, token.address(), U256::from(1_000u64), 10_000);
+        let id = channel.open(
+            sender_pk,
+            payee,
+            token.address(),
+            U256::from(1_000u64),
+            10_000,
+        );
 
         assert_eq!(channel.try_close(id), Err(Error::NotExpired.into()));
     }

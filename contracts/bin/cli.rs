@@ -1,10 +1,12 @@
 //! CasCet contracts deploy + interaction CLI (odra-cli / livenet).
 //!
 //! Deploys the on-chain layer of CasCet:
-//!   - ReceiptRegistry — anchors settled tool-call payments + cascade links.
-//!   - Cep18           — a demo CEP-18 payment token (WCSPR), supply to deployer.
-//!   - RevenueSplit    — splits that token's revenue 60/40 between the deployer
-//!                       and the buildathon account, enforced on-chain.
+//!   - ReceiptRegistry: anchors settled tool-call payments + cascade links.
+//!   - DemoToken: a demo CEP-18 payment token (WCSPR), supply to deployer.
+//!   - RevenueSplit: splits that token's revenue 60/40 between the deployer and
+//!     the buildathon account, enforced on-chain.
+//!   - CascadeController: budget-bounded cascades with recursive attribution.
+//!   - PaymentChannel: prepaid channels redeemed with signed vouchers.
 //!
 //! Run against Casper Testnet with contracts/.env populated (see .env.sample):
 //!   cargo run --bin cascet_contracts_cli -- deploy
@@ -14,6 +16,7 @@
 use core::str::FromStr;
 
 use cascet_contracts::cascade_controller::CascadeController;
+use cascet_contracts::demo_token::{DemoToken, DemoTokenInitArgs};
 use cascet_contracts::payment_channel::PaymentChannel;
 use cascet_contracts::receipt_registry::ReceiptRegistry;
 use cascet_contracts::revenue_split::{RevenueSplit, RevenueSplitInitArgs};
@@ -21,7 +24,6 @@ use odra::casper_types::U256;
 use odra::host::{HostEnv, NoArgs};
 use odra::prelude::{Address, Addressable};
 use odra::schema::casper_contract_schema::NamedCLType;
-use cascet_contracts::demo_token::{DemoToken, DemoTokenInitArgs};
 use odra_cli::{
     deploy::DeployScript,
     scenario::{Args, Error, Scenario, ScenarioMetadata},
@@ -85,10 +87,19 @@ pub struct FundSplit;
 
 impl Scenario for FundSplit {
     fn args(&self) -> Vec<CommandArg> {
-        vec![CommandArg::new("amount", "Raw CEP-18 units to send to the splitter", NamedCLType::U256)]
+        vec![CommandArg::new(
+            "amount",
+            "Raw CEP-18 units to send to the splitter",
+            NamedCLType::U256,
+        )]
     }
 
-    fn run(&self, env: &HostEnv, container: &DeployedContractsContainer, args: Args) -> Result<(), Error> {
+    fn run(
+        &self,
+        env: &HostEnv,
+        container: &DeployedContractsContainer,
+        args: Args,
+    ) -> Result<(), Error> {
         let mut token = container.contract_ref::<DemoToken>(env)?;
         let split = container.contract_ref::<RevenueSplit>(env)?;
         let amount = args.get_single::<U256>("amount")?;
@@ -108,17 +119,27 @@ pub struct ReleaseShare;
 
 impl Scenario for ReleaseShare {
     fn args(&self) -> Vec<CommandArg> {
-        vec![CommandArg::new("payee", "Payee account-hash string (defaults to caller)", NamedCLType::String)]
+        vec![CommandArg::new(
+            "payee",
+            "Payee account-hash string (defaults to caller)",
+            NamedCLType::String,
+        )]
     }
 
-    fn run(&self, env: &HostEnv, container: &DeployedContractsContainer, args: Args) -> Result<(), Error> {
+    fn run(
+        &self,
+        env: &HostEnv,
+        container: &DeployedContractsContainer,
+        args: Args,
+    ) -> Result<(), Error> {
         let mut split = container.contract_ref::<RevenueSplit>(env)?;
         let payee_str = args.get_single::<String>("payee").unwrap_or_default();
         let payee = if payee_str.is_empty() {
             env.caller()
         } else {
-            Address::from_str(&payee_str)
-                .map_err(|_| Error::OdraError { message: "bad payee account hash".into() })?
+            Address::from_str(&payee_str).map_err(|_| Error::OdraError {
+                message: "bad payee account hash".into(),
+            })?
         };
         env.set_gas(5_000_000_000);
         split.try_release(payee)?;
@@ -137,12 +158,21 @@ pub struct AnchorDemoReceipt;
 impl Scenario for AnchorDemoReceipt {
     fn args(&self) -> Vec<CommandArg> {
         vec![
-            CommandArg::new("payment_id", "Unique payment id to anchor", NamedCLType::String),
+            CommandArg::new(
+                "payment_id",
+                "Unique payment id to anchor",
+                NamedCLType::String,
+            ),
             CommandArg::new("amount", "Raw CEP-18 token units", NamedCLType::U256),
         ]
     }
 
-    fn run(&self, env: &HostEnv, container: &DeployedContractsContainer, args: Args) -> Result<(), Error> {
+    fn run(
+        &self,
+        env: &HostEnv,
+        container: &DeployedContractsContainer,
+        args: Args,
+    ) -> Result<(), Error> {
         let mut registry = container.contract_ref::<ReceiptRegistry>(env)?;
         let payment_id = args.get_single::<String>("payment_id")?;
         let amount = args.get_single::<U256>("amount")?;
@@ -167,7 +197,9 @@ impl ScenarioMetadata for AnchorDemoReceipt {
 }
 
 fn parse_addr(s: &str) -> Result<Address, Error> {
-    Address::from_str(s).map_err(|_| Error::OdraError { message: format!("bad address: {s}") })
+    Address::from_str(s).map_err(|_| Error::OdraError {
+        message: format!("bad address: {s}"),
+    })
 }
 
 /// Opens a budget-bounded cascade (agent deposits, delegates to an operator).
@@ -175,12 +207,29 @@ pub struct CascadeOpen;
 impl Scenario for CascadeOpen {
     fn args(&self) -> Vec<CommandArg> {
         vec![
-            CommandArg::new("operator", "Operator account-hash allowed to charge", NamedCLType::String),
-            CommandArg::new("token", "CEP-18 token package hash (hash-...)", NamedCLType::String),
-            CommandArg::new("budget", "Total budget in raw token units", NamedCLType::U256),
+            CommandArg::new(
+                "operator",
+                "Operator account-hash allowed to charge",
+                NamedCLType::String,
+            ),
+            CommandArg::new(
+                "token",
+                "CEP-18 token package hash (hash-...)",
+                NamedCLType::String,
+            ),
+            CommandArg::new(
+                "budget",
+                "Total budget in raw token units",
+                NamedCLType::U256,
+            ),
         ]
     }
-    fn run(&self, env: &HostEnv, container: &DeployedContractsContainer, args: Args) -> Result<(), Error> {
+    fn run(
+        &self,
+        env: &HostEnv,
+        container: &DeployedContractsContainer,
+        args: Args,
+    ) -> Result<(), Error> {
         let mut c = container.contract_ref::<CascadeController>(env)?;
         let operator = parse_addr(&args.get_single::<String>("operator")?)?;
         let token = parse_addr(&args.get_single::<String>("token")?)?;
@@ -204,10 +253,19 @@ impl Scenario for CascadeCharge {
             CommandArg::new("parent", "Parent hop id (0 for root)", NamedCLType::U64),
             CommandArg::new("payee", "Payee account-hash", NamedCLType::String),
             CommandArg::new("gross", "Gross amount in raw units", NamedCLType::U256),
-            CommandArg::new("attribution_bps", "Basis points redirected to parent (0-10000)", NamedCLType::U64),
+            CommandArg::new(
+                "attribution_bps",
+                "Basis points redirected to parent (0-10000)",
+                NamedCLType::U64,
+            ),
         ]
     }
-    fn run(&self, env: &HostEnv, container: &DeployedContractsContainer, args: Args) -> Result<(), Error> {
+    fn run(
+        &self,
+        env: &HostEnv,
+        container: &DeployedContractsContainer,
+        args: Args,
+    ) -> Result<(), Error> {
         let mut c = container.contract_ref::<CascadeController>(env)?;
         let cascade_id = args.get_single::<u64>("cascade_id")?;
         let parent = args.get_single::<u64>("parent")?;
@@ -228,9 +286,18 @@ impl ScenarioMetadata for CascadeCharge {
 pub struct CascadeCloseCmd;
 impl Scenario for CascadeCloseCmd {
     fn args(&self) -> Vec<CommandArg> {
-        vec![CommandArg::new("cascade_id", "Cascade id", NamedCLType::U64)]
+        vec![CommandArg::new(
+            "cascade_id",
+            "Cascade id",
+            NamedCLType::U64,
+        )]
     }
-    fn run(&self, env: &HostEnv, container: &DeployedContractsContainer, args: Args) -> Result<(), Error> {
+    fn run(
+        &self,
+        env: &HostEnv,
+        container: &DeployedContractsContainer,
+        args: Args,
+    ) -> Result<(), Error> {
         let mut c = container.contract_ref::<CascadeController>(env)?;
         let cascade_id = args.get_single::<u64>("cascade_id")?;
         env.set_gas(6_000_000_000);

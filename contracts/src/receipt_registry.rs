@@ -11,8 +11,8 @@
 //! Anchoring is permissioned: the deployer (a gateway operator) owns the
 //! registry and may authorize additional recorder accounts.
 
-use odra::prelude::*;
 use odra::casper_types::U256;
+use odra::prelude::*;
 
 /// A compact, immutable record of one settled tool-call payment.
 #[odra::odra_type]
@@ -134,7 +134,8 @@ impl ReceiptRegistry {
         self.receipts.set(&payment_id, receipt);
         self.exists.set(&payment_id, true);
         self.count.set(self.count.get_or_default() + 1);
-        self.total_volume.set(self.total_volume.get_or_default() + amount);
+        self.total_volume
+            .set(self.total_volume.get_or_default() + amount);
         self.env().emit_event(ReceiptAnchored {
             payment_id,
             parent_id,
@@ -231,9 +232,36 @@ mod tests {
         let env = odra_test::env();
         let mut reg = ReceiptRegistry::deploy(&env, NoArgs);
 
-        reg.record("root".into(), "".into(), "01a".into(), "01b".into(), U256::from(10u64), "analyst".into(), "analyze".into(), "tx0".into());
-        reg.record("child-1".into(), "root".into(), "01b".into(), "01c".into(), U256::from(1u64), "data".into(), "get_cspr".into(), "tx1".into());
-        reg.record("child-2".into(), "root".into(), "01b".into(), "01c".into(), U256::from(2u64), "data".into(), "get_yields".into(), "tx2".into());
+        reg.record(
+            "root".into(),
+            "".into(),
+            "01a".into(),
+            "01b".into(),
+            U256::from(10u64),
+            "analyst".into(),
+            "analyze".into(),
+            "tx0".into(),
+        );
+        reg.record(
+            "child-1".into(),
+            "root".into(),
+            "01b".into(),
+            "01c".into(),
+            U256::from(1u64),
+            "data".into(),
+            "get_cspr".into(),
+            "tx1".into(),
+        );
+        reg.record(
+            "child-2".into(),
+            "root".into(),
+            "01b".into(),
+            "01c".into(),
+            U256::from(2u64),
+            "data".into(),
+            "get_yields".into(),
+            "tx2".into(),
+        );
 
         assert_eq!(reg.count(), 3);
         assert_eq!(reg.get("child-1".into()).parent_id, "root");
@@ -244,10 +272,26 @@ mod tests {
     fn rejects_duplicate_payment_id() {
         let env = odra_test::env();
         let mut reg = ReceiptRegistry::deploy(&env, NoArgs);
-        reg.record("dup".into(), "".into(), "01a".into(), "01b".into(), U256::from(1u64), "s".into(), "t".into(), "tx".into());
+        reg.record(
+            "dup".into(),
+            "".into(),
+            "01a".into(),
+            "01b".into(),
+            U256::from(1u64),
+            "s".into(),
+            "t".into(),
+            "tx".into(),
+        );
 
         let err = reg.try_record(
-            "dup".into(), "".into(), "01a".into(), "01b".into(), U256::from(1u64), "s".into(), "t".into(), "tx".into(),
+            "dup".into(),
+            "".into(),
+            "01a".into(),
+            "01b".into(),
+            U256::from(1u64),
+            "s".into(),
+            "t".into(),
+            "tx".into(),
         );
         assert_eq!(err, Err(Error::AlreadyAnchored.into()));
     }
@@ -260,7 +304,14 @@ mod tests {
 
         env.set_caller(intruder);
         let err = reg.try_record(
-            "x".into(), "".into(), "01a".into(), "01b".into(), U256::from(1u64), "s".into(), "t".into(), "tx".into(),
+            "x".into(),
+            "".into(),
+            "01a".into(),
+            "01b".into(),
+            U256::from(1u64),
+            "s".into(),
+            "t".into(),
+            "tx".into(),
         );
         assert_eq!(err, Err(Error::Unauthorized.into()));
     }
@@ -273,7 +324,16 @@ mod tests {
         reg.authorize(second_gateway);
 
         env.set_caller(second_gateway);
-        reg.record("g2".into(), "".into(), "01a".into(), "01b".into(), U256::from(1u64), "s".into(), "t".into(), "tx".into());
+        reg.record(
+            "g2".into(),
+            "".into(),
+            "01a".into(),
+            "01b".into(),
+            U256::from(1u64),
+            "s".into(),
+            "t".into(),
+            "tx".into(),
+        );
         assert!(reg.is_anchored("g2".into()));
     }
 }

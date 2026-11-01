@@ -11,8 +11,8 @@
 //! init, and `releasable` is computed from lifetime received value, so funds
 //! that arrive at any time are always split by the exact configured weights.
 
-use odra::prelude::*;
 use odra::casper_types::U256;
+use odra::prelude::*;
 use odra::ContractRef;
 
 /// Minimal external view of the CEP-18 token this splitter distributes.
@@ -118,8 +118,10 @@ impl RevenueSplit {
         if amount.is_zero() {
             self.env().revert(Error::NothingToRelease);
         }
-        self.released.set(&account, self.released.get_or_default(&account) + amount);
-        self.total_released.set(self.total_released.get_or_default() + amount);
+        self.released
+            .set(&account, self.released.get_or_default(&account) + amount);
+        self.total_released
+            .set(self.total_released.get_or_default() + amount);
         Cep18TokenContractRef::new(self.env(), self.token()).transfer(account, amount);
         self.env().emit_event(PaymentReleased { account, amount });
     }
@@ -222,7 +224,11 @@ mod tests {
         let token = deploy_token(&env, 1000);
         let mut split = RevenueSplit::deploy(
             &env,
-            RevenueSplitInitArgs { token: token.address(), payees: vec![alice], shares: vec![100] },
+            RevenueSplitInitArgs {
+                token: token.address(),
+                payees: vec![alice],
+                shares: vec![100],
+            },
         );
         assert_eq!(split.try_release(stranger), Err(Error::NotAPayee.into()));
     }
@@ -234,7 +240,11 @@ mod tests {
         let token = deploy_token(&env, 1000);
         let err = RevenueSplit::try_deploy(
             &env,
-            RevenueSplitInitArgs { token: token.address(), payees: vec![alice], shares: vec![50, 50] },
+            RevenueSplitInitArgs {
+                token: token.address(),
+                payees: vec![alice],
+                shares: vec![50, 50],
+            },
         );
         assert!(err.is_err());
     }

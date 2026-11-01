@@ -18,8 +18,8 @@
 //! Casper's instant deterministic finality is what makes a multi-hop tree
 //! settle without stalls; the on-chain hop records reconstruct the whole tree.
 
-use odra::prelude::*;
 use odra::casper_types::U256;
+use odra::prelude::*;
 use odra::ContractRef;
 
 /// Basis points denominator (100% = 10_000 bps).
@@ -112,16 +112,33 @@ impl CascadeController {
     /// charge hops against it up to that budget.
     pub fn open(&mut self, operator: Address, token: Address, budget: U256) -> u64 {
         let owner = self.env().caller();
-        CascadeTokenContractRef::new(self.env(), token).transfer_from(owner, self.env().self_address(), budget);
+        CascadeTokenContractRef::new(self.env(), token).transfer_from(
+            owner,
+            self.env().self_address(),
+            budget,
+        );
 
         let id = self.next_id.get_or_default();
         self.next_id.set(id + 1);
         self.cascades.set(
             &id,
-            Cascade { owner, operator, token, budget, spent: U256::zero(), next_hop: 1, closed: false },
+            Cascade {
+                owner,
+                operator,
+                token,
+                budget,
+                spent: U256::zero(),
+                next_hop: 1,
+                closed: false,
+            },
         );
         self.exists.set(&id, true);
-        self.env().emit_event(CascadeOpened { cascade_id: id, owner, operator, budget });
+        self.env().emit_event(CascadeOpened {
+            cascade_id: id,
+            owner,
+            operator,
+            budget,
+        });
         id
     }
 
@@ -178,7 +195,13 @@ impl CascadeController {
         self.cascades.set(&cascade_id, cascade);
         self.hops.set(
             &(cascade_id, hop_id),
-            Hop { payee, parent, gross, net_to_payee: net, to_parent },
+            Hop {
+                payee,
+                parent,
+                gross,
+                net_to_payee: net,
+                to_parent,
+            },
         );
 
         // INTERACTIONS: pay out last.
@@ -190,7 +213,14 @@ impl CascadeController {
         if !net.is_zero() {
             CascadeTokenContractRef::new(self.env(), token).transfer(payee, net);
         }
-        self.env().emit_event(HopCharged { cascade_id, hop_id, parent, payee, gross, to_parent });
+        self.env().emit_event(HopCharged {
+            cascade_id,
+            hop_id,
+            parent,
+            payee,
+            gross,
+            to_parent,
+        });
         hop_id
     }
 
@@ -212,7 +242,11 @@ impl CascadeController {
         if !refund.is_zero() {
             CascadeTokenContractRef::new(self.env(), token).transfer(owner, refund);
         }
-        self.env().emit_event(CascadeClosed { cascade_id, spent, refunded: refund });
+        self.env().emit_event(CascadeClosed {
+            cascade_id,
+            spent,
+            refunded: refund,
+        });
     }
 
     pub fn get_cascade(&self, cascade_id: u64) -> Cascade {
@@ -220,7 +254,9 @@ impl CascadeController {
     }
 
     pub fn get_hop(&self, cascade_id: u64, hop_id: u64) -> Hop {
-        self.hops.get(&(cascade_id, hop_id)).unwrap_or_revert_with(&self.env(), Error::UnknownParent)
+        self.hops
+            .get(&(cascade_id, hop_id))
+            .unwrap_or_revert_with(&self.env(), Error::UnknownParent)
     }
 
     /// Budget still available to charge.
@@ -237,7 +273,9 @@ impl CascadeController {
         if !self.exists.get_or_default(&cascade_id) {
             self.env().revert(Error::UnknownCascade);
         }
-        self.cascades.get(&cascade_id).unwrap_or_revert_with(&self.env(), Error::UnknownCascade)
+        self.cascades
+            .get(&cascade_id)
+            .unwrap_or_revert_with(&self.env(), Error::UnknownCascade)
     }
 }
 
