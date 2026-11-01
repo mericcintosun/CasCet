@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { ArrowUpRight, CheckCircle2, Loader2, TriangleAlert } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { ArrowUpRight, CheckCircle2, Loader2, RefreshCw, TriangleAlert } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useWallet } from "@/lib/wallet-context";
 import { CSPR_LIVE_TX } from "@/lib/casper/constants";
+import { rawToTokens } from "@/lib/connect-config";
 import { isTimeoutError, timeoutSignal } from "@/lib/timeout";
 import { shortHex } from "@/lib/utils";
 
@@ -53,11 +54,44 @@ async function postJson(url: string, body: unknown): Promise<{ status: number; d
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
 
+/** What each payee can release now, read from the contract's state (L124); keyed by bare account hash. */
+type Releasable =
+  | { status: "loading" }
+  | { status: "ok"; byPayee: Map<string, bigint> }
+  | { status: "error"; message: string };
+
+const bareAccount = (h: string): string => h.toLowerCase().replace(/^account-hash-/, "");
+
 export function RevenueSplitPanel() {
   const wallet = useWallet();
   const [data, setData] = useState<RevenueData | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [rows, setRows] = useState<Record<string, RowState>>({});
+  const [releasable, setReleasable] = useState<Releasable>({ status: "loading" });
+
+  const loadReleasable = useCallback(async () => {
+    setReleasable({ status: "loading" });
+    try {
+      const r = await fetch("/api/revenue/releasable", { signal: timeoutSignal(20_000), cache: "no-store" });
+      const body = ((await r.json().catch(() => ({}))) ?? {}) as {
+        ok?: unknown;
+        error?: unknown;
+        payees?: Array<{ accountHash?: unknown; releasableRaw?: unknown }>;
+      };
+      if (!r.ok || body.ok !== true || !Array.isArray(body.payees)) throw new Error(str(body.error) ?? `HTTP ${r.status}`);
+      const byPayee = new Map(body.payees.map((p) => [bareAccount(String(p.accountHash)), BigInt(String(p.releasableRaw))]));
+      setReleasable({ status: "ok", byPayee });
+    } catch (e) {
+      setReleasable({
+        status: "error",
+        message: isTimeoutError(e) ? "no answer within 20 s" : e instanceof Error ? e.message : "request failed",
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadReleasable();
+  }, [loadReleasable]);
 
   useEffect(() => {
     fetch("/api/revenue", { signal: timeoutSignal(15_000) })
@@ -75,6 +109,8 @@ export function RevenueSplitPanel() {
       await wallet.connect();
       return;
     }
+    // Nothing to release: the release would revert with NothingToRelease and still cost the wallet gas.
+    if (releasable.status === "ok" && releasable.byPayee.get(bareAccount(payee.accountHash)) === 0n) return;
     const pub = wallet.publicKeyHex;
     const set = (s: RowState) => setRows((r) => ({ ...r, [payee.accountHash]: s }));
     // The prepared transaction's hash, known before it is signed: lets a timed-out submit point at cspr.live.
@@ -163,9 +199,21 @@ export function RevenueSplitPanel() {
             <TriangleAlert className="h-3.5 w-3.5" /> {wallet.error}
           </p>
         )}
+        {releasable.status === "error" && (
+          <p className="flex flex-wrap items-center gap-2 text-xs text-warning">
+            <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
+            Could not read the releasable amounts ({releasable.message}). Withdraw still works, but a release with nothing to
+            pay out reverts and still costs gas.
+            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => void loadReleasable()}>
+              Retry
+            </Button>
+          </p>
+        )}
         {data.payees.map((p) => {
           const isYou = wallet.publicKeyHex?.toLowerCase() === p.publicKeyHex.toLowerCase();
           const state = rows[p.accountHash] ?? { status: "idle" as const };
+          const amount = releasable.status === "ok" ? releasable.byPayee.get(bareAccount(p.accountHash)) : undefined;
+          const nothingToRelease = amount === 0n;
           return (
             <div
               key={p.accountHash}
@@ -187,6 +235,22 @@ export function RevenueSplitPanel() {
                 >
                   {shortHex(p.publicKeyHex, 10, 6)} <ArrowUpRight className="h-3 w-3" />
                 </a>
+                <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+                  {releasable.status === "loading" ? (
+                    "Reading the releasable amount…"
+                  ) : amount === undefined ? (
+                    "Releasable amount unknown"
+                  ) : amount > 0n ? (
+                    <>
+                      Releasable now:{" "}
+                      <span className="font-medium text-foreground">
+                        {rawToTokens(amount, data.token.decimals)} {data.token.symbol}
+                      </span>
+                    </>
+                  ) : (
+                    "Nothing to release right now"
+                  )}
+                </p>
               </div>
 
               <div className="flex items-center gap-2">
@@ -211,7 +275,7 @@ export function RevenueSplitPanel() {
                         check the tx <ArrowUpRight className="h-3 w-3" />
                       </a>
                     )}
-                    <Button size="sm" variant="outline" onClick={() => withdraw(p)}>
+                    <Button size="sm" variant="outline" onClick={() => withdraw(p)} disabled={nothingToRelease}>
                       Retry
                     </Button>
                   </div>
@@ -219,16 +283,18 @@ export function RevenueSplitPanel() {
                   <Button
                     size="sm"
                     onClick={() => withdraw(p)}
-                    disabled={state.status === "pending"}
+                    disabled={state.status === "pending" || (wallet.connected && nothingToRelease)}
                   >
                     {state.status === "pending" ? (
                       <>
                         <Loader2 className="h-3.5 w-3.5 animate-spin" /> {state.step}
                       </>
-                    ) : wallet.connected ? (
-                      "Withdraw"
-                    ) : (
+                    ) : !wallet.connected ? (
                       "Connect to withdraw"
+                    ) : nothingToRelease ? (
+                      "Nothing to release"
+                    ) : (
+                      "Withdraw"
                     )}
                   </Button>
                 )}
@@ -236,11 +302,24 @@ export function RevenueSplitPanel() {
             </div>
           );
         })}
-        <p className="pt-1 text-xs text-muted-foreground">
-          <code className="text-xs">release</code> is permissionless — the connected wallet only pays gas
-          (~5 CSPR); funds always go to the payee. &ldquo;Submitted&rdquo; means the node accepted the transaction;
-          open it on cspr.live to see whether it executed and the exact amount released.
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-2 pt-1">
+          <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+            <code className="text-xs">release</code> is permissionless — the connected wallet only pays gas
+            (~5 CSPR); funds always go to the payee. The releasable amounts are read from the contract&apos;s on-chain state;
+            Withdraw is off at zero, because such a release reverts and still costs gas. &ldquo;Submitted&rdquo; means the
+            node accepted the transaction; open it on cspr.live to see whether it executed and the exact amount released.
+          </p>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1.5 px-2 text-xs"
+            onClick={() => void loadReleasable()}
+            disabled={releasable.status === "loading"}
+          >
+            <RefreshCw className={releasable.status === "loading" ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+            Refresh amounts
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );
