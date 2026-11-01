@@ -8,6 +8,7 @@ import casperSdk from "casper-js-sdk";
 import { toClientCasperSigner } from "@make-software/casper-x402";
 import { ExactCasperScheme as ClientScheme } from "@make-software/casper-x402/exact/client";
 import type { PaymentRequirements, SettleResponse, VerifyResponse } from "@x402/core/types";
+import { clientSignerFromPem, createCasperClientScheme } from "@cascet/client";
 import { balanceItemKey, dictionaryAddress } from "@cascet/gateway";
 import type { CoreResult, FacilitatorCore, FacilitatorLogger, ParsedPayment } from "./facilitator-core.js";
 import { NETWORKS } from "./facilitator-env.js";
@@ -591,6 +592,40 @@ describe("startRealFacilitator end to end against a local fake node (no network)
       const wrongName = await post(fac.url, "/settle", await signedBody(requirements({ name: "Wrapped CSPR", version: "1" })));
       assert.deepEqual([wrongName.status, wrongName.body["errorReason"]], [200, "token_domain_mismatch"]);
       assert.equal(submitted.length, 1, "nothing else reached the node");
+    } finally {
+      await fac.close();
+    }
+  });
+
+  test("a payment from CasCet's @x402/casper 2.29 buyer (style advertised, validAfter 0) verifies and settles with `amount`", async () => {
+    const fac = await startRealFacilitator({
+      port: 0,
+      network: NETWORK,
+      keyPath: feePayerPem,
+      rpcUrl: node.url,
+      authToken: TOKEN,
+      allowedPayTo: [SELLER],
+      allowedAssets: [`hash-${TOKEN_PKG}`],
+      logger: quiet,
+    });
+    try {
+      const reqs = requirements({ name: "CasCet X402 Token", version: "1", symbol: "WCSPR", decimals: "9", authorizationStyle: "legacy-amount" });
+      const scheme = createCasperClientScheme(clientSignerFromPem(payer.toPem()));
+      const result = await scheme.createPaymentPayload(2, reqs as unknown as PaymentRequirements);
+      const body = { x402Version: 2, paymentPayload: { x402Version: 2, accepted: reqs, payload: result.payload }, paymentRequirements: reqs };
+      const auth = (result.payload as { authorization: Record<string, string> }).authorization;
+      assert.equal(auth["validAfter"], "0");
+
+      const verified = await post(fac.url, "/verify", body);
+      assert.equal(verified.body["isValid"], true, JSON.stringify(verified.body));
+      const before = submitted.length;
+      const settled = await post(fac.url, "/settle", body);
+      assert.equal(settled.body["success"], true, JSON.stringify(settled.body));
+      assert.equal(submitted.length, before + 1);
+      const args = Object.fromEntries(submitted.at(-1)!.Version1["payload"].fields.args.Named as Array<[string, { bytes: string }]>);
+      assert.equal(args["amount"]?.bytes, u256(BigInt(PRICE)), "the legacy token's `amount` argument");
+      assert.equal(args["value"], undefined);
+      assert.equal(args["valid_after"]?.bytes, u64(0));
     } finally {
       await fac.close();
     }
