@@ -51,6 +51,13 @@ jobs:
       - name: Build workspace packages
         run: pnpm build
 
+      # `pnpm build` covers packages/* and servers/* only. The dashboard builds
+      # without secrets: the on-chain views stay empty without CSPR_CLOUD_TOKEN.
+      - name: Build dashboard
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: pnpm --filter @cascet/dashboard build
+
       - name: Typecheck
         run: pnpm typecheck
 
@@ -73,10 +80,18 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: clients/python/requirements.txt
+          # requirements.txt and, where it exists, requirements-lock.txt
+          cache-dependency-path: clients/python/requirements*.txt
 
+      # Prefer the hash-pinned lock file: the same, verified packages on every
+      # run. Fall back to the minimum versions while no lock file exists.
       - name: Install client dependencies
-        run: python3 -m pip install -r clients/python/requirements.txt
+        run: |
+          if [ -f clients/python/requirements-lock.txt ]; then
+            python3 -m pip install --require-hashes -r clients/python/requirements-lock.txt
+          else
+            python3 -m pip install -r clients/python/requirements.txt
+          fi
 
       - name: Unit tests
         run: |
@@ -121,7 +136,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # Installs the toolchain pinned by contracts/rust-toolchain.
+      # Installs the toolchain pinned by the toolchain file in contracts/
+      # (rust-toolchain.toml; the legacy one-line rust-toolchain works too).
       - name: Install the pinned Rust toolchain
         run: |
           rustup toolchain install --no-self-update --profile minimal
@@ -167,8 +183,8 @@ jobs:
         if: steps.cargo-audit-cache.outputs.cache-hit != 'true'
         run: cargo install cargo-audit --locked --version "$CARGO_AUDIT_VERSION"
 
-      # contracts/Cargo.lock is not committed yet, so resolve the tree the same
-      # way a fresh build of the contracts does.
+      # Audit the committed contracts/Cargo.lock; without one, resolve the tree
+      # the same way a fresh build of the contracts does.
       - name: Resolve the contracts dependency tree
         run: test -f contracts/Cargo.lock || cargo generate-lockfile --manifest-path contracts/Cargo.toml
 

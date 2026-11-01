@@ -35,7 +35,7 @@ jobs:
           persist-credentials: false
 
       # The Rust extractor runs cargo internally; give it the toolchain pinned
-      # by contracts/rust-toolchain instead of letting rustup guess.
+      # by the toolchain file in contracts/ instead of letting rustup guess.
       - name: Install the pinned Rust toolchain
         if: matrix.language == 'rust'
         working-directory: contracts

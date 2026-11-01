@@ -40,9 +40,7 @@ updates:
       github-actions:
         patterns: ["*"]
 
-  # Rust / Odra smart contracts. This updater needs contracts/rust-toolchain in
-  # TOML form (rust-toolchain.toml); the legacy one-line format makes every run
-  # fail with "only rust-toolchain files formatted as TOML are supported".
+  # Rust / Odra smart contracts
   - package-ecosystem: "cargo"
     directory: "/contracts"
     schedule:
