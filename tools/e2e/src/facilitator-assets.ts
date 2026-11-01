@@ -241,11 +241,12 @@ export async function resolveAssetPolicies(plans: readonly AssetPlan[], opts: Re
   return policies;
 }
 
-/** One line per asset for the start-up log. */
+/** One line per asset for the start-up log (the name may come from the chain: single line, bounded). */
 export function describeAssetPolicy(policy: AssetPolicy): string {
   const style = policy.style ? `${policy.style} (\`${AMOUNT_ARGUMENT_BY_STYLE[policy.style]}\`)` : "style read per request";
+  const name = policy.name !== undefined ? `"${logText(policy.name).slice(0, 100)}"` : "(on-chain)";
   return (
-    `asset ${short(policy.asset)}: ${style}, name ${policy.name !== undefined ? `"${policy.name}"` : "(on-chain)"}, ` +
+    `asset ${short(policy.asset)}: ${style}, name ${name}, ` +
     `version "${policy.version}", gas limit ${policy.paymentMotes !== undefined ? `${policy.paymentMotes} motes` : "per style"}`
   );
 }

@@ -92,6 +92,8 @@ describe("resolving assets against the chain (recorded testnet answers)", () => 
     // Package → newest enabled contract (Wrapped CSPR: version 8 of 8, seven disabled) → named keys.
     assert.ok(calls.includes(`query_global_state hash-${WCSPR_CONTRACT}`));
     assert.equal(describeAssetPolicy(policies[1]!), 'asset 3d80df21…: cep3009-value (`value`), name "Wrapped CSPR", version "1", gas limit 2000000000 motes');
+    // A name read from the chain is logged on one line.
+    assert.doesNotMatch(describeAssetPolicy({ ...policies[1]!, name: "Evil\nINFO forged line" }), /\n/);
   });
 
   test("a token CasCet does not know is settled in the style its ABI shows", async () => {
