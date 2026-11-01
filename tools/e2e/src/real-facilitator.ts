@@ -4,9 +4,9 @@ import express, { type NextFunction, type Request, type Response } from "express
 // invocations of the "express-rate-limit" module import as rate limiters.
 import rateLimit from "express-rate-limit";
 import type { Network } from "@x402/core/types";
-import { ExactCasperScheme } from "@make-software/casper-x402/exact/facilitator";
 import { createCasperRpc, TokenProbe } from "@cascet/gateway";
 import { AuthorizationLedger } from "./authorization-ledger.js";
+import { verifyPaymentSignature } from "./authorization-signature.js";
 import { assertUsableToken, authorizationMatches, MIN_MAINNET_TOKEN_LENGTH } from "./facilitator-auth.js";
 import {
   createFacilitatorCore,
@@ -46,9 +46,9 @@ import { createCasperSettlementChain } from "./settlement.js";
  * (`https://x402-facilitator.cspr.cloud`) followed. CasCet's token is the
  * earlier reference build whose `transfer_with_authorization` expects `amount`,
  * so a hosted settle against it reverts `User error: 64658`
- * (Odra `ExecutionError::MissingArg`). This facilitator verifies with the
- * published `@make-software/casper-x402` 1.0.0 scheme and settles with its own
- * transaction builder (same `amount` argument), fee-sponsored by a Casper key.
+ * (Odra `ExecutionError::MissingArg`). This facilitator checks signatures with
+ * @x402/casper's EIP-712 digest and settles with its own transaction builder
+ * (same `amount` argument), fee-sponsored by a Casper key.
  *
  * SECURITY: the fee payer pays real CSPR gas for every settle it submits, and
  * a reverted deploy burns its whole gas limit. The server therefore:
@@ -554,22 +554,6 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     chainName: NETWORKS[network].chainName,
     log: m => logger.warn(m),
   });
-  // casper-x402's scheme does the cryptographic verification; it never signs
-  // or submits here (settlement goes through `chain`).
-  const notUsed = async (): Promise<never> => {
-    throw new Error("settlement is handled by the CasCet settlement chain");
-  };
-  const scheme = new ExactCasperScheme(
-    {
-      getNetworkConfig: async n => ({ chainName: n.split(":").slice(1).join(":"), rpcUrl }),
-      getAddresses: () => [feePayer],
-      getPublicKeyHex: () => privateKey.publicKey.toHex(),
-      signTransaction: notUsed,
-      putTransaction: notUsed,
-      waitForTransaction: notUsed,
-    },
-    { limitedPaymentMotes: paymentMotes },
-  );
   const ledger = new AuthorizationLedger();
   const gas = new DailyGasBudget({ capMotes: opts.dailyGasCapMotes ?? DEFAULT_DAILY_GAS_CAP_MOTES });
   if (!preflight) logger.warn("on-chain preflight disabled: replayed or unfunded authorizations are only caught by the in-memory ledger");
@@ -588,7 +572,8 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
       preflightDeadlineMs,
     },
     {
-      verifySignature: (payload, requirements) => scheme.verify(payload, requirements),
+      // @x402/casper's EIP-712 digest and checks, without RPC (the core runs the preflight).
+      verifySignature: async (payload, requirements) => verifyPaymentSignature(payload, requirements),
       ...(preflight ? { tokenState: new TokenProbe(rpc) } : {}),
       chain,
       ledger,

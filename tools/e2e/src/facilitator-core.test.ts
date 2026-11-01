@@ -23,7 +23,7 @@ const PAYER = `00${"65".repeat(32)}`;
 const T0 = Date.UTC(2026, 10, 1, 12, 0, 0);
 const CSPR = 1_000_000_000n;
 
-function body(over: { nonce?: string; value?: string; from?: string; payTo?: string; asset?: string; validBefore?: number; publicKey?: string; signature?: string; extra?: Record<string, unknown> } = {}) {
+function body(over: { nonce?: string; value?: string; from?: string; payTo?: string; asset?: string; validAfter?: number; validBefore?: number; publicKey?: string; signature?: string; extra?: Record<string, unknown> } = {}) {
   const now = Math.floor(T0 / 1000);
   const payTo = over.payTo ?? SELLER;
   const value = over.value ?? "500000000";
@@ -39,7 +39,7 @@ function body(over: { nonce?: string; value?: string; from?: string; payTo?: str
           from: over.from ?? PAYER,
           to: payTo,
           value,
-          validAfter: String(now - 600),
+          validAfter: String(over.validAfter ?? now - 600),
           validBefore: String(over.validBefore ?? now + 300),
           nonce: over.nonce ?? "9c".repeat(32),
         },
@@ -216,6 +216,7 @@ describe("/verify", () => {
       [{ from: `01${"65".repeat(32)}` }, 200, Reason.invalidPayer],
       [{ value: "0" }, 200, Reason.invalidAmount],
       [{ value: "0500" }, 200, Reason.invalidAmount],
+      [{ validAfter: now + 30 }, 200, Reason.notYetValid],
       [{ validBefore: now - 1 }, 200, Reason.expired],
       [{ validBefore: now + 19 }, 200, Reason.expiresTooSoon],
       [{ validBefore: now + 7_200 }, 200, Reason.validityTooLong],

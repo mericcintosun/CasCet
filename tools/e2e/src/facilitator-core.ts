@@ -40,6 +40,7 @@ export const Reason = {
   invalidAmount: "invalid_amount",
   invalidValidity: "invalid_validity_window",
   validityTooLong: "validity_window_too_long",
+  notYetValid: "authorization_not_yet_valid",
   expired: "authorization_expired",
   expiresTooSoon: "authorization_expires_too_soon",
   invalidNonce: "invalid_nonce",
@@ -167,7 +168,7 @@ export function settlementTtlMs(validBeforeSec: number, nowMs: number, maxTtlMs:
 const MIN_TX_TTL_MS = 1_000;
 
 export interface FacilitatorCoreDeps {
-  /** casper-x402 cryptographic verification (EIP-712 digest, signature, pubkey ↔ payer). */
+  /** Cryptographic verification (EIP-712 digest, signature, pubkey ↔ payer). */
   verifySignature(payload: PaymentPayload, requirements: PaymentRequirements): Promise<VerifyResponse>;
   /** On-chain reads; undefined disables the preflight. Its clock must be `now` (deadlines are absolute). */
   tokenState?: Pick<TokenProbe, "balanceOf" | "isNonceUsed" | "tokenName">;
@@ -347,6 +348,8 @@ export function checkAuthorization(
   const validAfter = Number(a.validAfter);
   const validBefore = Number(a.validBefore);
   if (validAfter >= validBefore) return reject(200, Reason.invalidValidity, "validAfter must be before validBefore");
+  // The token refuses an authorization before validAfter: settling it now would revert and burn gas.
+  if (validAfter > nowSec) return reject(200, Reason.notYetValid, "authorization is not valid yet (validAfter is in the future)");
   const late = windowRejection(validBefore, nowSec, config.minSettleWindowSeconds ?? DEFAULT_MIN_SETTLE_WINDOW_SECONDS);
   if (late) return { ok: false, rejection: late };
   if (validBefore - nowSec > config.maxValiditySeconds) {
