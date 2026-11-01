@@ -1,9 +1,7 @@
 import { wrapFetchWithPayment, x402Client, x402HTTPClient } from "@x402/fetch";
-import type { SpendControls } from "@x402/core/client";
-import { createClientCasperSigner } from "@make-software/casper-x402";
-import { ExactCasperScheme } from "@make-software/casper-x402/exact/client";
-import casperSdk from "casper-js-sdk";
-import { HEADER_CASCET_PARENT_ID, HEADER_PAYMENT_REQUIRED } from "@cascet/core";
+import type { PaymentPolicy, SpendControls } from "@x402/core/client";
+import { HEADER_CASCET_PARENT_ID, HEADER_PAYMENT_REQUIRED, type AuthorizationStyle } from "@cascet/core";
+import { createCasperClientScheme, loadClientSigner } from "./casper-scheme.js";
 import {
   DEFAULT_TIMEOUT_MS,
   decodeBase64Json,
@@ -16,8 +14,6 @@ import {
 import { SpendPolicy, type SpendDecision } from "./policy.js";
 
 export type { FetchLike } from "./http.js";
-
-const { KeyAlgorithm } = casperSdk;
 
 /**
  * Largest 402 body handed to @x402/fetch. @x402/fetch 2.29 caps the bodies it
@@ -36,6 +32,20 @@ export const MAX_402_BODY_BYTES = 64 * 1024;
  */
 export const CASCET_SPEND_CONTROLS: Readonly<SpendControls> = Object.freeze({ allowedAssets: true, maxAmountPerPayment: false });
 
+/**
+ * x402 payment policy that keeps the options `policy` would accept, so that a
+ * 402 offering several (assets, payees) selects one this client pays. It
+ * reserves nothing: the before-payment hook makes the binding decision. When
+ * no option passes, every option is kept, so that hook refuses with the
+ * precise reason instead of x402's generic "filtered out by policies".
+ */
+export function spendPolicyFilter(policy: Pick<SpendPolicy, "check">): PaymentPolicy {
+  return (_x402Version, requirements) => {
+    const acceptable = requirements.filter(option => policy.check(option).ok);
+    return acceptable.length > 0 ? acceptable : requirements;
+  };
+}
+
 /** What was authorized, as reported to `onPayment`. */
 export interface PaymentInfo {
   /** Raw CEP-18 token units signed over. */
@@ -46,6 +56,8 @@ export interface PaymentInfo {
   network: string;
   /** CEP-18 contract package hash (bare hex). */
   asset: string;
+  /** The token's authorization style, when the gateway advertised it (`extra.authorizationStyle`). */
+  authorizationStyle?: AuthorizationStyle;
 }
 
 export interface PayingFetchOptions {
@@ -184,16 +196,18 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
     );
   }
 
-  const algorithm = opts.keyAlgorithm === "secp256k1" ? KeyAlgorithm.SECP256K1 : KeyAlgorithm.ED25519;
-  const signer = await createClientCasperSigner(opts.privateKeyPath, algorithm);
+  const signer = await loadClientSigner(opts.privateKeyPath, opts.keyAlgorithm ?? "ed25519");
 
   // Register the exact scheme ONLY for the networks this client pays on, never "casper:*" (M02).
-  const scheme = new ExactCasperScheme(signer);
+  // One @x402/casper scheme signs for both authorization styles (same EIP-712 message).
+  const scheme = createCasperClientScheme(signer);
   const client = new x402Client();
   for (const network of policy.networks) client.register(network as `${string}:${string}`, scheme);
   // x402's own spend controls would refuse every token its scheme does not know by default;
   // CasCet's SpendPolicy (below) enforces the allowlists and the raw-unit budgets instead.
   client.setSpendControls(CASCET_SPEND_CONTROLS);
+  // Choose among several offered options one the policy accepts; the hook below still decides.
+  client.registerPolicy(spendPolicyFilter(policy));
 
   // Budget reserved by the policy for each payment being signed, handed back if signing fails.
   const reservations = new PendingReservations<Extract<SpendDecision, { ok: true }>>();
@@ -213,6 +227,7 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
           payTo: reserved.payTo,
           network: reserved.network,
           asset: reserved.asset,
+          ...(reserved.authorizationStyle ? { authorizationStyle: reserved.authorizationStyle } : {}),
         });
       } catch (err) {
         log(`[cascet] onPayment callback threw: ${err instanceof Error ? err.message : String(err)}`);

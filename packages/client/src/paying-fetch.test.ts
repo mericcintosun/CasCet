@@ -192,6 +192,44 @@ describe("createPayingFetch", () => {
     assert.equal(response.status, 200);
   });
 
+  it("picks the option the policy accepts when a 402 offers several, and reports its style", async () => {
+    gateway.accepts = [
+      requirement({ asset: ASSET_B, extra: { name: "Other Token", version: "1", authorizationStyle: "cep3009-value" } }),
+      requirement({ payTo: OTHER_SELLER, extra: { name: "CasCet X402 Token", version: "1", authorizationStyle: "legacy-amount" } }),
+      requirement({ amount: "300", extra: { name: "CasCet X402 Token", version: "1", authorizationStyle: "legacy-amount" } }),
+    ];
+    const payments: unknown[] = [];
+    const paying = await make({ onPayment: info => payments.push(info) });
+    const before = gateway.hits.length;
+    assert.equal((await paying.fetch(gateway.url(), { method: "POST", body: "{}" })).status, 200);
+    const signed = decodeSignature(gateway.hits.slice(before)[1]?.signature ?? "");
+    assert.equal(signed.accepted.asset, ASSET_A);
+    assert.equal(signed.accepted.payTo, SELLER);
+    assert.equal(signed.accepted.amount, "300");
+    assert.deepEqual(payments, [
+      { amountRaw: "300", payTo: SELLER, network: "casper:casper-test", asset: ASSET_A, authorizationStyle: "legacy-amount" },
+    ]);
+  });
+
+  it("still names the precise reason when no offered option is acceptable", async () => {
+    gateway.accepts = [requirement({ asset: ASSET_B }), requirement({ payTo: OTHER_SELLER })];
+    const paying = await make();
+    await assert.rejects(paying.fetch(gateway.url(), { method: "POST", body: "{}" }), (err: Error) => {
+      assert.ok(err instanceof PaymentRefusedError);
+      assert.match(err.message, /asset .* is not allowlisted/);
+      return true;
+    });
+  });
+
+  it("refuses an authorization style it does not know, and signs nothing", async () => {
+    gateway.accepts = [requirement({ extra: { name: "CasCet X402 Token", version: "1", authorizationStyle: "permit2" } })];
+    const paying = await make();
+    const before = gateway.hits.length;
+    await assert.rejects(paying.fetch(gateway.url(), { method: "POST", body: "{}" }), /unknown authorization style "permit2"/);
+    assert.ok(gateway.hits.slice(before).every(hit => hit.signature === undefined));
+    assert.equal(paying.spentRaw(), "0");
+  });
+
   it("pays tokens x402 does not know as defaults, above x402's $1 default cap (2.29 spend controls)", async () => {
     // @x402/core 2.29 would only pay its default asset (csprUSD) and drop this offer.
     assert.deepEqual(CASCET_SPEND_CONTROLS, { allowedAssets: true, maxAmountPerPayment: false });

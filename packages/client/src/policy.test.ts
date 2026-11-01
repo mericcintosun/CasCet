@@ -226,4 +226,32 @@ describe("SpendPolicy.authorize", () => {
     refused(policy.authorize(requirements({ payTo: "01" + "ab".repeat(33) })), /malformed payTo/);
     refused(policy.authorize(requirements({ asset: `hash-${ASSET_A}` })), /malformed asset/);
   });
+
+  it("reports a known authorization style and refuses one it does not know", () => {
+    const policy = new SpendPolicy();
+    const extra = (authorizationStyle: unknown) => ({ extra: { name: "Wrapped CSPR", version: "1", authorizationStyle } });
+    for (const style of ["legacy-amount", "cep3009-value"]) {
+      const decision = policy.authorize(requirements(extra(style)));
+      assert.equal(decision.ok && decision.authorizationStyle, style);
+    }
+    const plain = policy.authorize(requirements());
+    assert.equal(plain.ok, true);
+    assert.equal("authorizationStyle" in plain, false, "no style advertised, none reported");
+    for (const style of ["permit2", "", "AMOUNT", 1, null]) {
+      refused(policy.authorize(requirements(extra(style))), /unknown authorization style/);
+    }
+    assert.deepEqual(policy.spentByAsset(), { [ASSET_A]: "300" }, "refusals reserve nothing");
+  });
+});
+
+describe("SpendPolicy.check", () => {
+  it("applies every rule, the session budget included, without reserving", () => {
+    const policy = new SpendPolicy({ allowedAssets: [ASSET_A], maxSessionRaw: "150" });
+    assert.equal(policy.check(requirements()).ok, true);
+    assert.equal(policy.check(requirements()).ok, true, "checking twice reserves nothing");
+    assert.deepEqual(policy.spentByAsset(), {});
+    refused(policy.check(requirements({ asset: ASSET_B })), /not allowlisted/);
+    assert.equal(policy.authorize(requirements()).ok, true);
+    refused(policy.check(requirements()), /would exceed the session budget 150/);
+  });
 });

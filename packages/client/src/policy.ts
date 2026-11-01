@@ -1,4 +1,11 @@
-import { NETWORK_CASPER_TESTNET, normalizePayTo } from "@cascet/core";
+import {
+  AUTHORIZATION_STYLE_EXTRA_KEY,
+  AUTHORIZATION_STYLES,
+  isAuthorizationStyle,
+  NETWORK_CASPER_TESTNET,
+  normalizePayTo,
+  type AuthorizationStyle,
+} from "@cascet/core";
 
 /** Raw CEP-18 amounts: 1-40 decimal digits. No sign, spaces, decimals, hex or exponent. */
 export const RAW_AMOUNT_PATTERN = /^[0-9]{1,40}$/;
@@ -103,7 +110,15 @@ export interface SpendPolicyOptions {
 
 /** Outcome of checking one 402 payment option against the policy. */
 export type SpendDecision =
-  | { ok: true; network: string; payTo: string; asset: string; amount: bigint }
+  | {
+      ok: true;
+      network: string;
+      payTo: string;
+      asset: string;
+      amount: bigint;
+      /** The option's `extra.authorizationStyle`, when the gateway advertised one. */
+      authorizationStyle?: AuthorizationStyle;
+    }
   | { ok: false; reason: string };
 
 /**
@@ -154,6 +169,16 @@ export class SpendPolicy {
 
   /** Check one payment option from a 402 and reserve its amount if it is acceptable. */
   authorize(requirements: unknown): SpendDecision {
+    const decision = this.check(requirements);
+    if (decision.ok) this.spent.set(decision.asset, (this.spent.get(decision.asset) ?? 0n) + decision.amount);
+    return decision;
+  }
+
+  /**
+   * Check one payment option from a 402 against every rule, the session budget
+   * included, without reserving anything (to choose among several options).
+   */
+  check(requirements: unknown): SpendDecision {
     if (typeof requirements !== "object" || requirements === null) return refuse("malformed payment requirements");
     const req = requirements as Record<string, unknown>;
 
@@ -175,6 +200,13 @@ export class SpendPolicy {
     const asset = typeof req.asset === "string" ? req.asset.toLowerCase() : undefined;
     if (asset === undefined || !PACKAGE_HASH.test(asset)) return refuse(`malformed asset ${show(req.asset)}`);
     if (this.allowedAssets && !this.allowedAssets.has(asset)) return refuse(`asset ${asset} is not allowlisted`);
+
+    // Informational, but a value this client does not know means terms it cannot judge.
+    const extra = typeof req.extra === "object" && req.extra !== null ? (req.extra as Record<string, unknown>) : {};
+    const authorizationStyle = extra[AUTHORIZATION_STYLE_EXTRA_KEY];
+    if (authorizationStyle !== undefined && !isAuthorizationStyle(authorizationStyle)) {
+      return refuse(`unknown authorization style ${show(authorizationStyle)}; this client knows ${AUTHORIZATION_STYLES.join(", ")}`);
+    }
 
     let amount: bigint;
     try {
@@ -202,8 +234,7 @@ export class SpendPolicy {
         `price ${amount} would exceed the session budget ${this.maxSession} for asset ${asset} (already authorized ${spent})`,
       );
     }
-    this.spent.set(asset, spent + amount);
-    return { ok: true, network, payTo, asset, amount };
+    return { ok: true, network, payTo, asset, amount, ...(authorizationStyle !== undefined ? { authorizationStyle } : {}) };
   }
 
   /** Give back a reservation whose authorization was never created (e.g. signing failed). */
