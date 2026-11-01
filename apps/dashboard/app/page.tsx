@@ -39,14 +39,15 @@ const SOCIALS = {
 };
 const CONTRACT = (hash: string) => `https://cspr.live/contract-package/${hash}`;
 
-// Live on Casper MAINNET (chain "casper"). Full testnet set is in docs/onchain.md.
+// Live on Casper MAINNET (chain "casper"). Full testnet set is in docs/onchain.md. Lock status read from
+// mainnet global state (query_global_state, 2026-11-02): Cep18X402 is Unlocked, the other five are Locked.
 const CONTRACTS = [
   { name: "CascadeController", note: "budget-bounded cascade tree + recursive attribution", hash: "c7e56988214c62dc5eda20b14894a7514f7388560850b6db3094758363a62189" },
   { name: "ReceiptRegistry", note: "on-chain settled-call receipts with cascade parent links", hash: "f86bef35062e92d06b8171cf4131fdf557463589aca9112a348e5eb24159eb93" },
   { name: "PaymentChannel", note: "prepaid channels, off-chain signed vouchers", hash: "db2dc42b76f354e7716cafea8619ae6bc85fe50bc3e73979c2360dbba1458c57" },
   { name: "RevenueSplit", note: "on-chain CEP-18 revenue splitter", hash: "269afcceb147db41f68f5721df7b3957e5efeefb3bedbb9deba324c3a45d09c5" },
   { name: "DemoToken", note: "CasCet CEP-18 payment token (WCSPR-style)", hash: "3da88daf3f276d915ea4f6734e0d4b3d4781358734c369b95de028a2c094fe74" },
-  { name: "Cep18X402", note: "payment token with transfer_with_authorization", hash: "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41" },
+  { name: "Cep18X402", note: "payment token with transfer_with_authorization; its package is unlocked, so the owner key can upgrade it", hash: "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41" },
 ];
 
 const STATS = [
@@ -252,7 +253,7 @@ function Features() {
   const feats = [
     { icon: ShieldCheck, t: "Real x402 settlement, no mock", d: <>Agents pay from an on-chain balance of a real <span className="font-mono text-foreground">transfer_with_authorization</span> CEP-18 token; a self-hosted x402 facilitator verifies and settles it; receipts anchor on-chain. Every hop is a real Casper transaction.</> },
     { icon: Receipt, t: "Receipts, on-chain", d: <>Every settled call is anchored with its cascade parent id, so the whole payment graph reconstructs from chain data alone, no central coordinator.</> },
-    { icon: Lock, t: "Upgradable registry (testnet)", d: <>On testnet the ReceiptRegistry was upgraded v1.1 to v1.2 in place and all anchored state survived. The mainnet packages are deployed locked (not upgradable).</> },
+    { icon: Lock, t: "Upgradable registry (testnet)", d: <>On testnet the ReceiptRegistry was upgraded v1.1 to v1.2 in place and all anchored state survived. On mainnet the CascadeController, ReceiptRegistry, PaymentChannel, RevenueSplit and DemoToken packages are locked (not upgradable); the Cep18X402 payment token package is unlocked, so its owner key can upgrade it.</> },
     { icon: Coins, t: "Revenue splits", d: <>The RevenueSplit contract splits the tokens it holds between co-authors by fixed weights, on-chain and pull-based: each payee withdraws their own share. x402 settles to account hashes today, so earnings reach the splitter by a transfer.</> },
     { icon: GitBranch, t: "Wrap any MCP server", d: <>CasCet monetizes the unmodified official <span className="font-mono text-foreground">server-everything</span>, not just first-party tools.</> },
   ];
