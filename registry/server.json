@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.mericcintosun/cascet-casper-defi-data",
+  "title": "CasCet Casper DeFi Data (testnet)",
+  "description": "Casper TESTNET paid MCP server (test tokens): CSPR, RWA and DeFi data, paid per call over x402",
+  "version": "0.1.1",
+  "websiteUrl": "https://cascet.vercel.app",
+  "repository": {
+    "url": "https://github.com/mericcintosun/CasCet",
+    "source": "github",
+    "id": "1292699377",
+    "subfolder": "servers/casper-defi-data"
+  },
+  "icons": [
+    {
+      "src": "https://cascet.vercel.app/logo.png",
+      "mimeType": "image/png",
+      "sizes": ["1024x1024"]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://REPLACE-WITH-PUBLIC-GATEWAY/mcp"
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "io.github.mericcintosun.cascet": {
+        "network": "casper:casper-test",
+        "testnetOnly": true,
+        "payment": "x402 exact scheme: CEP-18 transfer_with_authorization, settled on Casper testnet",
+        "pricing": "per tool, advertised in tools/list under _meta.cascet.priceUsd",
+        "discovery": "/.well-known/x402.json"
+      }
+    }
+  }
+}

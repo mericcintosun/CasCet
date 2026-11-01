@@ -5,16 +5,34 @@ packages:
   - "tools/*"
 
 # Security overrides: force patched transitive deps across the tree.
-#  - postcss GHSA-qx2v-qp2m-jg93
-#  - brace-expansion GHSA-3jxr-9vmj-r5cp (ReDoS; via casper-js-sdk>glob>minimatch)
-#  - fast-uri GHSA-v2hh-gcrm-f6hx / CVE-2026-16221 (host confusion; via @modelcontextprotocol/sdk>ajv)
-#  - sharp GHSA-f88m-g3jw-g9cj (libvips CVEs; via next image optimization)
-#  - @hono/node-server GHSA-frvp-7c67-39w9 (serve-static path traversal) + GHSA-9mqv-5hh9-4cgg
-#    (WebSocket-handshake memory-leak DoS, fixed in 2.0.10); via @modelcontextprotocol/sdk,
+# Each entry is a FLOOR inside the same major line (never an exact pin), so later
+# patch releases and Dependabot security updates still apply.
+#  - postcss GHSA-qx2v-qp2m-jg93, GHSA-r28c-9q8g-f849 (path traversal via source maps)
+#  - brace-expansion ReDoS/DoS series (GHSA-3jxr-9vmj-r5cp ... GHSA-qhr7-859c-m2p7); via casper-js-sdk>glob>minimatch
+#  - fast-uri host-confusion / SSRF series (CVE-2026-16221 ... GHSA-qw65-cvwx-89v3); via @modelcontextprotocol/sdk>ajv
+#  - sharp libvips/libheif/librsvg CVEs (GHSA-f88m-g3jw-g9cj, GHSA-rgj7-g3m4-5g8c, GHSA-wq5f-xc86-pv6w); via next
+#  - @hono/node-server GHSA-frvp-7c67-39w9 + GHSA-9mqv-5hh9-4cgg; via @modelcontextprotocol/sdk,
 #    unused on our path — we serve over Express, never the SDK's streamableHttp server
 overrides:
-  postcss@<8.5.10: ">=8.5.10"
-  brace-expansion@<1.1.16: "1.1.16"
-  fast-uri@<3.1.4: "3.1.4"
-  sharp@<0.35.0: ">=0.35.0"
-  "@hono/node-server@<2.0.10": "2.0.10"
+  postcss@<8.5.18: "^8.5.18"
+  brace-expansion@<1.1.21: "^1.1.21"
+  fast-uri@<3.1.9: "^3.1.9"
+  sharp@<0.35.5: "^0.35.5"
+  "@hono/node-server@<2.0.10": "^2.0.10"
+
+# Pin the peer-install mode this lockfile was resolved with, so
+# `pnpm install --frozen-lockfile` (CI, contributors) no longer depends on
+# anyone's global pnpm config; with pnpm's default (true) it fails with
+# ERR_PNPM_LOCKFILE_CONFIG_MISMATCH.
+autoInstallPeers: false
+
+# Advisories accepted on purpose. `pnpm audit` and the CI audit gate skip only
+# these; every entry names its reason and the change that removes it.
+#  - GHSA-mrhx-c7xc-m3w5 / CVE-2023-54404 (zod <4.6.6: memory exhaustion on very
+#    large arrays). Our own packages use zod 4.6.7; the vulnerable zod 3.25.76
+#    comes only through @x402/core 2.15/2.17, which stays on ~2.17.0 until the
+#    planned @x402 2.29 migration, and zod 3.x has no patched release. Remove
+#    this entry with that migration.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-mrhx-c7xc-m3w5

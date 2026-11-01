@@ -1,0 +1,41 @@
+{
+  "name": "casper-defi-data",
+  "upstream": {
+    "type": "stdio",
+    "command": "node",
+    "args": [
+      "servers/casper-defi-data/dist/index.js"
+    ]
+  },
+  "network": "casper:casper-test",
+  "payTo": "REPLACE_WITH_00_PLUS_YOUR_ACCOUNT_HASH",
+  "asset": {
+    "packageHash": "hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3",
+    "name": "CasCet X402 Token",
+    "symbol": "WCSPR",
+    "decimals": 9,
+    "version": "1",
+    "tokensPerUsd": 50
+  },
+  "facilitator": {
+    "url": "http://127.0.0.1:4501"
+  },
+  "pricing": {
+    "tools": {
+      "get_cspr_market_data": {
+        "price": "$0.01",
+        "description": "Live CSPR price, 24h volume and change (USD)"
+      },
+      "get_rwa_price": {
+        "price": "$0.02",
+        "description": "Price of a tokenized real-world asset (gold or US treasuries)"
+      },
+      "get_defi_yields": {
+        "price": "$0.02",
+        "description": "Yield opportunities on Casper: staking, liquid staking, DEX LP estimates"
+      }
+    }
+  },
+  "host": "127.0.0.1",
+  "port": 4402
+}

@@ -12,10 +12,9 @@ import {
 export const dynamic = "force-dynamic";
 
 /**
- * RevenueSplit config for the withdraw UI. Shares are immutable deploy constants;
- * the exact releasable amount is confirmed by the on-chain `release` tx itself
- * (Odra stores CEP-18 balances internally, so a precise live read isn't practical
- * without an indexer — the splitter's held balance is verifiable on cspr.live).
+ * RevenueSplit config for the withdraw UI. Shares are immutable deploy constants.
+ * What each payee can release right now is read from the contract's on-chain
+ * state by /api/revenue/releasable.
  */
 export async function GET(): Promise<Response> {
   return Response.json({

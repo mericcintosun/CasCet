@@ -19,6 +19,11 @@ target/
 *.pem
 keys/
 
+# Local agent tooling (its worktrees are full copies of this repository) and
+# the internal backlog, which must stay out of the public repository
+.claude/
+/tasks.md
+
 # data
 *.sqlite
 *.sqlite-journal

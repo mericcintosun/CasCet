@@ -20,15 +20,26 @@ export function LogoMark({ className }: { className?: string }) {
 }
 
 /** Full lockup: mark + wordmark. */
-export function Logo({ className, subtitle }: { className?: string; subtitle?: string }) {
+export function Logo({
+  className,
+  subtitle,
+  subtitleClassName,
+}: {
+  className?: string;
+  subtitle?: string;
+  /** e.g. "hidden sm:block" to drop the subtitle on phones. */
+  subtitleClassName?: string;
+}) {
   return (
     <span className={cn("flex items-center gap-2.5", className)}>
-      <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/15 p-1.5 text-primary ring-1 ring-primary/25">
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/15 p-1.5 text-primary ring-1 ring-primary/25">
         <LogoMark />
       </span>
       <span className="leading-none">
         <span className="block text-[15px] font-semibold tracking-tight">CasCet</span>
-        {subtitle && <span className="mt-0.5 block font-mono text-[10px] text-muted-foreground">{subtitle}</span>}
+        {subtitle && (
+          <span className={cn("mt-0.5 block font-mono text-[10px] text-muted-foreground", subtitleClassName)}>{subtitle}</span>
+        )}
       </span>
     </span>
   );

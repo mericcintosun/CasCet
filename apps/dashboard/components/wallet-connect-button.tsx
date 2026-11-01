@@ -11,7 +11,7 @@ export function WalletConnectButton() {
 
   if (connected && publicKeyHex) {
     return (
-      <Button variant="outline" size="sm" onClick={disconnect} title={publicKeyHex}>
+      <Button variant="outline" size="sm" onClick={disconnect} title={publicKeyHex} aria-label={`Disconnect wallet ${shortHex(publicKeyHex, 6, 4)}`}>
         <span className="font-mono text-xs tabular-nums">{shortHex(publicKeyHex, 6, 4)}</span>
         <LogOut className="h-3.5 w-3.5" />
       </Button>
@@ -21,7 +21,14 @@ export function WalletConnectButton() {
   return (
     <Button variant="default" size="sm" onClick={connect} disabled={connecting}>
       <Wallet className="h-3.5 w-3.5" />
-      {connecting ? "Connecting…" : "Connect wallet"}
+      {connecting ? (
+        "Connecting…"
+      ) : (
+        <>
+          <span className="sm:hidden">Connect</span>
+          <span className="hidden sm:inline">Connect wallet</span>
+        </>
+      )}
     </Button>
   );
 }
