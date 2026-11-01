@@ -103,7 +103,10 @@ committed (`.gitignore` covers `*.pem` + `keys/`).
 
 The self-hosted facilitator is CasCet's settlement path: the hosted
 `x402-facilitator.cspr.cloud` now sends the CEP-3009 arg `value`, while our x402
-token (the earlier reference build) expects `amount`.
+token (the earlier reference build) expects `amount`. It settles both styles side
+by side: at start-up it reads every allowlisted token's ABI, `chain_name` and
+`name` on-chain, refuses to start when they contradict the configuration, and pins
+the style (`amount` or `value`), name and gas limit of each token.
 
 ```bash
 CASCET_NETWORK=casper:casper \
@@ -121,14 +124,17 @@ pnpm --filter @cascet/e2e facilitator
 | `CASCET_FACILITATOR_TOKEN` | none | **required on mainnet**, at least 32 characters; accepted as `Authorization: <token>` or `Bearer <token>` |
 | `CASCET_SELLER_ACCOUNT_HASH` | mainnet: deployer account | comma list of `payTo` accounts it settles to |
 | `CASCET_OWNER_ACCOUNT_HASH` | none (mainnet: the deployer is always added) | comma list of owner accounts; the fee payer must be none of them, nor an associated key of an owner or seller account |
-| `CASCET_ALLOWED_ASSETS` | the CasCet x402 token | comma list of package hashes |
-| `CASCET_SETTLE_PAYMENT_MOTES` | `4000000000` (4 CSPR) | gas limit per settle, 3–100 CSPR |
+| `CASCET_ALLOWED_ASSETS` | the CasCet x402 token | comma list of package hashes; each is settled in the style its on-chain ABI shows |
+| `CASCET_ASSET_STYLES` | none | optional `<package hash>=<legacy-amount\|cep3009-value>` list; the chain must agree (start-up and every payment) |
+| `CASCET_ASSET_NAMES` | the names CasCet knows, else the on-chain name | optional `<package hash>=<EIP-712 name>` list of pinned domain names |
+| `CASCET_SETTLE_PAYMENT_MOTES` | per style: `4000000000` (4 CSPR) for `amount` tokens, `3500000000` (3.5 CSPR) for `value` tokens | gas limit per settle of every asset without its own; at least 3 CSPR (`amount`) or 1.5 CSPR (`value`), at most 100 CSPR |
+| `CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET` | none | optional `<package hash>=<motes>` list of per-asset gas limits |
 | `CASCET_DAILY_GAS_CAP_MOTES` | `500000000000` (500 CSPR) | sponsored gas per UTC day |
 | `CASCET_SETTLE_WAIT_MS` | `60000` | how long `/settle` waits for execution before answering "pending"; keep it below the gateway's `timeouts.settleMs` (90 s) |
-| `CASCET_PREFLIGHT` | `on` | on-chain nonce / balance / token-name checks; **required on mainnet**; `off` elsewhere needs `CASCET_TOKEN_NAME` |
+| `CASCET_PREFLIGHT` | `on` | on-chain ABI / nonce / balance / token-name checks; **required on mainnet**; `off` elsewhere needs every token's style and name pinned (`CASCET_ASSET_STYLES`, `CASCET_TOKEN_NAME` / `CASCET_ASSET_NAMES`; CasCet's token and testnet Wrapped CSPR are known) |
 | `CASCET_PREFLIGHT_DEADLINE_MS` | `10000` | total time one request's preflight may take, retries included; keep it below the gateway's verify timeout (`timeouts.facilitatorMs`, 15 s) |
 | `CASCET_TOKEN_VERSION` | `1` | pinned EIP-712 domain version |
-| `CASCET_TOKEN_NAME` | `CasCet X402 Token` when only the CasCet token is allowlisted | pinned EIP-712 domain name, checked without RPC (and against the on-chain name when the preflight is on) |
+| `CASCET_TOKEN_NAME` | `CasCet X402 Token` when only the CasCet token is allowlisted | pinned EIP-712 domain name of the single allowlisted asset, checked without RPC (and against the on-chain name when the preflight is on); with several assets use `CASCET_ASSET_NAMES` |
 | `CASCET_RPC_URL` | the network's public endpoint, which is load-balanced (mainnet warns) | use **one** node you run or trust, so balance reads already include the settlements this facilitator observed; a lagging backend can overstate a balance right after a settle, and the next settle then reverts |
 | `CASCET_FACILITATOR_HOST` / `PORT` | `127.0.0.1` / `4501` | a non-loopback host requires the token |
 
@@ -139,7 +145,7 @@ What it enforces:
   must be public, front it with TLS.
 - **Rate limits** (express-rate-limit): per client IP before authentication, then
   across all callers, per payer, and for settles.
-- **Allowlists** (required on mainnet): only the configured sellers and token;
+- **Allowlists** (required on mainnet): only the configured sellers and tokens;
   payees and payers must be account-hash Keys (`00…`). Contract-package payees
   (`hash-…`, `01…`) are refused: this facilitator, like casper-x402 1.0.0, settles
   to account keys only, and paying a contract has not been rehearsed on testnet.
@@ -150,8 +156,20 @@ What it enforces:
   that is not included in time is dropped by the node instead of executing after
   `validBefore`, reverting, and burning the gas limit.
 - **Duplicate protection**: every authorization (network, asset, payer, nonce) is
-  held in an in-flight ledger until it can no longer execute; a duplicate gets HTTP
-  **409** (a retried settle is pointed at the earlier transaction hash).
+  held in an in-flight ledger until it can no longer execute; a duplicate is
+  refused with `duplicate_nonce` (a retried settle is pointed at the earlier
+  transaction hash). A settle of the exact same payment after an answer of
+  `settlement_pending` / `settlement_unknown` (x402 resource servers retry
+  `settlement_pending` once) follows the earlier transaction and answers its
+  outcome; nothing is ever submitted twice.
+- **Authorization styles**: every request reads the token's ABI again (cached for
+  5 minutes) and refuses the payment (`authorization_style_mismatch`) when it no
+  longer matches the style pinned at start-up, for example after an upgrade of
+  the token; the requirements' `extra.authorizationStyle` is never trusted.
+- **HTTP statuses**: every verdict about a payment (allowlists, duplicates, used
+  nonces, domain, style, funds) answers HTTP 200 with `isValid: false` /
+  `success: false`; 503 means retry later (token state unreadable, ledger full,
+  daily gas cap reached, shutting down).
 - **On-chain preflight** (required on mainnet), at `/verify` and again at
   `/settle`: the nonce is unused (`used_nonces` dictionary), the payer's balance
   (`balances` dictionary) covers the value plus everything already in flight, and
@@ -175,7 +193,7 @@ What it enforces:
   60 s default answers almost every settle with a final result.
 - **Settle statuses** (`extra.settlementStatus`): `not_submitted` means this
   request submitted nothing and the facilitator holds no transaction for the
-  authorization. A 409 (`duplicate_nonce`, `nonce_already_used`) answers
+  authorization. `duplicate_nonce` and `nonce_already_used` answer
   `duplicate`: nothing was submitted for this request, but an earlier transaction
   (its hash is included when this facilitator sent it) may have charged the payer.
   An internal error on `/settle` answers `settlement_unknown` / `unknown`, never
@@ -194,7 +212,12 @@ default** versus 3.76 CSPR at the old 7 CSPR limit. A limit of 5 CSPR or less al
 puts settles in wasm lane 5 (40 transactions per block) instead of lane 4 (2 per
 block). Never set the limit below the measured consumption: a settle that runs out
 of gas reverts and **burns the whole limit**. The facilitator refuses limits below
-3 CSPR.
+3 CSPR for `amount` tokens. CEP-3009 (`value`) tokens such as Wrapped CSPR default
+to 3.5 CSPR until CasCet's own settles are measured on testnet (the hosted
+facilitator's Wrapped CSPR settle consumed 1.13 CSPR), and are refused below
+1.5 CSPR; every asset can have its own limit
+(`CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET`), and the daily cap counts each settle at
+its own asset's limit.
 
 ## 4. Key compromise runbook (*ops*)
 
@@ -273,13 +296,19 @@ contain, then rotate, then review what was signed. The ReceiptRegistry is
   single node (mainnet warns when it is not set).
 - **Preflight depends on the token layout**: CEP-18 `balances` and CEP-3009
   `used_nonces` named dictionaries (verified for the CasCet token on testnet and
-  mainnet). Another token makes `/verify` answer 503. The preflight cannot be
-  turned off on mainnet; on testnet `CASCET_PREFLIGHT=off` (with
-  `CASCET_TOKEN_NAME`) leaves only the in-memory ledger and the name pin.
+  mainnet, and for testnet Wrapped CSPR). The facilitator refuses to start with a
+  token that lacks them or whose `transfer_with_authorization` takes neither
+  `amount` nor `value`. The preflight cannot be turned off on mainnet; on testnet
+  `CASCET_PREFLIGHT=off` (with every token's style and name pinned) leaves only
+  the in-memory ledger and the pins.
 - **Settlement builder**: the transaction is now built with casper-js-sdk 5.3.0
-  instead of casper-x402 1.0.0's internal copy; its payload hash matches settled
-  testnet tx `04e54a95…` byte for byte offline. Rehearse one testnet settle before
-  the next mainnet one.
+  instead of casper-x402 1.0.0's internal copy, in the token's style; offline,
+  its payload hash matches settled testnet tx `04e54a95…` (`amount`) and the
+  hosted facilitator's testnet tx `9fe35eed…` (`value`) byte for byte, and the
+  signature check uses @x402/casper's EIP-712 digest. Rehearse one testnet settle
+  before the next mainnet one, and a few testnet Wrapped CSPR settles (none has
+  been run by CasCet yet) to measure the `value` style's gas before lowering its
+  3.5 CSPR default.
 - **D3** (add per-IP rate limiting / body caps on the dashboard) and **D4** (return generic error messages, log details server-side). Low.
 - **C5** revenue-split floor-division dust (≤ payee_count base units) is stranded — negligible at 9 decimals.
 

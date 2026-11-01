@@ -274,7 +274,7 @@ npx "@cascet/cli@^0.1.1" wrap   # your server is now paid; the gateway listens o
 
 | Facilitator | Settles | Use it with |
 | --- | --- | --- |
-| Self-hosted (`pnpm --filter @cascet/e2e facilitator`, in this repository) | tokens whose `transfer_with_authorization` takes `amount` (it is built on `@make-software/casper-x402` 1.0.0) | CasCet's x402 tokens: testnet `hash-cb65a928…`, mainnet `hash-8dd4f1aa…` |
+| Self-hosted (`pnpm --filter @cascet/e2e facilitator`, in this repository) | both styles, per token from its on-chain ABI: `amount` (`legacy-amount`) and CEP-3009 `value` (`cep3009-value`) | CasCet's x402 tokens (testnet `hash-cb65a928…`, mainnet `hash-8dd4f1aa…`) and CEP-3009 tokens such as testnet Wrapped CSPR (`hash-3d80df21…`), listed in `CASCET_ALLOWED_ASSETS` |
 | Hosted CSPR.cloud (`x402-facilitator.cspr.cloud`) | only CEP-3009 tokens whose `transfer_with_authorization` takes `value`, such as the official Wrapped CSPR | not CasCet's x402 tokens; using it needs the planned move to the CEP-3009 `value` stack ([why](docs/onchain.md#why-cascet-runs-its-own-x402-facilitator)) |
 
 Start the self-hosted facilitator from a clone of this repository:
@@ -287,9 +287,12 @@ pnpm --filter @cascet/e2e facilitator   # testnet, http://127.0.0.1:4501
 
 The fee payer pays the gas of every settlement, so fund it with testnet CSPR from
 the [faucet](https://testnet.cspr.live/tools/faucet); buyers need no CSPR. The
-facilitator settles only payments to `CASCET_SELLER_ACCOUNT_HASH` in CasCet's x402
-token. `CASCET_SETTLE_PAYMENT_MOTES` sets the gas limit per settlement (default
-4 CSPR). For mainnet (`CASCET_NET=mainnet`) it also requires a bearer token in
+facilitator settles only payments to `CASCET_SELLER_ACCOUNT_HASH` in the tokens of
+`CASCET_ALLOWED_ASSETS` (default: CasCet's x402 token); at start-up it reads each
+token's ABI and pins the style it settles it with. `CASCET_SETTLE_PAYMENT_MOTES`
+sets the gas limit per settlement (default per style: 4 CSPR for `amount`
+tokens, 3.5 CSPR for `value` tokens). For mainnet (`CASCET_NET=mainnet`) it also
+requires a bearer token in
 `CASCET_FACILITATOR_TOKEN` of at least 32 characters (`openssl rand -hex 32`;
 put the same value into `facilitator.apiKey`), and it refuses to start when its
 fee-payer account is the owner account (`CASCET_OWNER_ACCOUNT_HASH`) or the

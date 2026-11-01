@@ -89,7 +89,10 @@ settle argument from `amount` to `value` to follow CEP-3009
 and the hosted facilitator (`x402-facilitator.cspr.cloud`) moved with it.
 CasCet's x402 token is the earlier reference build that expects `amount`, and the
 published npm SDK (`@make-software/casper-x402` 1.0.0) still sends `amount`, so
-CasCet settles through its own fee-sponsored facilitator built on that SDK.
+CasCet settles through its own fee-sponsored facilitator. It builds the settlement
+itself and sends `amount` or `value` according to each token's on-chain ABI, so it
+also settles CEP-3009 tokens such as testnet Wrapped CSPR (covered by offline
+tests against recorded testnet data; no live Wrapped CSPR settle has been run yet).
 The same hosted fee-payer on the same CasCet testnet token, before and after the rename:
 
 - before, settled: <https://testnet.cspr.live/transaction/2ffeb8c7a9313cb1df7affc1fc50669bf0ea19be9474498e6960273ea470a8b3> (2026-07-07)
