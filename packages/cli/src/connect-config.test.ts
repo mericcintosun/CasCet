@@ -1,10 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { checkGatewayUrl, DEFAULT_CONNECT_TIMEOUT_MS, resolveConnectConfig, type ConnectInputs } from "./connect-config.js";
-import { checkArgs, parseArgs } from "./args.js";
+import { checkArgs, CONNECT_FLAGS, parseArgs } from "./args.js";
 
 const SELLER = "00" + "a1".repeat(32);
 const ASSET = "hash-" + "d4".repeat(32);
+const DIGEST_A = "ab".repeat(32);
+const DIGEST_B = "cd".repeat(32);
 
 function inputs(env: Record<string, string | undefined> = {}, flags: string[] = [], url = "http://localhost:4402/mcp"): ConnectInputs {
   return {
@@ -17,7 +19,7 @@ function inputs(env: Record<string, string | undefined> = {}, flags: string[] = 
       CASCET_MAX_SESSION: "5000000000",
       ...env,
     },
-    flags: new Set(flags),
+    flags: parseArgs(["connect", ...flags]).flags,
     cwd: "/work",
     home: "/home/agent",
     exists: () => true,
@@ -44,7 +46,7 @@ describe("resolveConnectConfig", () => {
       budget: { maxPerCallRaw: "1000000000", maxSessionRaw: "5000000000" },
       timeoutMs: 45000,
     });
-    assert.deepEqual(cfg.bridge, { timeoutMs: 45000, toolPins: { path: "/home/agent/pins.json", acceptChanges: false } });
+    assert.deepEqual(cfg.bridge, { timeoutMs: 45000, toolPins: { path: "/home/agent/pins.json", acceptDigests: [] } });
     assert.match(cfg.notices.join("\n"), /MAINNET payments enabled/);
   });
 
@@ -117,10 +119,27 @@ describe("resolveConnectConfig", () => {
     );
   });
 
-  it("passes --accept-tool-changes to the pin guard with a notice", () => {
-    const cfg = resolveConnectConfig(inputs({}, ["--accept-tool-changes"]));
-    assert.equal(cfg.bridge.toolPins.acceptChanges, true);
-    assert.match(cfg.notices.join("\n"), /--accept-tool-changes/);
+  it("passes the reviewed digests of --accept-tool-changes=<sha256>,... to the pin guard", () => {
+    const cfg = resolveConnectConfig(
+      inputs({}, [`--accept-tool-changes=${DIGEST_A.toUpperCase()}, ${DIGEST_B}`, `--accept-tool-changes=${DIGEST_A}`]),
+    );
+    assert.deepEqual(cfg.bridge.toolPins.acceptDigests, [DIGEST_A, DIGEST_B]);
+    assert.match(cfg.notices.join("\n"), /2 reviewed definition\(s\) will be pinned .* every other change stays quarantined/);
+    assert.match(cfg.summary, /accepting 2 reviewed definition\(s\)/);
+  });
+
+  it("refuses a bare --accept-tool-changes and asks for the digest", () => {
+    for (const flag of ["--accept-tool-changes", "--accept-tool-changes=", "--accept-tool-changes=,"]) {
+      assert.throws(
+        () => resolveConnectConfig(inputs({}, [flag])),
+        /--accept-tool-changes needs the sha256 of each definition you reviewed and accept: --accept-tool-changes=<sha256>/,
+        flag,
+      );
+    }
+    assert.throws(
+      () => resolveConnectConfig(inputs({}, [`--accept-tool-changes=${DIGEST_A},latest`])),
+      /--accept-tool-changes: "latest" is not a sha256 digest/,
+    );
   });
 });
 
@@ -142,16 +161,29 @@ describe("checkGatewayUrl", () => {
 
 describe("parseArgs", () => {
   it("separates the command, positionals and flags in any order", () => {
-    const args = parseArgs(["connect", "--allow-any-seller", "http://localhost:4402/mcp", "--accept-tool-changes"]);
+    const args = parseArgs(["connect", "--allow-any-seller", "http://localhost:4402/mcp", `--accept-tool-changes=${DIGEST_A}`]);
     assert.equal(args.command, "connect");
     assert.deepEqual(args.positionals, ["http://localhost:4402/mcp"]);
-    assert.deepEqual([...args.flags], ["--allow-any-seller", "--accept-tool-changes"]);
+    assert.deepEqual([...args.flags], [
+      ["--allow-any-seller", undefined],
+      ["--accept-tool-changes", DIGEST_A],
+    ]);
     assert.equal(parseArgs(["--help"]).help, true);
     assert.equal(parseArgs(["wrap", "-v"]).version, true);
   });
 
-  it("rejects unknown flags and extra arguments", () => {
-    assert.throws(() => checkArgs(parseArgs(["connect", "--allow-everything", "u"]), ["--allow-any-seller"], 1), /unknown option --allow-everything/);
-    assert.throws(() => checkArgs(parseArgs(["init", "a", "b"]), [], 1), /unexpected argument "b"/);
+  it("keeps everything after the first = and joins repeated values", () => {
+    assert.equal(parseArgs(["connect", "--accept-tool-changes=a=b"]).flags.get("--accept-tool-changes"), "a=b");
+    const repeated = parseArgs(["connect", "--accept-tool-changes", "--accept-tool-changes=a", "--accept-tool-changes=b"]);
+    assert.equal(repeated.flags.get("--accept-tool-changes"), "a,b");
+  });
+
+  it("rejects unknown flags, values on switches and extra arguments", () => {
+    assert.throws(() => checkArgs(parseArgs(["connect", "--allow-everything", "u"]), CONNECT_FLAGS, 1), /unknown option --allow-everything/);
+    assert.throws(() => checkArgs(parseArgs(["connect", "--allow-any-seller=no", "u"]), CONNECT_FLAGS, 1), /--allow-any-seller does not take a value/);
+    assert.throws(() => checkArgs(parseArgs(["init", "--constructor"]), {}, 1), /unknown option --constructor/);
+    assert.throws(() => checkArgs(parseArgs(["init", "a", "b"]), {}, 1), /unexpected argument "b"/);
+    assert.doesNotThrow(() => checkArgs(parseArgs(["connect", "u", `--accept-tool-changes=${DIGEST_A}`]), CONNECT_FLAGS, 1));
   });
 });
+

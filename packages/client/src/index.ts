@@ -27,7 +27,11 @@ export {
   type SpendPolicyOptions,
 } from "./policy.js";
 export {
+  ACCEPT_TOOL_CHANGES_FLAG,
   defaultToolPinsPath,
+  ensurePinFileWritable,
+  instructionsDigest,
+  normalizeAcceptDigests,
   PinFileError,
   readPinFile,
   ToolPinGuard,

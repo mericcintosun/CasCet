@@ -62,11 +62,10 @@ Sellers put it in `payTo`; buyers put the seller's value in `CASCET_ALLOWED_PAYT
 ### `cascet wrap [config]`
 Validates the config (default `./cascet.config.json`) and starts the paid gateway. It
 fronts your upstream MCP server, advertises each tool's price in `tools/list` and runs
-the x402 flow on `tools/call`. By default a payment settles only after the tool call
-succeeds; `pricing.tools.<name>.settleBeforeExecute` settles first, for tools with side
-effects. Upstream tools that are neither priced nor listed in `pricing.freeTools` are
-not exposed. Also serves a Bazaar-compatible catalog at `/.well-known/x402.json`.
-Config errors are reported per field, without a stack trace (`CASCET_DEBUG=1` shows it).
+the x402 flow on `tools/call`. Also serves a Bazaar-compatible catalog at
+`/.well-known/x402.json`. Config errors are reported per field, without a stack trace
+(`CASCET_DEBUG=1` shows it), and a contract-package `payTo` or a hosted facilitator
+paired with a token it cannot settle prints a warning.
 
 ### `cascet connect <gateway-mcp-url>`
 A stdio ⇄ paid-HTTP bridge for MCP hosts (Claude Code, Claude Desktop, Cursor). It
@@ -123,7 +122,7 @@ The same in an MCP host config:
 |---|---|
 | `--allow-any-seller` | Start without the payee/token allowlists. Not recommended: a hostile or MITM'd gateway can then name any payee or token. |
 | `--allow-unlimited-budget` | Start without the per-call/session limits. Not recommended. |
-| `--accept-tool-changes` | Trust and re-pin tool definitions that changed since they were pinned (see below). Remove it after the run. |
+| `--accept-tool-changes=<sha256>[,<sha256>...]` | Pin the reviewed tool definitions (or gateway instructions) with these digests, as printed in the quarantine warning (see below). Every other change stays quarantined. A bare `--accept-tool-changes` is refused. |
 
 Amounts are whole numbers of raw token units (`1000000000` = 1 token with 9
 decimals). The session limit applies per token and counts signed authorizations,
@@ -133,10 +132,19 @@ and redirects are never followed. Plain `http://` is only accepted on loopback.
 
 **Tool pinning (tool-poisoning defense).** On first contact with a gateway, the
 bridge records a sha256 of every tool definition it serves (name, title,
-description, schemas, annotations) in the pin file. If a tool later changes, or a
-new tool appears, the bridge prints the full new definition to stderr, withholds it
-from the model, and refuses to call or pay for it. If you trust the change, restart
-`connect` with `--accept-tool-changes` once.
+description, schemas, annotations) and of the gateway's `initialize` instructions in
+the pin file. If a tool later changes, or a new tool appears, the bridge prints the
+full new definition and its sha256 to stderr, withholds it from the model, and
+refuses to call or pay for it; changed or new instructions are withheld the same
+way. The model is only told to ask you to review the `cascet connect` log.
+
+To accept a change, read the full text in the log, then restart `connect` with the
+exact flag the warning prints, e.g. `--accept-tool-changes=3f2a…` (several digests are
+comma-separated). Only the definitions with those digests are pinned. Any other
+change, including a later change to the same tool, stays quarantined even while the
+flag is still in your MCP host config, so you can remove the flag once the new pins
+are saved. `connect` refuses to start when the pin file cannot be read or its
+directory cannot be written.
 
 ## How it works
 

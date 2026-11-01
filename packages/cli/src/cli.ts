@@ -3,7 +3,13 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { cascetConfigSchema } from "@cascet/core";
-import { accountHashFromPublicKey, createPayingFetch, readPinFile, runBridge } from "@cascet/client";
+import {
+  accountHashFromPublicKey,
+  createPayingFetch,
+  ensurePinFileWritable,
+  readPinFile,
+  runBridge,
+} from "@cascet/client";
 import { checkArgs, CliError, CONNECT_FLAGS, parseArgs, type ParsedArgs } from "./args.js";
 import { resolveConnectConfig } from "./connect-config.js";
 import { initNextSteps, initTemplate } from "./init-template.js";
@@ -26,11 +32,11 @@ async function main(args: ParsedArgs): Promise<void> {
   }
   switch (args.command) {
     case "init":
-      checkArgs(args, [], 1);
+      checkArgs(args, {}, 1);
       init(args.positionals[0]);
       return;
     case "wrap":
-      checkArgs(args, [], 1);
+      checkArgs(args, {}, 1);
       await wrap(args.positionals[0]);
       return;
     case "connect":
@@ -38,7 +44,7 @@ async function main(args: ParsedArgs): Promise<void> {
       await connect(args);
       return;
     case "account-hash":
-      checkArgs(args, [], 1);
+      checkArgs(args, {}, 1);
       accountHash(args.positionals[0]);
       return;
     default:
@@ -82,7 +88,13 @@ async function connect(args: ParsedArgs): Promise<void> {
     cwd: process.cwd(),
     home: homedir(),
   });
-  readPinFile(cfg.bridge.toolPins.path); // fail before starting on an unreadable pin file
+  // Fail before starting when the pin file cannot be read, or new pins could not be saved.
+  try {
+    readPinFile(cfg.bridge.toolPins.path);
+    ensurePinFileWritable(cfg.bridge.toolPins.path);
+  } catch (err) {
+    throw new CliError(`CASCET_TOOL_PINS: ${err instanceof Error ? err.message : String(err)}`);
+  }
   for (const notice of cfg.notices) console.error(notice);
   const paying = await createPayingFetch({
     ...cfg.paying,
@@ -138,7 +150,9 @@ connect env vars:
 connect flags:
   --allow-any-seller              * run without the payTo/asset allowlists (not recommended)
   --allow-unlimited-budget        ** run without the per-call/session limits (not recommended)
-  --accept-tool-changes           trust and re-pin tool definitions that changed since they were pinned
+  --accept-tool-changes=<sha256>[,<sha256>...]
+                                  pin the reviewed tool definitions (or gateway instructions) with these
+                                  digests, as printed in the quarantine warning; other changes stay quarantined
 
 Set CASCET_DEBUG=1 to print stack traces.`);
 }

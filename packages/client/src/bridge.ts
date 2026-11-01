@@ -21,8 +21,8 @@ export interface BridgeOptions {
    */
   timeoutMs?: number;
   /**
-   * Pin tool definitions per gateway and quarantine changed or new tools
-   * (OWASP MCP03). Omit to disable pinning.
+   * Pin tool definitions and initialize instructions per gateway, and
+   * quarantine changed or new ones (OWASP MCP03). Omit to disable pinning.
    */
   toolPins?: ToolPinOptions;
   /** Largest gateway response accepted, in bytes (default 16 MiB). */
@@ -51,10 +51,16 @@ interface RpcMessage {
 /** Conventional MCP tool names; anything else is not echoed back in a quarantine stub. */
 const SAFE_TOOL_NAME = /^[A-Za-z0-9_./-]{1,128}$/;
 
+// Model-visible texts. They never name the way to accept a change: only the user,
+// after reading the full definition in the cascet connect log, should do that.
 const QUARANTINE_NOTICE =
-  "[CasCet] This tool is quarantined: its definition changed since it was pinned, or it appeared after " +
-  "the gateway's tools were pinned. CasCet will not call it or pay for it. Ask the user to review the " +
-  "warning in the cascet connect log and to restart the bridge with --accept-tool-changes if they trust it.";
+  "[CasCet] This tool is quarantined: its definition changed since it was pinned, it appeared after the " +
+  "gateway's tools were pinned, or it could not be verified. CasCet will not call it or pay for it. " +
+  "Ask the user to review the cascet connect log.";
+
+const INSTRUCTIONS_NOTICE =
+  "[CasCet] This gateway's instructions are withheld: they changed since they were pinned, appeared after " +
+  "the gateway was pinned, or could not be verified. Ask the user to review the cascet connect log.";
 
 /**
  * stdio ⇄ paid-HTTP bridge.
@@ -63,8 +69,9 @@ const QUARANTINE_NOTICE =
  * Desktop, Cursor…) and forwards every JSON-RPC message to a CasCet gateway
  * over HTTP. Only `tools/call` may be paid: its 402 challenge is answered by
  * the paying fetch within the spending policy. Every other method is forwarded
- * without payment. With `toolPins`, tool definitions are pinned and a changed
- * or new tool is withheld from the model and never called.
+ * without payment. With `toolPins`, tool definitions and initialize
+ * instructions are pinned; a changed or new tool is withheld from the model and
+ * never called, and changed or new instructions are withheld.
  *
  * stdout carries JSON-RPC only; all logging goes to stderr.
  */
@@ -161,6 +168,10 @@ export function createBridge(gatewayMcpUrl: string, paying: PayingFetch, options
     if (!reply) return rpcError(id, -32603, `CasCet bridge: unexpected gateway response to ${method} (HTTP ${response.status})`);
     reply.id = id;
     const result = reply.result;
+    if (method === "initialize" && pins && isRecord(result) && result.instructions !== undefined) {
+      // Many hosts put server instructions straight into the model's context, like tool descriptions.
+      if (!pins.inspectInstructions(result.instructions)) result.instructions = INSTRUCTIONS_NOTICE;
+    }
     if (method === "tools/list" && pins && isRecord(result) && Array.isArray(result.tools)) {
       const tools: unknown[] = result.tools;
       const { quarantined } = pins.inspect(tools);
@@ -193,8 +204,7 @@ export function createBridge(gatewayMcpUrl: string, paying: PayingFetch, options
         return toolError(
           id,
           `CasCet refused to call "${name}": its definition changed since it was pinned, or it is new. ` +
-            "It may be a tool-poisoning attempt. The user can review the change in the cascet connect log " +
-            "and restart the bridge with --accept-tool-changes to trust it.",
+            "It may be a tool-poisoning attempt. Ask the user to review the cascet connect log.",
         );
       }
       if (trust === "unknown") {

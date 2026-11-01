@@ -1,12 +1,21 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const CLI = fileURLToPath(new URL("./cli.ts", import.meta.url));
+
+/** Env that passes every connect check before the tool pins (CASCET_KEY_PATH only has to exist). */
+const CONNECT_ENV = {
+  CASCET_KEY_PATH: CLI,
+  CASCET_ALLOWED_PAYTO: "00" + "a1".repeat(32),
+  CASCET_ALLOWED_ASSETS: "hash-" + "d4".repeat(32),
+  CASCET_MAX_PER_CALL: "1000",
+  CASCET_MAX_SESSION: "5000",
+};
 
 /** Run the CLI entry point in a child process (through tsx) with a controlled environment. */
 function run(args: string[], env: Record<string, string> = {}) {
@@ -53,21 +62,43 @@ describe("cascet CLI", () => {
     try {
       const pins = join(dir, "pins.json");
       writeFileSync(pins, "{ broken");
-      const result = run(["connect", "http://localhost:4402/mcp"], {
-        CASCET_KEY_PATH: CLI,
-        CASCET_ALLOWED_PAYTO: "00" + "a1".repeat(32),
-        CASCET_ALLOWED_ASSETS: "hash-" + "d4".repeat(32),
-        CASCET_MAX_PER_CALL: "1000",
-        CASCET_MAX_SESSION: "5000",
-        CASCET_TOOL_PINS: pins,
-      });
+      const result = run(["connect", "http://localhost:4402/mcp"], { ...CONNECT_ENV, CASCET_TOOL_PINS: pins });
       assert.equal(result.status, 1);
-      assert.match(result.stderr, /tool pin file .* is not valid JSON/);
+      assert.match(result.stderr, /CASCET_TOOL_PINS: the tool pin file .* is not valid JSON/);
       assert.doesNotMatch(result.stderr, /bridge up/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it(
+    "connect fails before starting when new tool pins could not be saved",
+    { skip: process.platform === "win32" || process.getuid?.() === 0 },
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "cascet-cli-test-"));
+      const readOnly = join(dir, "read-only");
+      mkdirSync(readOnly, { mode: 0o500 });
+      try {
+        const result = run(["connect", "http://localhost:4402/mcp"], {
+          ...CONNECT_ENV,
+          CASCET_TOOL_PINS: join(readOnly, "pins.json"),
+        });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /CASCET_TOOL_PINS: cannot save tool pins to .*read-only\/pins\.json/);
+        assert.doesNotMatch(result.stderr, /bridge up/);
+      } finally {
+        chmodSync(readOnly, 0o700);
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("connect refuses a bare --accept-tool-changes and asks for the digest", () => {
+    const result = run(["connect", "http://localhost:4402/mcp", "--accept-tool-changes"], CONNECT_ENV);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--accept-tool-changes needs the sha256 of each definition you reviewed/);
+  });
+
 
   it("rejects unknown commands and options", () => {
     assert.equal(run(["bogus"]).status, 1);

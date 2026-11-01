@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { NETWORK_CASPER_MAINNET, NETWORK_CASPER_TESTNET } from "@cascet/core";
 import {
+  ACCEPT_TOOL_CHANGES_FLAG,
+  normalizeAcceptDigests,
   normalizeAllowedPayTo,
   normalizeAssetHash,
   normalizeNetworks,
@@ -15,7 +17,7 @@ import { CliError } from "./args.js";
 export interface ConnectConfig {
   url: string;
   paying: Omit<PayingFetchOptions, "onPayment" | "logger">;
-  bridge: BridgeOptions & { timeoutMs: number; toolPins: { path: string; acceptChanges: boolean } };
+  bridge: BridgeOptions & { timeoutMs: number; toolPins: { path: string; acceptDigests: string[] } };
   /** Warnings and notices to print before the bridge starts. */
   notices: string[];
   /** One-line startup summary. */
@@ -25,7 +27,8 @@ export interface ConnectConfig {
 export interface ConnectInputs {
   url: string | undefined;
   env: Readonly<Record<string, string | undefined>>;
-  flags: ReadonlySet<string>;
+  /** Flags by name, as parseArgs returns them (value after "=", or undefined). */
+  flags: ReadonlyMap<string, string | undefined>;
   cwd: string;
   home: string;
   /** File existence check, for tests. */
@@ -33,7 +36,7 @@ export interface ConnectInputs {
 }
 
 export const CONNECT_USAGE =
-  "usage: cascet connect <gateway-mcp-url> [--allow-any-seller] [--allow-unlimited-budget] [--accept-tool-changes]";
+  "usage: cascet connect <gateway-mcp-url> [--allow-any-seller] [--allow-unlimited-budget] [--accept-tool-changes=<sha256>,...]";
 
 /**
  * Default deadline of `cascet connect` per forwarded call (CASCET_TIMEOUT_MS).
@@ -107,7 +110,7 @@ export function resolveConnectConfig(input: ConnectInputs): ConnectConfig {
   if (maxSessionRaw !== undefined) parseRawAmount(maxSessionRaw, "CASCET_MAX_SESSION");
 
   const timeoutMs = parseTimeout(env.CASCET_TIMEOUT_MS);
-  const acceptChanges = flags.has("--accept-tool-changes");
+  const acceptDigests = parseAcceptDigests(flags);
   const pinsSetting = value(env.CASCET_TOOL_PINS);
   const pinsPath = pinsSetting ? expandPath(pinsSetting, input.cwd, input.home) : join(input.home, ".cascet", "tool-pins.json");
 
@@ -127,10 +130,10 @@ export function resolveConnectConfig(input: ConnectInputs): ConnectConfig {
         "without that limit.",
     );
   }
-  if (acceptChanges) {
+  if (acceptDigests.length > 0) {
     notices.push(
-      "[cascet] NOTICE: --accept-tool-changes: changed or new tool definitions will be trusted and re-pinned in this " +
-        "run. Review them in this log, then remove the flag.",
+      `[cascet] NOTICE: ${ACCEPT_TOOL_CHANGES_FLAG}: ${acceptDigests.length} reviewed definition(s) will be pinned if the ` +
+        "gateway serves them in this run; every other change stays quarantined. Remove the flag once they are pinned.",
     );
   }
 
@@ -150,9 +153,31 @@ export function resolveConnectConfig(input: ConnectInputs): ConnectConfig {
     `[cascet] bridge up → ${url} | key ${keyPath} | networks ${networks.join(", ")} | ` +
     `payTo ${allowedPayTo ? `${allowedPayTo.length} allowlisted` : "ANY"} | assets ${allowedAssets ? `${allowedAssets.length} allowlisted` : "ANY"} | ` +
     `budget per-call=${maxPerCallRaw ?? "unlimited"}, session=${maxSessionRaw ?? "unlimited"} (per asset) | ` +
-    `timeout ${timeoutMs} ms | tool pins ${pinsPath}${acceptChanges ? " (accepting changes)" : ""}`;
+    `timeout ${timeoutMs} ms | tool pins ${pinsPath}` +
+    (acceptDigests.length > 0 ? ` (accepting ${acceptDigests.length} reviewed definition(s))` : "");
 
-  return { url, paying, bridge: { timeoutMs, toolPins: { path: pinsPath, acceptChanges } }, notices, summary };
+  return { url, paying, bridge: { timeoutMs, toolPins: { path: pinsPath, acceptDigests } }, notices, summary };
+}
+
+/**
+ * `--accept-tool-changes=<sha256>[,<sha256>...]`: the digests of the reviewed
+ * definitions to pin. A bare flag is refused: accepting "whatever changed"
+ * would also accept every later change while the flag stays in a host config.
+ */
+function parseAcceptDigests(flags: ReadonlyMap<string, string | undefined>): string[] {
+  if (!flags.has(ACCEPT_TOOL_CHANGES_FLAG)) return [];
+  const digests = (flags.get(ACCEPT_TOOL_CHANGES_FLAG) ?? "")
+    .split(",")
+    .map(item => item.trim())
+    .filter(Boolean);
+  if (digests.length === 0) {
+    throw new CliError(
+      `${ACCEPT_TOOL_CHANGES_FLAG} needs the sha256 of each definition you reviewed and accept: ` +
+        `${ACCEPT_TOOL_CHANGES_FLAG}=<sha256>[,<sha256>...]. The cascet connect log prints the exact flag next to ` +
+        "each quarantined tool; any change you do not list stays quarantined.",
+    );
+  }
+  return attribute(ACCEPT_TOOL_CHANGES_FLAG, () => normalizeAcceptDigests(digests));
 }
 
 /**
