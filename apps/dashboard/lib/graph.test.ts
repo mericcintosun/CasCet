@@ -1,12 +1,24 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildPaymentGraph, type PaymentReceipt } from "@cascet/core";
+import type { PaymentGraph, PaymentReceipt } from "@cascet/core";
 import { aggregateEdges, cascadeReceiptIds, edgeLabel } from "./graph";
 
+// Edges in the shape @cascet/core buildPaymentGraph emits: one per settled receipt.
+type Edge = PaymentGraph["edges"][number];
 let n = 0;
-const r = (over: Partial<PaymentReceipt>): PaymentReceipt => ({
-  id: `r${++n}`,
-  createdAt: `2026-10-01T00:00:${String(n).padStart(2, "0")}Z`,
+const edge = (over: Partial<Edge> = {}): Edge => ({
+  from: "agent:00aa",
+  to: "server:casper-defi-data",
+  receiptId: `r${++n}`,
+  tool: "get_rwa_price",
+  amountRaw: "500000000",
+  assetSymbol: "WCSPR",
+  ...over,
+});
+
+const receipt = (over: Partial<PaymentReceipt>): PaymentReceipt => ({
+  id: `p${++n}`,
+  createdAt: "2026-10-01T00:00:00Z",
   network: "casper:casper-test",
   server: "casper-defi-data",
   tool: "get_rwa_price",
@@ -21,12 +33,8 @@ const r = (over: Partial<PaymentReceipt>): PaymentReceipt => ({
 
 const fmt = (raw: bigint, symbol: string) => `${Number(raw) / 1e9} ${symbol}`;
 
-test("receipts between the same two nodes collapse into one edge with a count and a total", () => {
-  const receipts = [
-    ...Array.from({ length: 7 }, () => r({})),
-    r({ tool: "get_cspr_market_data", amountRaw: "250000000" }),
-  ];
-  const edges = aggregateEdges(buildPaymentGraph(receipts).edges);
+test("edges between the same two nodes collapse into one with a count and a total", () => {
+  const edges = aggregateEdges([...Array.from({ length: 7 }, () => edge()), edge({ tool: "get_cspr_market_data", amountRaw: "250000000" })]);
   assert.equal(edges.length, 1);
   const [e] = edges;
   assert.equal(e!.calls, 8);
@@ -37,28 +45,35 @@ test("receipts between the same two nodes collapse into one edge with a count an
 });
 
 test("a single-tool single-call edge reads naturally; mixed assets are listed separately", () => {
-  const one = aggregateEdges(buildPaymentGraph([r({})]).edges);
-  assert.equal(edgeLabel(one[0]!, fmt), "get_rwa_price · 1 call · 0.5 WCSPR");
-  const mixed = aggregateEdges(buildPaymentGraph([r({}), r({ assetSymbol: "USDC", amountRaw: "1000000000" })]).edges);
+  assert.equal(edgeLabel(aggregateEdges([edge()])[0]!, fmt), "get_rwa_price · 1 call · 0.5 WCSPR");
+  const mixed = aggregateEdges([edge(), edge({ assetSymbol: "USDC", amountRaw: "1000000000" })]);
   assert.equal(edgeLabel(mixed[0]!, fmt), "get_rwa_price · 2 calls · 0.5 WCSPR + 1 USDC");
 });
 
+test("malformed amounts count as zero instead of crashing the render", () => {
+  const [e] = aggregateEdges([edge({ amountRaw: "x" }), edge({ amountRaw: "-5" }), edge({ amountRaw: "10" })]);
+  assert.deepEqual(e!.totals, [{ symbol: "WCSPR", raw: 10n }]);
+});
+
 test("highlighted edges are ordered last so they paint on top", () => {
-  const root = r({ server: "portfolio-analyst", tool: "analyze_portfolio" });
-  const child = r({ parentId: root.id });
-  const other = r({ payer: `00${"dd".repeat(32)}`, server: "weather" });
-  const graph = buildPaymentGraph([child, root, other]);
-  const edges = aggregateEdges(graph.edges, new Set([root.id, child.id]));
+  const root = edge({ to: "server:portfolio-analyst", tool: "analyze_portfolio" });
+  const child = edge({ from: "server:portfolio-analyst" });
+  const other = edge({ from: "agent:00dd", to: "server:weather" });
+  const edges = aggregateEdges([child, root, other], new Set([root.receiptId, child.receiptId]));
   assert.equal(edges.length, 3);
-  assert.deepEqual(edges.map((e) => e.hot), [false, true, true]);
+  assert.deepEqual(edges.map((e) => [e.key, e.hot]), [
+    ["agent:00dd→server:weather", false],
+    ["server:portfolio-analyst→server:casper-defi-data", true],
+    ["agent:00aa→server:portfolio-analyst", true],
+  ]);
 });
 
 test("the newest cascade is found at any depth, not just one parent level", () => {
-  const a = r({});
-  const b = r({ parentId: a.id });
-  const c = r({ parentId: b.id });
-  const d = r({ parentId: c.id });
-  const unrelated = r({});
+  const a = receipt({});
+  const b = receipt({ parentId: a.id });
+  const c = receipt({ parentId: b.id });
+  const d = receipt({ parentId: c.id });
+  const unrelated = receipt({});
   const ids = cascadeReceiptIds([d, c, b, a, unrelated], d.id);
   assert.deepEqual([...ids].sort(), [a.id, b.id, c.id, d.id].sort());
   assert.equal(cascadeReceiptIds([a], null).size, 0);
@@ -66,9 +81,9 @@ test("the newest cascade is found at any depth, not just one parent level", () =
 });
 
 test("parent cycles and parents outside the view do not hang or crash", () => {
-  const x = r({ id: "x", parentId: "y" });
-  const y = r({ id: "y", parentId: "x" });
-  const orphan = r({ id: "o", parentId: "not-loaded" });
+  const x = receipt({ id: "x", parentId: "y" });
+  const y = receipt({ id: "y", parentId: "x" });
+  const orphan = receipt({ id: "o", parentId: "not-loaded" });
   assert.deepEqual([...cascadeReceiptIds([x, y], "x")].sort(), ["x", "y"]);
   assert.deepEqual([...cascadeReceiptIds([orphan, x], "o")], ["o"]);
 });
