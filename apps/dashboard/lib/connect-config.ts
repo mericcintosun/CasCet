@@ -177,6 +177,47 @@ export function sanitizeServerName(name: string): string {
   return cleaned || "cascet";
 }
 
+/**
+ * What a /connect link may prefill (/build hands its seller, token and highest
+ * price over this way). A link is untrusted input: the page shows which fields
+ * it filled in until the user has looked at them. The network is never taken
+ * from a link: the page always starts on testnet, and mainnet takes a click.
+ */
+export interface ConnectPrefill {
+  gatewayUrl: string;
+  sellers: string[];
+  assets: string[];
+  /** Only a valid 0-18 value; otherwise null and the page keeps its default. */
+  decimals: string | null;
+  perCall: string;
+  session: string;
+  /** The link asked for mainnet (ignored; the notice says so). */
+  requestedMainnet: boolean;
+  /** Names of the fields the link filled in, for the "verify before copying" notice. */
+  applied: string[];
+}
+
+const splitEntries = (v: string): string[] => [...new Set(v.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean))];
+
+export function readConnectPrefill(params: { get(name: string): string | null } | null): ConnectPrefill {
+  const get = (k: string): string => params?.get(k)?.trim() ?? "";
+  const gatewayUrl = get("gateway");
+  const sellers = splitEntries(get("seller"));
+  const assets = splitEntries(get("asset"));
+  const decimals = /^\d{1,2}$/.test(get("decimals")) && Number(get("decimals")) <= 18 ? get("decimals") : null;
+  const perCall = get("perCall");
+  const session = get("session");
+  const applied = [
+    gatewayUrl && "gateway URL",
+    sellers.length > 0 && (sellers.length > 1 ? "sellers" : "seller"),
+    assets.length > 0 && (assets.length > 1 ? "tokens" : "token"),
+    decimals !== null && "token decimals",
+    perCall && "per-call cap",
+    session && "session cap",
+  ].filter((x): x is string => Boolean(x));
+  return { gatewayUrl, sellers, assets, decimals, perCall, session, requestedMainnet: get("network") === "mainnet", applied };
+}
+
 export interface ConnectWarning {
   level: "danger" | "warning" | "info";
   field: "sellers" | "assets" | "budget" | "network" | "gateway" | "key";

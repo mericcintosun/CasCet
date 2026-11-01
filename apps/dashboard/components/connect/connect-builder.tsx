@@ -25,9 +25,11 @@ import {
   connectWarnings,
   needsBudgetOverride,
   needsSellerOverride,
+  readConnectPrefill,
   sellerRow,
   tokensToRaw,
   type ConnectNetwork,
+  type ConnectPrefill,
   type ConnectSettings,
   type ConnectWarning,
 } from "@/lib/connect-config";
@@ -52,20 +54,18 @@ interface FormState {
 
 const splitList = (s: string): string[] => [...new Set(s.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean))];
 
-function initialState(params: URLSearchParams | null): FormState {
-  const get = (k: string) => params?.get(k)?.trim() ?? "";
-  const network = get("network") === "mainnet" ? "mainnet" : "testnet";
-  const decimals = /^\d{1,2}$/.test(get("decimals")) ? get("decimals") : "9";
+/** The form, with whatever a link prefilled. Always testnet: a link cannot switch the page to mainnet. */
+function initialState(prefill: ConnectPrefill): FormState {
   return {
-    gatewayUrl: get("gateway"),
-    network,
+    gatewayUrl: prefill.gatewayUrl,
+    network: "testnet",
     keyPath: "",
     keyAlgorithm: "ed25519",
-    sellers: splitList(get("seller")).join("\n"),
-    assets: splitList(get("asset")).join("\n"),
-    decimals,
-    perCall: get("perCall"),
-    session: get("session"),
+    sellers: prefill.sellers.join("\n"),
+    assets: prefill.assets.join("\n"),
+    decimals: prefill.decimals ?? "9",
+    perCall: prefill.perCall,
+    session: prefill.session,
     toolPins: "",
     serverName: "cascet",
     allowAnySeller: false,
@@ -114,8 +114,16 @@ const WARNING_STYLE: Record<ConnectWarning["level"], { variant: "destructive" | 
  */
 export function ConnectBuilder() {
   const params = useSearchParams();
-  const [s, setS] = React.useState<FormState>(() => initialState(params));
-  const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setS((p) => ({ ...p, [k]: v }));
+  const [prefill] = React.useState(() => readConnectPrefill(params));
+  const [s, setS] = React.useState<FormState>(() => initialState(prefill));
+  // A prefilled page shows no "all set" assurance until the user has edited a field or confirmed the notice.
+  const [edited, setEdited] = React.useState(false);
+  const [prefillChecked, setPrefillChecked] = React.useState(false);
+  const set = <K extends keyof FormState>(k: K, v: FormState[K]) => {
+    setEdited(true);
+    setS((p) => ({ ...p, [k]: v }));
+  };
+  const prefilled = prefill.applied.length > 0;
 
   // ── gateway ──
   const gateway = s.gatewayUrl.trim() ? checkGatewayUrl(s.gatewayUrl) : null;
@@ -442,6 +450,23 @@ export function ConnectBuilder() {
 
       {/* ── outputs ── */}
       <div className="min-w-0 space-y-4 lg:sticky lg:top-20 lg:self-start">
+        {prefilled && !prefillChecked && (
+          <Alert variant="warning" role="status">
+            <TriangleAlert />
+            <AlertTitle>Prefilled from the link you opened</AlertTitle>
+            <AlertDescription className="space-y-2">
+              <p>
+                The link filled in the {listNames(prefill.applied)}. Verify every seller, token and cap before copying: a link
+                decides where your agent&apos;s payments may go.
+                {prefill.requestedMainnet &&
+                  " It also asked for mainnet. This page always starts on Casper Testnet; switch the network yourself only if you mean to pay with real funds."}
+              </p>
+              <Button type="button" size="sm" variant="outline" onClick={() => setPrefillChecked(true)}>
+                I have checked them
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
         {!settings ? (
           <Alert role="status">
             <Info />
@@ -452,13 +477,7 @@ export function ConnectBuilder() {
           </Alert>
         ) : (
           <>
-            {warnings.length === 0 ? (
-              <Alert variant="success" role="status">
-                <ShieldCheck />
-                <AlertTitle>Allowlists and caps are set</AlertTitle>
-                <AlertDescription>The bridge only pays these sellers, in these tokens, within these caps.</AlertDescription>
-              </Alert>
-            ) : (
+            {warnings.length > 0 ? (
               <div className="space-y-2" aria-live="polite">
                 {warnings.map((w, i) => {
                   const { variant, Icon } = WARNING_STYLE[w.level];
@@ -470,7 +489,13 @@ export function ConnectBuilder() {
                   );
                 })}
               </div>
-            )}
+            ) : !prefilled || edited || prefillChecked ? (
+              <Alert variant="success" role="status">
+                <ShieldCheck />
+                <AlertTitle>Allowlists and caps are set</AlertTitle>
+                <AlertDescription>The bridge only pays these sellers, in these tokens, within these caps.</AlertDescription>
+              </Alert>
+            ) : null}
 
             <Card>
               <CardHeader className="pb-3">
@@ -510,6 +535,11 @@ export function ConnectBuilder() {
       </div>
     </div>
   );
+}
+
+/** "a, b and c" */
+function listNames(names: readonly string[]): string {
+  return names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
 
 function OptOut({

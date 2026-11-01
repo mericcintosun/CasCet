@@ -12,6 +12,7 @@ import {
   connectWarnings,
   CONTRACT_SELLER_ERROR,
   rawToTokens,
+  readConnectPrefill,
   sanitizeServerName,
   sellerRow,
   shellQuote,
@@ -136,6 +137,37 @@ test("seller lines: account hashes as 00…, public keys once converted, the res
   assert.deepEqual(allowedPayToOf([sellerRow(key, parsed)]), []);
   // Duplicates collapse.
   assert.deepEqual(allowedPayToOf([sellerRow(`00${H}`, parsePayeeInput(`00${H}`)), converted]), [`00${H}`]);
+});
+
+test("a /connect link prefills fields and lists them, but never switches to mainnet", () => {
+  const p = readConnectPrefill(
+    new URLSearchParams({
+      gateway: " https://gw.example.com/mcp ",
+      seller: `${SELLER},${SELLER} 00${"ef".repeat(32)}`,
+      asset: ASSET,
+      decimals: "9",
+      perCall: "0.5",
+      network: "mainnet",
+    }),
+  );
+  assert.equal(p.gatewayUrl, "https://gw.example.com/mcp");
+  assert.deepEqual(p.sellers, [SELLER, `00${"ef".repeat(32)}`]);
+  assert.deepEqual(p.assets, [ASSET]);
+  assert.equal(p.decimals, "9");
+  assert.equal(p.perCall, "0.5");
+  assert.equal(p.session, "");
+  // The network is not a prefilled field: the page starts on testnet and only the notice mentions the request.
+  assert.equal(p.requestedMainnet, true);
+  assert.equal("network" in p, false);
+  assert.deepEqual(p.applied, ["gateway URL", "sellers", "token", "token decimals", "per-call cap"]);
+
+  assert.deepEqual(readConnectPrefill(null).applied, []);
+  assert.deepEqual(readConnectPrefill(new URLSearchParams()).applied, []);
+  assert.deepEqual(readConnectPrefill(new URLSearchParams({ network: "mainnet" })).applied, [], "nothing filled in");
+  // Out-of-range decimals are ignored, not applied.
+  assert.equal(readConnectPrefill(new URLSearchParams({ decimals: "19" })).decimals, null);
+  assert.deepEqual(readConnectPrefill(new URLSearchParams({ decimals: "x" })).applied, []);
+  assert.deepEqual(readConnectPrefill(new URLSearchParams({ session: "5" })).applied, ["session cap"]);
 });
 
 test("empty safety fields warn and add NO opt-out unless the user explicitly chose it", () => {
