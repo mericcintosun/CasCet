@@ -1,8 +1,10 @@
 # cascet_contracts
 
 CasCet's Odra smart contracts on Casper — the on-chain layer for paid MCP over
-x402. Five contracts on Odra 2.9.1, with 49 unit tests in Odra's mock VM, run
-against a real CEP-18 and a test-only re-entrant token.
+x402. Five contracts on Odra 2.9.1 with 49 unit tests, which run both in Odra's
+mock VM and on the Casper execution engine against the built wasm. Two
+reentrancy tests use a test-only token that has no wasm, so they run in the
+mock VM only.
 
 | Contract | Purpose |
 | --- | --- |
@@ -25,6 +27,7 @@ Install [cargo-odra](https://github.com/odradev/cargo-odra) first.
 
 ```bash
 cargo odra test            # run the 49 unit tests (mock VM) — or plain `cargo test`
+cargo odra test -b casper  # build the wasm, run the tests on the Casper execution engine
 cargo fmt --check          # formatting gate
 cargo clippy --all-targets # lint gate (clean)
 cargo odra build           # build optimized wasm into ./wasm

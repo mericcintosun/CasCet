@@ -167,22 +167,9 @@ impl RevenueSplit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::Lcg;
+    use crate::test_util::{deploy_demo_token as deploy_token, Lcg};
     use odra::casper_types::U256;
     use odra::host::{Deployer, HostEnv};
-    use odra_modules::cep18_token::{Cep18, Cep18HostRef, Cep18InitArgs};
-
-    fn deploy_token(env: &HostEnv, supply: u64) -> Cep18HostRef {
-        Cep18::deploy(
-            env,
-            Cep18InitArgs {
-                symbol: "WCSPR".to_string(),
-                name: "Wrapped CSPR".to_string(),
-                decimals: 9,
-                initial_supply: U256::from(supply),
-            },
-        )
-    }
 
     #[test]
     fn splits_revenue_by_weight() {
@@ -204,24 +191,24 @@ mod tests {
 
         // Server earns 1000 tokens: owner (holding initial supply) funds the splitter.
         env.set_caller(owner);
-        token.transfer(&split.address(), &U256::from(1000u64));
+        token.transfer(split.address(), U256::from(1000u64));
 
         assert_eq!(split.total_received(), U256::from(1000u64));
         assert_eq!(split.releasable(alice), U256::from(600u64));
         assert_eq!(split.releasable(bob), U256::from(400u64));
 
         split.release(alice);
-        assert_eq!(token.balance_of(&alice), U256::from(600u64));
+        assert_eq!(token.balance_of(alice), U256::from(600u64));
         assert_eq!(split.releasable(alice), U256::zero());
 
         // More revenue arrives; only the new delta is releasable.
         env.set_caller(owner);
-        token.transfer(&split.address(), &U256::from(500u64));
+        token.transfer(split.address(), U256::from(500u64));
         assert_eq!(split.releasable(alice), U256::from(300u64)); // 60% of 500
         assert_eq!(split.releasable(bob), U256::from(600u64)); // 40% of 1500 total, none released yet
 
         split.release(bob);
-        assert_eq!(token.balance_of(&bob), U256::from(600u64));
+        assert_eq!(token.balance_of(bob), U256::from(600u64));
     }
 
     #[test]
@@ -332,12 +319,12 @@ mod tests {
                 shares: vec![1],
             },
         );
-        token.transfer(&split.address(), &U256::from(70u64));
+        token.transfer(split.address(), U256::from(70u64));
 
         env.set_caller(stranger);
         split.release(alice);
-        assert_eq!(token.balance_of(&alice), U256::from(70u64));
-        assert_eq!(token.balance_of(&stranger), U256::zero());
+        assert_eq!(token.balance_of(alice), U256::from(70u64));
+        assert_eq!(token.balance_of(stranger), U256::zero());
         assert!(env.emitted_event(
             &split,
             PaymentReleased {
@@ -349,7 +336,7 @@ mod tests {
             split.try_release(alice),
             Err(Error::NothingToRelease.into())
         );
-        assert_eq!(token.balance_of(&owner), U256::from(1_000_000u64 - 70));
+        assert_eq!(token.balance_of(owner), U256::from(1_000_000u64 - 70));
     }
 
     // Accounting invariant: whatever the order of deposits and releases, no
@@ -379,7 +366,7 @@ mod tests {
             if rng.below(3) == 0 {
                 let amount = U256::from(1 + rng.below(10_000));
                 env.set_caller(source);
-                token.transfer(&split.address(), &amount);
+                token.transfer(split.address(), amount);
                 deposited += amount;
             } else {
                 // Anyone may trigger a release; use a payee as the caller.
@@ -397,12 +384,12 @@ mod tests {
                 let entitled = received * U256::from(share) / total_shares;
                 let released = split.released_of(*payee);
                 assert!(released <= entitled);
-                assert_eq!(token.balance_of(payee), released);
+                assert_eq!(token.balance_of(*payee), released);
                 assert_eq!(split.releasable(*payee), entitled - released);
                 paid += released;
             }
             assert!(paid <= received);
-            assert_eq!(token.balance_of(&split.address()), received - paid);
+            assert_eq!(token.balance_of(split.address()), received - paid);
         }
 
         // Drain: each payee ends with exactly its floor share; the stranded

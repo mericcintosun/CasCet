@@ -66,6 +66,12 @@ which gateways and docs must point at the new hashes.
     pseudo-random runs.
   - A golden vector for the voucher byte layout.
   - Every error code the five contracts define or re-expose.
+- The tests now pay with `DemoToken`, the token that is actually deployed,
+  instead of odra-modules' `Cep18`, and sign vouchers with the test
+  environment's own account keys. As a result `cargo odra test -b casper`
+  runs them on the Casper execution engine against the built wasm (with
+  overflow checks). 47 of the 49 run there; the two reentrancy tests need a
+  test-only token that has no wasm, so they run in the mock VM only.
 
 ## [0.1.0] - 2026-07
 ### Added

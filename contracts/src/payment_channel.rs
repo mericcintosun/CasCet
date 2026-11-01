@@ -271,164 +271,30 @@ fn contract_hash_bytes(addr: &Address) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use odra::casper_types::{crypto, SecretKey, U256};
+    use crate::demo_token::DemoTokenHostRef;
+    use crate::test_util::deploy_demo_token;
+    use odra::casper_types::U256;
     use odra::host::{Deployer, HostEnv, NoArgs};
-    use odra_modules::cep18_token::{Cep18, Cep18HostRef, Cep18InitArgs};
 
-    fn deploy_token(env: &HostEnv, supply: u64) -> Cep18HostRef {
-        Cep18::deploy(
-            env,
-            Cep18InitArgs {
-                symbol: "WCSPR".to_string(),
-                name: "Wrapped CSPR".to_string(),
-                decimals: 9,
-                initial_supply: U256::from(supply),
-            },
-        )
-    }
-
-    #[test]
-    fn open_redeem_and_close() {
-        let env = odra_test::env();
-
-        // Sender keypair (we hold the secret to sign vouchers).
-        let secret = SecretKey::generate_ed25519().unwrap();
-        let sender_pk = PublicKey::from(&secret);
-        let sender: Address = sender_pk.clone().into();
-        let payee = env.get_account(2);
-
-        let mut token = deploy_token(&env, 1_000_000);
-        // Fund the sender and let them act.
-        env.set_caller(env.get_account(0));
-        token.transfer(&sender, &U256::from(10_000u64));
-
-        let mut channel = PaymentChannel::deploy(&env, odra::host::NoArgs);
-
-        // Sender approves the channel to pull the deposit, then opens.
-        env.set_caller(sender);
-        token.approve(&channel.address(), &U256::from(1_000u64));
-        let id = channel.open(
-            sender_pk.clone(),
-            payee,
-            token.address(),
-            U256::from(1_000u64),
-            10_000,
-        );
-        assert_eq!(channel.redeemable(id), U256::from(1_000u64));
-
-        // Off-chain: sender signs a voucher for cumulative 400.
-        let contract = contract_hash_bytes(&channel.address());
-        let cumulative = U256::from(400u64);
-        let msg = voucher_message(contract, id, &cumulative);
-        let sig = crypto::sign(&msg, &secret, &sender_pk);
-        let sig_bytes = Bytes::from(sig.to_bytes().unwrap());
-
-        // Payee redeems it.
-        env.set_caller(payee);
-        channel.redeem(id, cumulative, sig_bytes);
-        assert_eq!(token.balance_of(&payee), U256::from(400u64));
-        assert_eq!(channel.redeemable(id), U256::from(600u64));
-
-        // A second, larger voucher pays only the delta.
-        let cumulative2 = U256::from(650u64);
-        let sig2 = crypto::sign(
-            voucher_message(contract, id, &cumulative2),
-            &secret,
-            &sender_pk,
-        );
-        channel.redeem(id, cumulative2, Bytes::from(sig2.to_bytes().unwrap()));
-        assert_eq!(token.balance_of(&payee), U256::from(650u64));
-
-        // After expiry the sender reclaims the remaining 350.
-        env.advance_block_time(20_000);
-        env.set_caller(sender);
-        channel.close(id);
-        assert_eq!(token.balance_of(&sender), U256::from(10_000u64 - 650u64));
-    }
-
-    #[test]
-    fn rejects_forged_voucher() {
-        let env = odra_test::env();
-        let secret = SecretKey::generate_ed25519().unwrap();
-        let sender_pk = PublicKey::from(&secret);
-        let sender: Address = sender_pk.clone().into();
-        let payee = env.get_account(2);
-
-        let mut token = deploy_token(&env, 1_000_000);
-        env.set_caller(env.get_account(0));
-        token.transfer(&sender, &U256::from(10_000u64));
-        let mut channel = PaymentChannel::deploy(&env, odra::host::NoArgs);
-        env.set_caller(sender);
-        token.approve(&channel.address(), &U256::from(1_000u64));
-        let id = channel.open(
-            sender_pk.clone(),
-            payee,
-            token.address(),
-            U256::from(1_000u64),
-            10_000,
-        );
-
-        // Wrong signer forges a voucher.
-        let attacker = SecretKey::generate_ed25519().unwrap();
-        let attacker_pk = PublicKey::from(&attacker);
-        let cumulative = U256::from(400u64);
-        let contract = contract_hash_bytes(&channel.address());
-        let forged = crypto::sign(
-            voucher_message(contract, id, &cumulative),
-            &attacker,
-            &attacker_pk,
-        );
-
-        env.set_caller(payee);
-        let err = channel.try_redeem(id, cumulative, Bytes::from(forged.to_bytes().unwrap()));
-        assert_eq!(err, Err(Error::InvalidVoucher.into()));
-    }
-
-    #[test]
-    fn cannot_close_before_expiry() {
-        let env = odra_test::env();
-        let secret = SecretKey::generate_ed25519().unwrap();
-        let sender_pk = PublicKey::from(&secret);
-        let sender: Address = sender_pk.clone().into();
-        let payee = env.get_account(2);
-
-        let mut token = deploy_token(&env, 1_000_000);
-        env.set_caller(env.get_account(0));
-        token.transfer(&sender, &U256::from(10_000u64));
-        let mut channel = PaymentChannel::deploy(&env, odra::host::NoArgs);
-        env.set_caller(sender);
-        token.approve(&channel.address(), &U256::from(1_000u64));
-        let id = channel.open(
-            sender_pk,
-            payee,
-            token.address(),
-            U256::from(1_000u64),
-            10_000,
-        );
-
-        assert_eq!(channel.try_close(id), Err(Error::NotExpired.into()));
-    }
-
-    /// A sender keypair funded with 10,000 tokens, a payee and the token.
+    /// Account 1 is the sender (funded with 10,000 tokens by account 0, which
+    /// holds the supply) and account 2 the payee. Vouchers are signed with the
+    /// test environment's own account keys, so the same tests run on OdraVM and
+    /// on the Casper execution engine.
     struct Party {
-        secret: SecretKey,
-        public_key: PublicKey,
         sender: Address,
+        public_key: PublicKey,
         payee: Address,
-        token: Cep18HostRef,
+        token: DemoTokenHostRef,
     }
 
     fn party(env: &HostEnv) -> Party {
-        let secret = SecretKey::generate_ed25519().unwrap();
-        let public_key = PublicKey::from(&secret);
-        let sender: Address = public_key.clone().into();
-        let mut token = deploy_token(env, 1_000_000);
+        let sender = env.get_account(1);
         env.set_caller(env.get_account(0));
-        token.transfer(&sender, &U256::from(10_000u64));
+        let mut token = deploy_demo_token(env, 1_000_000);
+        token.transfer(sender, U256::from(10_000u64));
         Party {
-            secret,
-            public_key,
             sender,
+            public_key: env.public_key(&sender),
             payee: env.get_account(2),
             token,
         }
@@ -442,7 +308,7 @@ mod tests {
         deposit: u64,
     ) -> u64 {
         env.set_caller(p.sender);
-        p.token.approve(&channel.address(), &U256::from(deposit));
+        p.token.approve(channel.address(), U256::from(deposit));
         channel.open(
             p.public_key.clone(),
             p.payee,
@@ -452,23 +318,78 @@ mod tests {
         )
     }
 
-    fn sign(p: &Party, message: Vec<u8>) -> Bytes {
-        let signature = crypto::sign(message, &p.secret, &p.public_key);
-        Bytes::from(signature.to_bytes().unwrap())
+    /// Sign `message` with `signer`'s key, as an off-chain signer would.
+    fn sign_as(env: &HostEnv, signer: Address, message: Vec<u8>) -> Bytes {
+        env.sign_message(&Bytes::from(message), &signer)
     }
 
-    /// A valid voucher for `channel_id` on `channel` up to `cumulative`.
+    /// A valid voucher from the sender for `channel_id` on `channel`.
     fn voucher(
+        env: &HostEnv,
         p: &Party,
         channel: &PaymentChannelHostRef,
         channel_id: u64,
         cumulative: u64,
     ) -> Bytes {
         let contract = contract_hash_bytes(&channel.address());
-        sign(
-            p,
-            voucher_message(contract, channel_id, &U256::from(cumulative)),
-        )
+        let message = voucher_message(contract, channel_id, &U256::from(cumulative));
+        sign_as(env, p.sender, message)
+    }
+
+    #[test]
+    fn open_redeem_and_close() {
+        let env = odra_test::env();
+        let mut p = party(&env);
+        let mut channel = PaymentChannel::deploy(&env, NoArgs);
+        let id = open(&env, &mut p, &mut channel, 1_000);
+        assert_eq!(channel.redeemable(id), U256::from(1_000u64));
+
+        // Off-chain the sender signs a voucher for cumulative 400; the payee
+        // redeems it.
+        env.set_caller(p.payee);
+        channel.redeem(id, U256::from(400u64), voucher(&env, &p, &channel, id, 400));
+        assert_eq!(p.token.balance_of(p.payee), U256::from(400u64));
+        assert_eq!(channel.redeemable(id), U256::from(600u64));
+
+        // A second, larger voucher pays only the delta.
+        channel.redeem(id, U256::from(650u64), voucher(&env, &p, &channel, id, 650));
+        assert_eq!(p.token.balance_of(p.payee), U256::from(650u64));
+
+        // After expiry the sender reclaims the remaining 350.
+        env.advance_block_time(20_000);
+        env.set_caller(p.sender);
+        channel.close(id);
+        assert_eq!(p.token.balance_of(p.sender), U256::from(10_000u64 - 650));
+    }
+
+    #[test]
+    fn rejects_forged_voucher() {
+        let env = odra_test::env();
+        let mut p = party(&env);
+        let mut channel = PaymentChannel::deploy(&env, NoArgs);
+        let id = open(&env, &mut p, &mut channel, 1_000);
+
+        // Another account signs a correctly built voucher.
+        let attacker = env.get_account(3);
+        let contract = contract_hash_bytes(&channel.address());
+        let cumulative = U256::from(400u64);
+        let forged = sign_as(&env, attacker, voucher_message(contract, id, &cumulative));
+
+        env.set_caller(p.payee);
+        assert_eq!(
+            channel.try_redeem(id, cumulative, forged),
+            Err(Error::InvalidVoucher.into())
+        );
+    }
+
+    #[test]
+    fn cannot_close_before_expiry() {
+        let env = odra_test::env();
+        let mut p = party(&env);
+        let mut channel = PaymentChannel::deploy(&env, NoArgs);
+        let id = open(&env, &mut p, &mut channel, 1_000);
+
+        assert_eq!(channel.try_close(id), Err(Error::NotExpired.into()));
     }
 
     // Off-chain signers depend on this exact layout; changing it silently
@@ -502,7 +423,7 @@ mod tests {
         let id_b = open(&env, &mut p, &mut channel_b, 1_000);
         assert_eq!(id_a, id_b);
 
-        let for_a = voucher(&p, &channel_a, id_a, 400);
+        let for_a = voucher(&env, &p, &channel_a, id_a, 400);
         env.set_caller(p.payee);
         assert_eq!(
             channel_b.try_redeem(id_b, U256::from(400u64), for_a.clone()),
@@ -513,7 +434,7 @@ mod tests {
             channel_b.try_redeem(id_b, U256::from(400u64), for_a),
             Err(Error::InvalidVoucher.into())
         );
-        assert_eq!(p.token.balance_of(&p.payee), U256::from(400u64));
+        assert_eq!(p.token.balance_of(p.payee), U256::from(400u64));
         assert_eq!(channel_b.redeemable(id_b), U256::from(1_000u64));
     }
 
@@ -525,7 +446,7 @@ mod tests {
         let first = open(&env, &mut p, &mut channel, 1_000);
         let second = open(&env, &mut p, &mut channel, 1_000);
 
-        let for_first = voucher(&p, &channel, first, 400);
+        let for_first = voucher(&env, &p, &channel, first, 400);
         env.set_caller(p.payee);
         assert_eq!(
             channel.try_redeem(second, U256::from(400u64), for_first),
@@ -559,11 +480,11 @@ mod tests {
         env.set_caller(p.payee);
         for message in [legacy_v1, no_domain, other_domain] {
             assert_eq!(
-                channel.try_redeem(id, cumulative, sign(&p, message)),
+                channel.try_redeem(id, cumulative, sign_as(&env, p.sender, message)),
                 Err(Error::InvalidVoucher.into())
             );
         }
-        assert_eq!(p.token.balance_of(&p.payee), U256::zero());
+        assert_eq!(p.token.balance_of(p.payee), U256::zero());
     }
 
     #[test]
@@ -579,7 +500,7 @@ mod tests {
                 .try_redeem(id, U256::from(400u64), Bytes::from(garbage))
                 .is_err());
         }
-        assert_eq!(p.token.balance_of(&p.payee), U256::zero());
+        assert_eq!(p.token.balance_of(p.payee), U256::zero());
         assert_eq!(channel.redeemable(id), U256::from(1_000u64));
     }
 
@@ -592,21 +513,33 @@ mod tests {
 
         // Anyone may submit a voucher; the funds always go to the payee.
         env.set_caller(env.get_account(5));
-        channel.redeem(id, U256::from(400u64), voucher(&p, &channel, id, 400));
-        assert_eq!(p.token.balance_of(&p.payee), U256::from(400u64));
+        channel.redeem(id, U256::from(400u64), voucher(&env, &p, &channel, id, 400));
+        assert_eq!(p.token.balance_of(p.payee), U256::from(400u64));
 
         for stale in [400, 300] {
             assert_eq!(
-                channel.try_redeem(id, U256::from(stale), voucher(&p, &channel, id, stale)),
+                channel.try_redeem(
+                    id,
+                    U256::from(stale),
+                    voucher(&env, &p, &channel, id, stale)
+                ),
                 Err(Error::NonMonotonic.into())
             );
         }
         assert_eq!(
-            channel.try_redeem(id, U256::from(1_001u64), voucher(&p, &channel, id, 1_001)),
+            channel.try_redeem(
+                id,
+                U256::from(1_001u64),
+                voucher(&env, &p, &channel, id, 1_001)
+            ),
             Err(Error::OverDeposit.into())
         );
-        channel.redeem(id, U256::from(1_000u64), voucher(&p, &channel, id, 1_000));
-        assert_eq!(p.token.balance_of(&p.payee), U256::from(1_000u64));
+        channel.redeem(
+            id,
+            U256::from(1_000u64),
+            voucher(&env, &p, &channel, id, 1_000),
+        );
+        assert_eq!(p.token.balance_of(p.payee), U256::from(1_000u64));
         assert_eq!(channel.redeemable(id), U256::zero());
     }
 
@@ -620,7 +553,7 @@ mod tests {
         env.advance_block_time(5_000);
 
         env.set_caller(p.sender);
-        p.token.approve(&channel.address(), &U256::from(1_000u64));
+        p.token.approve(channel.address(), U256::from(1_000u64));
         for duration in [0, MIN_CHANNEL_DURATION_MS - 1, u64::MAX] {
             assert_eq!(
                 channel.try_open(
@@ -651,10 +584,10 @@ mod tests {
         let env = odra_test::env();
         let mut p = party(&env);
         let mut channel = PaymentChannel::deploy(&env, NoArgs);
-        let other_key = PublicKey::from(&SecretKey::generate_ed25519().unwrap());
+        let other_key = env.public_key(&env.get_account(3));
 
         env.set_caller(p.sender);
-        p.token.approve(&channel.address(), &U256::from(1_000u64));
+        p.token.approve(channel.address(), U256::from(1_000u64));
         assert_eq!(
             channel.try_open(
                 other_key,
@@ -675,14 +608,14 @@ mod tests {
         let id = open(&env, &mut p, &mut channel, 1_000);
 
         env.set_caller(p.payee);
-        channel.redeem(id, U256::from(250u64), voucher(&p, &channel, id, 250));
+        channel.redeem(id, U256::from(250u64), voucher(&env, &p, &channel, id, 250));
 
         // Closable from the expiration instant, by the sender only.
         env.advance_block_time(10_000);
         assert_eq!(channel.try_close(id), Err(Error::NotSender.into()));
         env.set_caller(p.sender);
         channel.close(id);
-        assert_eq!(p.token.balance_of(&p.sender), U256::from(10_000u64 - 250));
+        assert_eq!(p.token.balance_of(p.sender), U256::from(10_000u64 - 250));
         assert!(env.emitted_event(
             &channel,
             ChannelClosed {
@@ -692,11 +625,11 @@ mod tests {
         ));
 
         // Payee + refund == deposit, and a closed channel stays closed.
-        assert_eq!(p.token.balance_of(&channel.address()), U256::zero());
+        assert_eq!(p.token.balance_of(channel.address()), U256::zero());
         assert_eq!(channel.try_close(id), Err(Error::ChannelClosed.into()));
         env.set_caller(p.payee);
         assert_eq!(
-            channel.try_redeem(id, U256::from(500u64), voucher(&p, &channel, id, 500)),
+            channel.try_redeem(id, U256::from(500u64), voucher(&env, &p, &channel, id, 500)),
             Err(Error::ChannelClosed.into())
         );
     }
@@ -709,7 +642,7 @@ mod tests {
 
         assert_eq!(channel.try_close(3), Err(Error::UnknownChannel.into()));
         assert_eq!(
-            channel.try_redeem(3, U256::one(), voucher(&p, &channel, 3, 1)),
+            channel.try_redeem(3, U256::one(), voucher(&env, &p, &channel, 3, 1)),
             Err(Error::UnknownChannel.into())
         );
         assert_eq!(

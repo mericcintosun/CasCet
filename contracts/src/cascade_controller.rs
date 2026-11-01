@@ -287,22 +287,10 @@ impl CascadeController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::Lcg;
+    use crate::demo_token::DemoTokenHostRef;
+    use crate::test_util::{deploy_demo_token as deploy_token, on_casper_backend, Lcg};
     use odra::casper_types::U256;
     use odra::host::{Deployer, HostEnv, NoArgs};
-    use odra_modules::cep18_token::{Cep18, Cep18HostRef, Cep18InitArgs};
-
-    fn deploy_token(env: &HostEnv, supply: u64) -> Cep18HostRef {
-        Cep18::deploy(
-            env,
-            Cep18InitArgs {
-                symbol: "WCSPR".to_string(),
-                name: "Wrapped CSPR".to_string(),
-                decimals: 9,
-                initial_supply: U256::from(supply),
-            },
-        )
-    }
 
     #[test]
     fn budget_tree_with_attribution() {
@@ -318,20 +306,20 @@ mod tests {
         // Agent opens a cascade with a 1000-token budget, delegating charging to
         // the gateway operator.
         env.set_caller(agent);
-        token.approve(&controller.address(), &U256::from(1_000u64));
+        token.approve(controller.address(), U256::from(1_000u64));
         let cid = controller.open(gateway, token.address(), U256::from(1_000u64));
         assert_eq!(controller.remaining(cid), U256::from(1_000u64));
 
         // Gateway charges the root hop: the agent pays the analyst 100 (no parent).
         env.set_caller(gateway);
         let analyst_hop = controller.charge(cid, 0, analyst, U256::from(100u64), 0);
-        assert_eq!(token.balance_of(&analyst), U256::from(100u64));
+        assert_eq!(token.balance_of(analyst), U256::from(100u64));
 
         // Analyst buys data (child hop) gross 30 with 20% attribution back up:
         // data gets 24, analyst (parent payee) gets 6.
         controller.charge(cid, analyst_hop, data, U256::from(30u64), 2_000);
-        assert_eq!(token.balance_of(&data), U256::from(24u64));
-        assert_eq!(token.balance_of(&analyst), U256::from(106u64));
+        assert_eq!(token.balance_of(data), U256::from(24u64));
+        assert_eq!(token.balance_of(analyst), U256::from(106u64));
 
         // Budget enforcement: total spent is 130; a 900-token hop would exceed
         // the 1000 budget and must revert.
@@ -343,7 +331,7 @@ mod tests {
         env.set_caller(agent);
         controller.close(cid);
         // Agent started with 1,000,000, deposited 1000, got 870 back.
-        assert_eq!(token.balance_of(&agent), U256::from(1_000_000u64 - 130u64));
+        assert_eq!(token.balance_of(agent), U256::from(1_000_000u64 - 130u64));
     }
 
     #[test]
@@ -356,7 +344,7 @@ mod tests {
         let mut token = deploy_token(&env, 1_000_000);
         let mut controller = CascadeController::deploy(&env, NoArgs);
         env.set_caller(agent);
-        token.approve(&controller.address(), &U256::from(1_000u64));
+        token.approve(controller.address(), U256::from(1_000u64));
         let cid = controller.open(gateway, token.address(), U256::from(1_000u64));
 
         env.set_caller(intruder);
@@ -368,13 +356,13 @@ mod tests {
     /// that `operator` may charge.
     fn open_cascade(
         env: &HostEnv,
-        token: &mut Cep18HostRef,
+        token: &mut DemoTokenHostRef,
         controller: &mut CascadeControllerHostRef,
         operator: Address,
         budget: u64,
     ) -> u64 {
         env.set_caller(env.get_account(0));
-        token.approve(&controller.address(), &U256::from(budget));
+        token.approve(controller.address(), U256::from(budget));
         controller.open(operator, token.address(), U256::from(budget))
     }
 
@@ -439,9 +427,9 @@ mod tests {
             assert_eq!(controller.remaining(cid), budget - spent);
             let paid_out = payees
                 .iter()
-                .fold(U256::zero(), |sum, p| sum + token.balance_of(p));
+                .fold(U256::zero(), |sum, p| sum + token.balance_of(*p));
             assert_eq!(paid_out, spent);
-            assert_eq!(token.balance_of(&controller.address()), budget - spent);
+            assert_eq!(token.balance_of(controller.address()), budget - spent);
         }
         // The run must have exercised both outcomes.
         assert!(!hops.is_empty());
@@ -450,8 +438,8 @@ mod tests {
         // Closing refunds exactly the unspent budget and freezes the cascade.
         env.set_caller(owner);
         controller.close(cid);
-        assert_eq!(token.balance_of(&controller.address()), U256::zero());
-        assert_eq!(token.balance_of(&owner), U256::from(1_000_000u64) - spent);
+        assert_eq!(token.balance_of(controller.address()), U256::zero());
+        assert_eq!(token.balance_of(owner), U256::from(1_000_000u64) - spent);
         assert!(env.emitted_event(
             &controller,
             CascadeClosed {
@@ -489,7 +477,7 @@ mod tests {
             controller.try_charge(cid, 0, payee, U256::MAX, 0),
             Err(Error::BudgetExceeded.into())
         );
-        assert_eq!(token.balance_of(&payee), U256::from(1_000u64));
+        assert_eq!(token.balance_of(payee), U256::from(1_000u64));
     }
 
     #[test]
@@ -519,8 +507,8 @@ mod tests {
         let parent = controller.charge(cid, 0, payee, U256::from(10u64), 0);
         let child_payee = env.get_account(3);
         controller.charge(cid, parent, child_payee, U256::from(50u64), BPS_DENOMINATOR);
-        assert_eq!(token.balance_of(&child_payee), U256::zero());
-        assert_eq!(token.balance_of(&payee), U256::from(60u64));
+        assert_eq!(token.balance_of(child_payee), U256::zero());
+        assert_eq!(token.balance_of(payee), U256::from(60u64));
 
         // Only the owner may close, and only once; a closed cascade takes no hops.
         assert_eq!(controller.try_close(cid), Err(Error::NotOwner.into()));
@@ -653,6 +641,10 @@ mod tests {
     // cannot push the payouts past the budget.
     #[test]
     fn reentrant_charge_cannot_exceed_the_budget() {
+        if on_casper_backend() {
+            eprintln!("skipped on the Casper backend: ReentrantToken has no wasm");
+            return;
+        }
         let env = odra_test::env();
         let (mut token, controller, cid, payee) = reentrancy_setup(&env);
 
@@ -672,6 +664,10 @@ mod tests {
     // wrote back a stale `spent` (40 recorded, 80 paid).
     #[test]
     fn reentrant_charge_within_budget_keeps_spent_equal_to_payouts() {
+        if on_casper_backend() {
+            eprintln!("skipped on the Casper backend: ReentrantToken has no wasm");
+            return;
+        }
         let env = odra_test::env();
         let (mut token, controller, cid, payee) = reentrancy_setup(&env);
 
