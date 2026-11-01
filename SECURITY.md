@@ -72,7 +72,8 @@ Also in this tier:
 
 1. **Preferred:** GitHub private vulnerability reporting. Open the repository's
    **Security** tab and choose **Report a vulnerability**, or go to
-   <https://github.com/mericcintosun/CasCet/security/advisories/new>.
+   <https://github.com/mericcintosun/CasCet/security/advisories/new>. If GitHub
+   does not show a **Report a vulnerability** button, use the email below.
 2. **Alternatively:** email **mericcintosunn@gmail.com** with "CasCet security"
    in the subject. This inbox is monitored.
 
@@ -111,9 +112,14 @@ There is no paid bug bounty at this time.
   `.env` files, so neither git nor a Vercel deployment picks them up.
 - Mainnet keys are never committed and are not available to CI. The release
   workflow publishes the npm packages with npm trusted publishing (OIDC) and
-  needs no stored npm token.
+  needs no stored npm token; only its publish job, which runs no dependency
+  code, can request the OIDC token.
 - Keys made by `pnpm --filter @cascet/e2e gen-keys` are throwaway testnet keys.
   Never fund them on mainnet.
+- The maintainer demo `pnpm --filter @cascet/e2e demo-real-mainnet` pays from
+  `tools/e2e/keys/agent.pem`, the path `gen-keys` writes to. On mainnet that
+  file must be a dedicated payer key, created and stored separately (never a
+  `gen-keys` output) and funded with a small float only.
 - If you find a key, token or other secret in this repository, its history, a
   published package or a deployment, report it privately as described above.
   We rotate it and tell you when that is done.

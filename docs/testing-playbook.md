@@ -165,6 +165,12 @@ pnpm --filter @cascet/e2e demo-real            # testnet
 pnpm --filter @cascet/e2e demo-real-mainnet    # MAINNET, real funds
 ```
 
+`demo-real-mainnet` pays from `tools/e2e/keys/agent.pem`, the path `gen-keys`
+writes to. On mainnet that file must be a dedicated payer key, created and
+stored separately (never a `gen-keys` output) and funded with a small float
+only. Read [`mainnet-readiness.md`](mainnet-readiness.md) for the facilitator's
+keys and limits before the mainnet run.
+
 Expected: the agent pays from its on-chain balance of the x402 token; the
 self-hosted facilitator verifies and settles; the receipt is anchored on-chain.
 The script prints the transaction link (e.g. testnet `0218ff4c…`, mainnet
