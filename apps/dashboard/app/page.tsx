@@ -507,7 +507,7 @@ function Roadmap() {
         "Full contract set live on Casper mainnet; real x402 settled from both the TypeScript and Python clients.",
         "The CascadeController primitive proven on mainnet: budget cap, attribution up the tree, over-budget revert, and refund.",
         "Internal pre-mainnet security review; its findings were fixed and the contracts redeployed. External audit planned.",
-        "On-chain-backed dashboard + explorer (rebuilt from the ReceiptRegistry), a /build config wizard, and a wallet-signed RevenueSplit withdraw.",
+        "On-chain-backed dashboard + explorer (rebuilt from the testnet ReceiptRegistry), a /build config wizard, and a Casper Wallet withdraw page for RevenueSplit payees (testnet).",
       ],
     },
     {
