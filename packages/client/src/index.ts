@@ -15,7 +15,9 @@ export {
 } from "./mcp-http-client.js";
 export { runBridge, type BridgeOptions } from "./bridge.js";
 export {
+  CONTRACT_PAYEE_REASON,
   DEFAULT_MAX_AUTHORIZATION_SECONDS,
+  normalizeAllowedPayTo,
   normalizeAssetHash,
   normalizeNetworks,
   parseRawAmount,

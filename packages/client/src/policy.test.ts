@@ -1,7 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  CONTRACT_PAYEE_REASON,
   DEFAULT_MAX_AUTHORIZATION_SECONDS,
+  normalizeAllowedPayTo,
   normalizeAssetHash,
   normalizeNetworks,
   parseRawAmount,
@@ -74,6 +76,30 @@ describe("normalizeNetworks", () => {
   });
 });
 
+describe("normalizeAllowedPayTo", () => {
+  it("accepts account hashes in both forms", () => {
+    assert.equal(normalizeAllowedPayTo(SELLER.toUpperCase()), SELLER);
+    assert.equal(normalizeAllowedPayTo(` account-hash-${SELLER.slice(2)} `), SELLER);
+  });
+
+  it("rejects a contract package, which no facilitator can settle today", () => {
+    for (const entry of [`hash-${CONTRACT}`, `package-hash-${CONTRACT}`]) {
+      assert.throws(
+        () => normalizeAllowedPayTo(entry),
+        (err: Error) => {
+          assert.match(err.message, /is a contract-package payee/);
+          assert.ok(err.message.includes(CONTRACT_PAYEE_REASON));
+          return true;
+        },
+      );
+    }
+  });
+
+  it("still rejects a public key with the account-hash hint", () => {
+    assert.throws(() => normalizeAllowedPayTo(`01${CONTRACT}`), /public key.*account-hash/);
+  });
+});
+
 describe("normalizeAssetHash", () => {
   it("strips hash- and lower-cases", () => {
     assert.equal(normalizeAssetHash(`hash-${ASSET_A.toUpperCase()}`), ASSET_A);
@@ -93,10 +119,11 @@ describe("SpendPolicy construction", () => {
     }
   });
 
-  it("rejects empty allowlists and public keys in allowedPayTo", () => {
+  it("rejects empty allowlists, public keys and contract packages in allowedPayTo", () => {
     assert.throws(() => new SpendPolicy({ allowedPayTo: [] }), /allowedPayTo must be a non-empty list/);
     assert.throws(() => new SpendPolicy({ allowedAssets: [] }), /allowedAssets must be a non-empty list/);
     assert.throws(() => new SpendPolicy({ allowedPayTo: ["01" + "ab".repeat(32)] }), /public key.*account-hash/);
+    assert.throws(() => new SpendPolicy({ allowedPayTo: [SELLER, `hash-${CONTRACT}`] }), /allowedPayTo: .*contract-package payee/);
     assert.throws(() => new SpendPolicy({ allowedAssets: ["nope"] }), /allowedAssets: invalid asset/);
   });
 
@@ -158,10 +185,23 @@ describe("SpendPolicy.authorize", () => {
     refused(policy.authorize(requirements({ asset: ASSET_B })), /asset .* is not allowlisted/);
   });
 
-  it("refuses a 01-prefixed payee unless it is allowlisted as a contract package", () => {
-    refused(new SpendPolicy().authorize(requirements({ payTo: `01${CONTRACT}` })), /not an account hash/);
-    const policy = new SpendPolicy({ allowedPayTo: [`hash-${CONTRACT}`] });
-    assert.equal(policy.authorize(requirements({ payTo: `01${CONTRACT}` })).ok, true);
+  it("refuses every 01-prefixed payee, with or without an allowlist", () => {
+    for (const policy of [new SpendPolicy(), new SpendPolicy({ allowedPayTo: [SELLER] })]) {
+      for (const payTo of [`01${CONTRACT}`, `01${CONTRACT.toUpperCase()}`]) {
+        const decision = policy.authorize(requirements({ payTo }));
+        refused(decision, /is not an account hash \(a contract package, or a public key\)/);
+        if (!decision.ok) assert.ok(decision.reason.includes(CONTRACT_PAYEE_REASON));
+      }
+      assert.deepEqual(policy.spentByAsset(), {});
+    }
+    // An allowlist can never make a contract package payable: it is rejected when the policy is built.
+    assert.throws(() => new SpendPolicy({ allowedPayTo: [`hash-${CONTRACT}`] }), /contract-package payee/);
+  });
+
+  it("never tells the model how to get a refused payee paid", () => {
+    const decision = new SpendPolicy({ allowedPayTo: [SELLER] }).authorize(requirements({ payTo: `01${CONTRACT}` }));
+    assert.equal(decision.ok, false);
+    if (!decision.ok) assert.doesNotMatch(decision.reason, /allowlist it|explicitly/i);
   });
 
   it("refuses a network that is not listed (no casper:* wildcard)", () => {

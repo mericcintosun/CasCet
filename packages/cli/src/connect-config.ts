@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { NETWORK_CASPER_MAINNET, NETWORK_CASPER_TESTNET, normalizePayTo } from "@cascet/core";
+import { NETWORK_CASPER_MAINNET, NETWORK_CASPER_TESTNET } from "@cascet/core";
 import {
   DEFAULT_TIMEOUT_MS,
+  normalizeAllowedPayTo,
   normalizeAssetHash,
   normalizeNetworks,
   parseRawAmount,
@@ -75,7 +76,8 @@ export function resolveConnectConfig(input: ConnectInputs): ConnectConfig {
         '"npx @cascet/cli account-hash <public-key>"). To pay any seller anyway, pass --allow-any-seller or set CASCET_ALLOW_ANY_SELLER=1.',
     );
   }
-  for (const payTo of allowedPayTo ?? []) attribute("CASCET_ALLOWED_PAYTO", () => normalizePayTo(payTo));
+  // A contract-package payee is refused too: no facilitator can settle one today (CONTRACT_PAYEE_REASON).
+  for (const payTo of allowedPayTo ?? []) attribute("CASCET_ALLOWED_PAYTO", () => normalizeAllowedPayTo(payTo));
   for (const asset of allowedAssets ?? []) attribute("CASCET_ALLOWED_ASSETS", () => normalizeAssetHash(asset));
 
   const allowUnlimited = flags.has("--allow-unlimited-budget") || isSet(env.CASCET_ALLOW_UNLIMITED_BUDGET);

@@ -16,7 +16,10 @@ const SECP256K1_PUBLIC_KEY = /^02[0-9a-f]{66}$/;
  *
  * - account hash: `"00" + 64 hex` or `"account-hash-<64 hex>"` → `"00" + hex`
  * - contract package (e.g. a RevenueSplit): `"hash-<64 hex>"` or
- *   `"package-hash-<64 hex>"` → `"01" + hex`
+ *   `"package-hash-<64 hex>"` → `"01" + hex`. Accepted for forward
+ *   compatibility only: @make-software/casper-x402 1.0.0 facilitators settle
+ *   it as an account hash nobody controls, CasCet buyers refuse to pay it,
+ *   and `cascet wrap` warns about it.
  *
  * Hex is lower-cased. A Casper PUBLIC KEY (`"01" + 64 hex` for ed25519,
  * `"02" + 66 hex` for secp256k1) is rejected with a hint: casper-x402 accepts
@@ -34,8 +37,7 @@ export function normalizePayTo(input: string): string {
   if (ED25519_PUBLIC_KEY.test(value) || SECP256K1_PUBLIC_KEY.test(value)) {
     throw new Error(
       `payTo ${show(input)} is a Casper public key, not an account hash; a payment to it would be credited ` +
-        `to an account nobody controls. To get the payee value for this key, ${ACCOUNT_HASH_HINT}. ` +
-        `(A contract-package payee is written "hash-<64 hex>".)`,
+        `to an account nobody controls. To get the payee value for this key, ${ACCOUNT_HASH_HINT}.`,
     );
   }
   throw new Error(

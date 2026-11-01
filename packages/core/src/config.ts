@@ -40,12 +40,13 @@ export const cascetConfigSchema = z.object({
   network: z.string().default(NETWORK_CASPER_TESTNET),
   /**
    * Who receives payments: the serialized Casper Key the x402 exact scheme signs over.
-   * Use the payee's ACCOUNT HASH ("00" + 64 hex, or "account-hash-<64 hex>"), or a contract
-   * package such as a RevenueSplit ("hash-<64 hex>" or "package-hash-<64 hex>", stored as
-   * "01" + 64 hex). Never a public key: get the account hash with
-   * `npx @cascet/cli account-hash <public-key>`. Note: @make-software/casper-x402 1.0.0
-   * settles every payTo as an account hash, so a contract-package payee needs a facilitator
-   * that supports contract payees.
+   * Use the payee's ACCOUNT HASH ("00" + 64 hex, or "account-hash-<64 hex>"). Never a public
+   * key: get the account hash with `npx @cascet/cli account-hash <public-key>`.
+   * A contract package such as a RevenueSplit ("hash-<64 hex>" or "package-hash-<64 hex>",
+   * stored as "01" + 64 hex) passes this check, but cannot be paid today:
+   * @make-software/casper-x402 1.0.0 facilitators settle every payTo as an account hash, so
+   * that revenue would go to an account nobody controls, and CasCet buyers refuse such a
+   * payee. `cascet wrap` warns about it.
    */
   payTo: payToSchema,
   asset: assetSchema,

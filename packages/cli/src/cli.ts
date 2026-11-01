@@ -7,7 +7,7 @@ import { accountHashFromPublicKey, createPayingFetch, readPinFile, runBridge } f
 import { checkArgs, CliError, CONNECT_FLAGS, parseArgs, type ParsedArgs } from "./args.js";
 import { resolveConnectConfig } from "./connect-config.js";
 import { initNextSteps, initTemplate } from "./init-template.js";
-import { facilitatorWarnings, formatConfigIssues } from "./wrap-check.js";
+import { formatConfigIssues, wrapWarnings } from "./wrap-check.js";
 
 try {
   await main(parseArgs(process.argv.slice(2)));
@@ -63,7 +63,7 @@ async function wrap(configArg?: string): Promise<void> {
     throw new CliError(`invalid config ${configPath}:\n${formatConfigIssues(parsed.error.issues)}`);
   }
   const cfg = parsed.data;
-  for (const warning of facilitatorWarnings(cfg)) console.error(`[cascet] ${warning}`);
+  for (const warning of wrapWarnings(cfg)) console.error(`[cascet] ${warning}`);
 
   // Loaded lazily so buyers (connect, account-hash) never load the gateway stack.
   const { startGateway } = await import("@cascet/gateway");

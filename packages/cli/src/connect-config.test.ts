@@ -93,6 +93,10 @@ describe("resolveConnectConfig", () => {
       [{ CASCET_MAX_SESSION: "5e9" }, /CASCET_MAX_SESSION must be a whole number/],
       [{ CASCET_MAX_PER_CALL: "0" }, /CASCET_MAX_PER_CALL must be greater than zero/],
       [{ CASCET_ALLOWED_PAYTO: "01" + "ab".repeat(32) }, /CASCET_ALLOWED_PAYTO: .*public key.*account-hash/],
+      [
+        { CASCET_ALLOWED_PAYTO: `${SELLER},hash-${"c3".repeat(32)}` },
+        /CASCET_ALLOWED_PAYTO: .*contract-package payee: contract-package payees cannot be settled by @make-software\/casper-x402 1\.0\.0 facilitators/,
+      ],
       [{ CASCET_ALLOWED_ASSETS: "hash-123" }, /CASCET_ALLOWED_ASSETS: invalid asset/],
       [{ CASCET_NETWORK: "casper:*" }, /CASCET_NETWORK: invalid network/],
       [{ CASCET_KEY_ALGO: "rsa" }, /CASCET_KEY_ALGO must be/],

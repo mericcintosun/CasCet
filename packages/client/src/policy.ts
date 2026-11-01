@@ -17,6 +17,16 @@ const SERIALIZED_KEY = /^(00|01)[0-9a-f]{64}$/;
 const PACKAGE_HASH = /^[0-9a-f]{64}$/;
 
 /**
+ * Why a "01" payee (a contract package such as a RevenueSplit, or a public key
+ * passed off as one) is never paid: @make-software/casper-x402 1.0.0, which
+ * every facilitator that exists today runs, settles any payTo as
+ * `Key.newKey("account-hash-" + payTo.slice(2))`.
+ */
+export const CONTRACT_PAYEE_REASON =
+  "contract-package payees cannot be settled by @make-software/casper-x402 1.0.0 facilitators; " +
+  "the payment would be credited to an account nobody controls";
+
+/**
  * Parse a raw token amount strictly: a string of 1-40 decimal digits, greater
  * than zero. `BigInt()` alone accepts "-5", "0x10", " 5 " and "" (as 0n), which
  * let a hostile 402 drive the session counter negative (M32).
@@ -51,6 +61,19 @@ export function normalizeNetworks(networks: readonly string[] | undefined): stri
   return out;
 }
 
+/**
+ * Normalize one entry of a payee allowlist to the serialized Key a 402 names
+ * ("00" + account hash). Accepts what {@link normalizePayTo} accepts, except a
+ * contract package: a payee the client would refuse anyway is a config error.
+ */
+export function normalizeAllowedPayTo(value: string): string {
+  const payTo = normalizePayTo(value);
+  if (payTo.startsWith("01")) {
+    throw new Error(`${show(value.trim())} is a contract-package payee: ${CONTRACT_PAYEE_REASON}. Allowlist an account hash instead.`);
+  }
+  return payTo;
+}
+
 /** Normalize a CEP-18 contract package hash to bare lower-case hex (accepts "hash-", "contract-package-" or "0x"). */
 export function normalizeAssetHash(value: string): string {
   const bare = value.trim().toLowerCase().replace(/^(?:hash-|contract-package-|0x)/, "");
@@ -63,7 +86,10 @@ export function normalizeAssetHash(value: string): string {
 export interface SpendPolicyOptions {
   /** CAIP-2 networks this client pays on. Default: ["casper:casper-test"]. */
   networks?: readonly string[];
-  /** Payees this client pays (account hashes or contract packages, see normalizePayTo). Undefined = any account-hash payee. */
+  /**
+   * Payees this client pays: account hashes ("00" + 64 hex or "account-hash-<64 hex>").
+   * Contract packages are rejected (see {@link CONTRACT_PAYEE_REASON}). Undefined = any account-hash payee.
+   */
   allowedPayTo?: readonly string[];
   /** CEP-18 package hashes this client pays in. Undefined = any asset. */
   allowedAssets?: readonly string[];
@@ -103,7 +129,7 @@ export class SpendPolicy {
     this.networks = normalizeNetworks(opts.networks);
     this.allowedPayTo = normalizeList(opts.allowedPayTo, "allowedPayTo", value => {
       try {
-        return normalizePayTo(value);
+        return normalizeAllowedPayTo(value);
       } catch (err) {
         throw new Error(`allowedPayTo: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -140,14 +166,11 @@ export class SpendPolicy {
 
     const payTo = typeof req.payTo === "string" ? req.payTo.toLowerCase() : undefined;
     if (payTo === undefined || !SERIALIZED_KEY.test(payTo)) return refuse(`malformed payTo ${show(req.payTo)}`);
-    if (this.allowedPayTo) {
-      if (!this.allowedPayTo.has(payTo)) return refuse(`payTo ${payTo} is not allowlisted`);
-    } else if (payTo.startsWith("01")) {
-      return refuse(
-        `payTo ${payTo} is not an account hash: it is a contract package or a public key, and ` +
-          "@make-software/casper-x402 1.0.0 settles it as an account nobody controls. Allowlist it explicitly to pay it.",
-      );
+    // Checked before the allowlist and never overridable by it: no facilitator can settle a "01" payee today.
+    if (payTo.startsWith("01")) {
+      return refuse(`payTo ${payTo} is not an account hash (a contract package, or a public key): ${CONTRACT_PAYEE_REASON}`);
     }
+    if (this.allowedPayTo && !this.allowedPayTo.has(payTo)) return refuse(`payTo ${payTo} is not allowlisted`);
 
     const asset = typeof req.asset === "string" ? req.asset.toLowerCase() : undefined;
     if (asset === undefined || !PACKAGE_HASH.test(asset)) return refuse(`malformed asset ${show(req.asset)}`);

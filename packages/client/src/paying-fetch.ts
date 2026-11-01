@@ -50,10 +50,11 @@ export interface PayingFetchOptions {
   };
   /**
    * Payees this client may pay: account hashes ("00" + 64 hex or
-   * "account-hash-<hex>"), or contract packages ("hash-<hex>"). Without it the
-   * client signs whatever recipient a (possibly hostile or MITM'd) server
-   * names, so pin the sellers you intend to pay. A one-time warning is logged
-   * when it is missing.
+   * "account-hash-<hex>"). Without it the client signs whatever account a
+   * (possibly hostile or MITM'd) server names, so pin the sellers you intend
+   * to pay. A one-time warning is logged when it is missing. Contract-package
+   * payees ("hash-<hex>") are rejected here and refused in every 402: no
+   * facilitator can settle them today (see CONTRACT_PAYEE_REASON).
    */
   allowedPayTo?: string[];
   /**

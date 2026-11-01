@@ -6,7 +6,7 @@ import {
   DEFAULT_SELF_HOSTED_FACILITATOR_URL,
 } from "@cascet/core";
 import { CASCET_TESTNET_X402_TOKEN, initNextSteps, initTemplate, PAYTO_PLACEHOLDER } from "./init-template.js";
-import { facilitatorWarnings, formatConfigIssues } from "./wrap-check.js";
+import { facilitatorWarnings, formatConfigIssues, payToWarnings, wrapWarnings } from "./wrap-check.js";
 
 const ACCOUNT_HASH = "00" + "a1".repeat(32);
 const WCSPR_TESTNET = "hash-3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e";
@@ -64,5 +64,25 @@ describe("facilitatorWarnings (M03)", () => {
       [],
     );
     assert.deepEqual(facilitatorWarnings({ ...base, facilitator: { url: "http://127.0.0.1:4501" } } as never), []);
+  });
+});
+
+describe("payToWarnings (contract-package payees)", () => {
+  const PACKAGE = "c3".repeat(32);
+
+  it("warns when payTo is a contract package, which no facilitator can settle today", () => {
+    const cfg = cascetConfigSchema.parse({ ...initTemplate("demo"), payTo: `hash-${PACKAGE}` });
+    assert.equal(cfg.payTo, `01${PACKAGE}`, "the schema still accepts the shared contract-package form");
+    const warnings = payToWarnings(cfg);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0] ?? "", /is a contract package .*credited to an account nobody controls.*CasCet buyers refuse/);
+    assert.match(warnings[0] ?? "", /npx @cascet\/cli account-hash/);
+    assert.deepEqual(wrapWarnings(cfg), warnings, "wrap prints it (the template's facilitator is fine)");
+  });
+
+  it("is quiet for an account hash", () => {
+    const cfg = cascetConfigSchema.parse({ ...initTemplate("demo"), payTo: `account-hash-${"a1".repeat(32)}` });
+    assert.deepEqual(payToWarnings(cfg), []);
+    assert.deepEqual(wrapWarnings(cfg), []);
   });
 });

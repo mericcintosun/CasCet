@@ -4,7 +4,7 @@ import { cascetConfigSchema } from "./config.js";
 import { ACCOUNT_HASH_HINT, isValidPayTo, normalizePayTo, payToSchema } from "./payto.js";
 
 const HEX64 = "881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36";
-const ED25519_PUBLIC_KEY = "01dd710d" + "ab".repeat(30);
+const ED25519_PUBLIC_KEY = "01dd710d" + "ab".repeat(29); // "01" + 64 hex
 const SECP256K1_PUBLIC_KEY = "0202bf97ba5eb20b003c90ca794275a341b205e969cfc24b05d4247bda851d37b1db";
 
 describe("normalizePayTo", () => {
@@ -28,16 +28,19 @@ describe("normalizePayTo", () => {
     assert.throws(
       () => normalizePayTo(ED25519_PUBLIC_KEY),
       (err: Error) => {
-        assert.match(err.message, /public key/);
+        assert.match(err.message, /is a Casper public key, not an account hash/);
         assert.ok(err.message.includes(ACCOUNT_HASH_HINT));
         assert.match(err.message, /npx @cascet\/cli account-hash/);
+        // The contract-package form is not offered as an alternative: no facilitator can settle it today.
+        assert.doesNotMatch(err.message, /contract/);
         return true;
       },
     );
   });
 
   it("rejects a secp256k1 public key", () => {
-    assert.throws(() => normalizePayTo(SECP256K1_PUBLIC_KEY), /public key/);
+    assert.equal(SECP256K1_PUBLIC_KEY.length, 68);
+    assert.throws(() => normalizePayTo(SECP256K1_PUBLIC_KEY), /is a Casper public key/);
   });
 
   it("rejects placeholders, wrong lengths and unknown prefixes", () => {
