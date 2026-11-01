@@ -2,11 +2,12 @@
 //!
 //! Writing every micropayment on-chain is wasteful when an agent calls a paid
 //! MCP tool hundreds of times. Instead the agent opens a channel with a single
-//! CEP-18 deposit, then authorizes usage OFF-CHAIN by signing monotonically
-//! increasing vouchers (`channel_id || cumulative_amount`). The gateway (payee)
-//! redeems the latest voucher on-chain whenever it wants its funds; the sender
-//! reclaims whatever is left after the channel expires. Two on-chain writes
-//! (open + close/redeem) cover thousands of calls.
+//! CEP-18 deposit, then authorizes usage OFF-CHAIN by signing vouchers for a
+//! monotonically increasing cumulative amount (byte layout:
+//! [`voucher_message`]; signature encoding: [`PaymentChannel::redeem`]). The
+//! gateway (payee) redeems the latest voucher on-chain whenever it wants its
+//! funds; the sender reclaims whatever is left after the channel expires. Two
+//! on-chain writes (open + close/redeem) cover thousands of calls.
 //!
 //! Voucher signatures are verified in-contract with Casper's native
 //! `verify_signature`, so the channel needs no trusted intermediary.
@@ -148,6 +149,23 @@ impl PaymentChannel {
 
     /// Redeem a signed voucher. `cumulative` is the total the sender has
     /// authorized so far; the payee is paid the delta since the last redeem.
+    /// Anyone may submit a voucher; the funds always go to the payee.
+    ///
+    /// `signature` is a casper-types `Signature` in bytesrepr form, 65 bytes:
+    /// one tag byte (`0x01` Ed25519, `0x02` Secp256k1), then the 64-byte
+    /// signature over the raw [`voucher_message`] bytes, made with the key
+    /// the sender passed to `open`:
+    ///
+    /// - Ed25519: RFC 8032 Ed25519 over the message itself, not a hash of it.
+    /// - Secp256k1: ECDSA over SHA-256(message), `r || s` big-endian, low-S.
+    ///
+    /// This is what `casper_types::crypto::sign(message, ..).to_bytes()`
+    /// returns; the `voucher_signatures_match_the_golden_vectors` test pins
+    /// one vector per key type. Bytes that do not decode as a `Signature`
+    /// (the 64 signature bytes without their tag usually do not) revert with
+    /// Odra's `CouldNotDeserializeSignature`; anything after the first 65
+    /// bytes is ignored. A signature that decodes but does not verify against
+    /// the sender's key over this exact message reverts with `InvalidVoucher`.
     pub fn redeem(&mut self, channel_id: u64, cumulative: U256, signature: Bytes) {
         let mut channel = self.load(channel_id);
         if channel.closed {
@@ -250,7 +268,8 @@ pub const MIN_CHANNEL_DURATION_MS: u64 = 1_000;
 ///
 /// `cumulative` uses Casper bytesrepr: one length byte, then the value in
 /// little-endian with trailing zero bytes dropped (400 encodes as `02 90 01`,
-/// zero as `00`). The `voucher_message_layout_is_stable` test pins the layout.
+/// zero as `00`). The `voucher_message_layout_is_stable` test pins the layout;
+/// [`PaymentChannel::redeem`] describes how to sign it.
 pub fn voucher_message(contract: [u8; 32], channel_id: u64, cumulative: &U256) -> Vec<u8> {
     let mut msg = Vec::with_capacity(VOUCHER_DOMAIN.len() + 32 + 8 + 32);
     msg.extend_from_slice(VOUCHER_DOMAIN);
@@ -273,7 +292,8 @@ mod tests {
     use super::*;
     use crate::demo_token::DemoTokenHostRef;
     use crate::test_util::deploy_demo_token;
-    use odra::casper_types::U256;
+    use odra::casper_types::bytesrepr::FromBytes;
+    use odra::casper_types::{crypto, SecretKey, Signature, U256};
     use odra::host::{Deployer, HostEnv, NoArgs};
 
     /// Account 1 is the sender (funded with 10,000 tokens by account 0, which
@@ -410,6 +430,51 @@ mod tests {
         assert_eq!(zero.last(), Some(&0));
     }
 
+    fn to_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    // Golden vectors for off-chain signers: fixed keys sign the golden
+    // message of `voucher_message_layout_is_stable`. Ed25519 and RFC 6979
+    // ECDSA are deterministic, so a signer that reproduces these bytes builds
+    // vouchers `redeem` accepts. `HostEnv::sign_message`, which every redeem
+    // test signs with, is the same `crypto::sign(..).to_bytes()`.
+    //
+    // Cross-checked with Node's crypto: the Ed25519 bytes match exactly, and
+    // the Secp256k1 signature verifies as ECDSA-P1363 over SHA-256(message).
+    #[test]
+    fn voucher_signatures_match_the_golden_vectors() {
+        let message = voucher_message([0xab; 32], 7, &U256::from(400u64));
+        let vectors = [
+            (
+                SecretKey::ed25519_from_bytes([7u8; 32]).unwrap(),
+                "01ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+                "017b17eccbbdc6f85d947265af04ce9041e2a28f9da741922add74ecf91b2eb694\
+                 03e844cc973b715defff99274dc96e4686deb7e87f90452d24afc531241dc609",
+            ),
+            (
+                SecretKey::secp256k1_from_bytes([7u8; 32]).unwrap(),
+                "0202989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f",
+                "02759444663c9a7f446ef74dca8274deda8c76f23083cc4efd48628a8c398ff2b0\
+                 19bfaf1235ab5cb6e76dac76a627f1c04a15c4de79f6f1aef5c28c3dc02577af",
+            ),
+        ];
+        for (secret, public_hex, signature_hex) in vectors {
+            let public = PublicKey::from(&secret);
+            assert_eq!(to_hex(&public.to_bytes().unwrap()), public_hex);
+
+            let signature = crypto::sign(&message, &secret, &public).to_bytes().unwrap();
+            assert_eq!(signature.len(), 65);
+            assert_eq!(to_hex(&signature), signature_hex);
+
+            // What `redeem` does with the bytes: decode, then verify.
+            let (decoded, rest) = Signature::from_bytes(&signature).unwrap();
+            assert!(rest.is_empty());
+            assert!(crypto::verify(&message, &decoded, &public).is_ok());
+            assert!(crypto::verify(&message[1..], &decoded, &public).is_err());
+        }
+    }
+
     // C1 regression: a voucher names the channel contract's package hash, so
     // it cannot be replayed on another deployment that has a channel with the
     // same id, sender key and payee (e.g. testnet -> mainnet).
@@ -487,19 +552,35 @@ mod tests {
         assert_eq!(p.token.balance_of(p.payee), U256::zero());
     }
 
+    // Bytes that are not a bytesrepr `Signature` fail to decode; a decodable
+    // signature that does not verify is an invalid voucher (see `redeem`).
     #[test]
     fn malformed_signature_bytes_are_rejected() {
         let env = odra_test::env();
         let mut p = party(&env);
         let mut channel = PaymentChannel::deploy(&env, NoArgs);
         let id = open(&env, &mut p, &mut channel, 1_000);
+        let cumulative = U256::from(400u64);
+        let undecodable: OdraResult<()> = Err(ExecutionError::CouldNotDeserializeSignature.into());
 
         env.set_caller(p.payee);
-        for garbage in [vec![], vec![1u8, 2, 3], vec![0u8; 65]] {
-            assert!(channel
-                .try_redeem(id, U256::from(400u64), Bytes::from(garbage))
-                .is_err());
+        // Empty, truncated after an Ed25519 tag, and an unknown tag.
+        for garbage in [vec![], vec![1u8, 2, 3], vec![5u8; 65]] {
+            assert_eq!(
+                channel.try_redeem(id, cumulative, Bytes::from(garbage)),
+                undecodable
+            );
         }
+        // Tag 0 decodes as the system signature, which never verifies.
+        assert_eq!(
+            channel.try_redeem(id, cumulative, Bytes::from(vec![0u8; 65])),
+            Err(Error::InvalidVoucher.into())
+        );
+        // A real voucher signature without its tag byte is rejected too.
+        let signed = voucher(&env, &p, &channel, id, 400);
+        assert!(channel
+            .try_redeem(id, cumulative, Bytes::from(signed[1..].to_vec()))
+            .is_err());
         assert_eq!(p.token.balance_of(p.payee), U256::zero());
         assert_eq!(channel.redeemable(id), U256::from(1_000u64));
     }
