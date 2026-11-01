@@ -47,9 +47,11 @@ export function ingest(event: CascetEvent): void {
       break;
     }
     case "server-online": {
-      store.servers.set(event.server, {
-        name: event.server,
-        tools: event.tools,
+      // Bounded and sanitised: the event comes over the network (I42).
+      if (!store.servers.has(event.server) && store.servers.size >= MAX_SERVERS) break;
+      store.servers.set(event.server.slice(0, 128), {
+        name: event.server.slice(0, 128),
+        tools: sanitizeTools(event.tools),
         online: true,
         lastSeen: new Date().toISOString(),
       });
@@ -62,6 +64,21 @@ export function ingest(event: CascetEvent): void {
     }
   }
   for (const notify of store.subscribers) notify(event);
+}
+
+const MAX_SERVERS = 100;
+const MAX_TOOLS = 200;
+
+function sanitizeTools(tools: unknown): ServerInfo["tools"] {
+  if (!Array.isArray(tools)) return [];
+  const out: ServerInfo["tools"] = [];
+  for (const t of tools.slice(0, MAX_TOOLS)) {
+    if (typeof t !== "object" || t === null) continue;
+    const { name, priceUsd } = t as { name?: unknown; priceUsd?: unknown };
+    if (typeof name !== "string" || !name) continue;
+    out.push({ name: name.slice(0, 128), ...(typeof priceUsd === "string" ? { priceUsd: priceUsd.slice(0, 32) } : {}) });
+  }
+  return out;
 }
 
 export function subscribe(fn: (event: CascetEvent) => void): () => void {
