@@ -24,6 +24,16 @@ async function connect(opts: DataServerOptions) {
   };
 }
 
+/** cspr.cloud answering with the example values of its REST docs. */
+const csprCloudDocs: FetchLike = async url =>
+  new Response(
+    JSON.stringify(
+      url.endsWith("/supply")
+        ? { data: { total: 13549811451, annual_staking_rewards_issuance: 0.061575 } }
+        : { data: { total_active_era_stake: "17143148308665709822", active_validator_number: 100, current_era_id: 12137 } },
+    ),
+  );
+
 function textOf(result: Awaited<ReturnType<Client["callTool"]>>): string {
   const content = result.content as Array<{ type: string; text?: string }>;
   return content.find(c => c.type === "text")?.text ?? "";
@@ -60,27 +70,32 @@ describe("casper-defi-data tools", { timeout: 15_000 }, () => {
     }
   });
 
-  it("computes live yields from cspr.cloud when a token is configured", async () => {
-    const fetchImpl: FetchLike = async url =>
-      new Response(
-        JSON.stringify(
-          url.endsWith("/supply")
-            ? { data: { total: 13549811451, annual_staking_rewards_issuance: 0.061575 } }
-            : { data: { total_active_era_stake: "17143148308665709822", active_validator_number: 100, current_era_id: 12137 } },
-        ),
-      );
-    const h = await connect({ fetchImpl, env: { CSPR_CLOUD_TOKEN: "tok", CSPR_CLOUD_URL: "https://api.cspr.cloud" } });
+  it("computes live yields from cspr.cloud over one era's stake and names the network (L50, L23)", async () => {
+    const h = await connect({ fetchImpl: csprCloudDocs, env: { CSPR_CLOUD_TOKEN: "tok", CSPR_CLOUD_URL: "https://api.cspr.cloud" } });
     try {
       const yields = JSON.parse(textOf(await h.client.callTool({ name: "get_defi_yields", arguments: {} })));
-      assert.equal(yields.source, "cspr.cloud(live): /supply + /auction-metrics");
+      assert.equal(yields.source, "cspr.cloud(live, mainnet): /supply + /auction-metrics");
       assert.deepEqual(yields.network, {
-        totalStakedCspr: 17143148309,
+        name: "mainnet",
+        // Half of the documented 17,143,148,309 CSPR, which sums two eras.
+        totalStakedCspr: 8571574154,
         activeValidators: 100,
         eraId: 12137,
         totalSupplyCspr: 13549811451,
       });
-      assert.equal(yields.yields[0].apyPct, 4.9);
-      assert.equal(yields.yields[1].apyPct, 4.4);
+      assert.equal(yields.yields[0].apyPct, 9.7);
+      assert.equal(yields.yields[1].apyPct, 8.8);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("labels yields from the default cspr.cloud as testnet data (L23)", async () => {
+    const h = await connect({ fetchImpl: csprCloudDocs, env: { CSPR_CLOUD_TOKEN: "tok" } });
+    try {
+      const yields = JSON.parse(textOf(await h.client.callTool({ name: "get_defi_yields", arguments: {} })));
+      assert.equal(yields.source, "cspr.cloud(live, testnet): /supply + /auction-metrics");
+      assert.equal(yields.network.name, "testnet");
     } finally {
       await h.close();
     }

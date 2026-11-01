@@ -5,6 +5,7 @@ import {
   casperStakingApy,
   coingeckoSimple,
   computeStakingApy,
+  csprCloudNetwork,
   parseCoingeckoRow,
   type FetchLike,
 } from "./sources.js";
@@ -140,12 +141,15 @@ describe("coingeckoSimple", () => {
 });
 
 describe("computeStakingApy", () => {
-  it("derives the APY from the documented cspr.cloud answers", () => {
+  it("derives the APY from the documented cspr.cloud answers, over ONE era's stake (L50)", () => {
     const r = computeStakingApy(SUPPLY, AUCTION);
     assert.ok(r.live);
-    const staked = Number(17143148308665709822n) / 1e9;
-    assert.equal(r.totalStakedCspr, staked);
-    assert.equal(r.nativeApy, (0.061575 * 13549811451 * 100) / staked);
+    // total_active_era_stake sums the current and the next era: one era is half of it.
+    const oneEra = Number(17143148308665709822n) / 2 / 1e9;
+    assert.equal(r.totalStakedCspr, oneEra);
+    assert.ok(r.totalStakedCspr < r.totalSupply, "no more CSPR can be bonded than exists");
+    assert.equal(r.nativeApy, (0.061575 * 13549811451 * 100) / oneEra);
+    assert.equal(Number(r.nativeApy.toFixed(1)), 9.7, "about 9.7%, not the 4.9% of the double-counted stake");
     assert.equal(r.activeValidators, 100);
     assert.equal(r.eraId, 12137);
     assert.equal(r.totalSupply, 13549811451);
@@ -167,6 +171,7 @@ describe("computeStakingApy", () => {
       ["negative validator count", SUPPLY, withAuction({ active_validator_number: -1 })],
       ["fractional era", SUPPLY, withAuction({ current_era_id: 1.5 })],
       ["implausible APY (stake far too small)", SUPPLY, withAuction({ total_active_era_stake: "1000000000" })],
+      ["one era's stake above the total supply", SUPPLY, withAuction({ total_active_era_stake: "30000000000000000000" })],
     ];
     for (const [name, supply, auction] of bad) {
       assert.deepEqual(computeStakingApy(supply, auction), { live: false }, name);
@@ -210,5 +215,14 @@ describe("casperStakingApy", () => {
       fetchImpl: async () => json({ message: "unauthorized" }, { status: 401 }),
     });
     assert.deepEqual(r, { live: false });
+  });
+});
+
+describe("csprCloudNetwork", () => {
+  it("names the network a cspr.cloud base URL serves (L23)", () => {
+    assert.equal(csprCloudNetwork("https://api.testnet.cspr.cloud"), "testnet");
+    assert.equal(csprCloudNetwork("https://API.cspr.cloud/"), "mainnet");
+    assert.equal(csprCloudNetwork("https://cspr-proxy.internal:8443"), "host cspr-proxy.internal");
+    assert.equal(csprCloudNetwork("not a url"), "unknown network");
   });
 });

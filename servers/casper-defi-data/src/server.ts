@@ -2,10 +2,14 @@ import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { DEFAULT_CSPR_CLOUD, casperStakingApy, coingeckoSimple, type FetchLike } from "./sources.js";
+import { DEFAULT_CSPR_CLOUD, casperStakingApy, coingeckoSimple, csprCloudNetwork, type FetchLike } from "./sources.js";
 
 /** The tools take at most one argument; cap the payload before schema validation runs. */
 const MAX_TOOL_INPUT_ELEMENTS = 32;
+
+const APY_METHOD =
+  "APY = annual_staking_rewards_issuance × total_supply ÷ one era's bonded stake " +
+  "(cspr.cloud total_active_era_stake ÷ 2: it sums the current and the next era); liquid = native × (1 − 0.10)";
 
 export interface DataServerOptions {
   /** Upstream fetch (tests stub it). Defaults to the global fetch. */
@@ -94,12 +98,14 @@ export function createDataServer(opts: DataServerOptions = {}): McpServer {
             { venue: "Liquid staking (stCSPR, ~10% commission)", apyPct: 10.1, risk: "low-medium", liquid: true },
           ],
           source: "snapshot(2026-07-07)",
-          method: "APY = annual_staking_rewards_issuance × total_supply ÷ total_active_stake; liquid = native × (1 − 0.10)",
+          method: APY_METHOD,
         });
       }
+      const network = csprCloudNetwork(csprCloud);
       const liquid = Number((s.nativeApy * 0.9).toFixed(1));
       return jsonResult({
         network: {
+          name: network,
           totalStakedCspr: Math.round(s.totalStakedCspr),
           activeValidators: s.activeValidators,
           eraId: s.eraId,
@@ -109,8 +115,8 @@ export function createDataServer(opts: DataServerOptions = {}): McpServer {
           { venue: "Native staking (validator delegation)", apyPct: Number(s.nativeApy.toFixed(1)), risk: "low", liquid: false },
           { venue: "Liquid staking (stCSPR, ~10% commission)", apyPct: liquid, risk: "low-medium", liquid: true },
         ],
-        source: "cspr.cloud(live): /supply + /auction-metrics",
-        method: "APY = annual_staking_rewards_issuance × total_supply ÷ total_active_stake; liquid = native × (1 − 0.10)",
+        source: `cspr.cloud(live, ${network}): /supply + /auction-metrics`,
+        method: APY_METHOD,
       });
     }),
   );
