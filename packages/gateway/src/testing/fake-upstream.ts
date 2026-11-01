@@ -31,6 +31,13 @@ export interface FakeUpstream {
   connections: number;
   /** Make the next createTransport() calls fail. */
   failConnections: boolean;
+  /**
+   * Like a remote upstream that stopped answering: every message the gateway sends
+   * fails with a network error, but no connection is closed.
+   */
+  unreachable: boolean;
+  /** Called after a tools/list page was computed and before it is returned (n counts list requests). */
+  afterListPage?: (n: number) => void | Promise<void>;
   addTool(tool: FakeTool): void;
   /** Send notifications/tools/list_changed on the live connection. */
   notifyToolsChanged(): Promise<void>;
@@ -53,6 +60,7 @@ export function createFakeUpstream(opts: { tools: FakeTool[]; pageSize?: number;
     listRequests: 0,
     connections: 0,
     failConnections: false,
+    unreachable: false,
     async createTransport() {
       if (fake.failConnections) throw new Error("fake upstream refuses to start");
       const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
@@ -62,6 +70,7 @@ export function createFakeUpstream(opts: { tools: FakeTool[]; pageSize?: number;
         const start = request.params?.cursor ? Number(request.params.cursor) : 0;
         const page = fake.tools.slice(start, start + pageSize);
         const next = start + pageSize < fake.tools.length ? String(start + pageSize) : undefined;
+        await fake.afterListPage?.(fake.listRequests);
         return {
           tools: page.map(t => ({ name: t.name, description: t.description ?? `${t.name} tool`, inputSchema: { type: "object" as const } })),
           ...(next === undefined ? {} : { nextCursor: next }),
@@ -80,6 +89,11 @@ export function createFakeUpstream(opts: { tools: FakeTool[]; pageSize?: number;
       await server.connect(serverSide);
       live = { server, transport: serverSide };
       fake.connections++;
+      const send = clientSide.send.bind(clientSide);
+      clientSide.send = async (message, options) => {
+        if (fake.unreachable) throw new TypeError("fetch failed");
+        return send(message, options);
+      };
       return clientSide;
     },
     addTool(tool) {

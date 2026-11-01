@@ -247,6 +247,29 @@ describe("upstream tool list (M37)", () => {
     });
   });
 
+  it("does not lose a tools/list_changed that arrives while the first listing is still running", async () => {
+    await withHarness(
+      {
+        config: allPriced,
+        onUpstream: upstream => {
+          upstream.afterListPage = n => {
+            if (n !== 1) return;
+            // The page being returned is already stale when this notification goes out.
+            upstream.addTool({ name: "late_tool" });
+            return upstream.notifyToolsChanged();
+          };
+        },
+      },
+      async h => {
+        await eventually(
+          async () => ((await h.rpc("tools/list")).body.result?.tools ?? []).some(t => t.name === "late_tool"),
+          3_000,
+          "late_tool to be listed",
+        );
+      },
+    );
+  });
+
   it("rejects a cursor it never issued", async () => {
     await withHarness({}, async h => {
       const res = await h.rpc("tools/list", { cursor: "abc" });
@@ -357,6 +380,79 @@ describe("upstream loss (M39)", () => {
       const free = await h.rpc("tools/call", { name: "free_tool", arguments: {} });
       assert.equal(free.body.result?.content?.[0]?.text, "ok:free_tool");
     });
+  });
+
+  it("reports a remote upstream that stops answering (no connection to lose) after failed pings, and recovers", async () => {
+    const sink = await startEventSink();
+    try {
+      await withHarness(
+        {
+          config: { eventsUrl: sink.url },
+          gateway: {
+            reconnect: { maxAttempts: 100, baseDelayMs: 20, maxDelayMs: 40 },
+            upstreamHealthCheck: { intervalMs: 20, timeoutMs: 200, maxFailures: 2 },
+          },
+        },
+        async h => {
+          await eventually(() => sink.types.includes("server-online"), 3_000, "server-online at start");
+          h.upstream.unreachable = true;
+          await eventually(async () => (await fetch(`${h.base}/health`)).status === 503, 3_000, "/health to report 503");
+          await eventually(() => sink.types.includes("server-offline"), 3_000, "server-offline");
+          const health = (await (await fetch(`${h.base}/health`)).json()) as { upstream: { error?: string } };
+          assert.match(health.upstream.error ?? "", /unreachable|fetch failed/);
+          const call = await h.rpc("tools/call", { name: "paid_tool", arguments: {} });
+          assert.equal(call.status, 503, "no 402 challenge for a call that cannot run");
+          h.upstream.unreachable = false;
+          await eventually(async () => (await fetch(`${h.base}/health`)).status === 200, 3_000, "/health to recover");
+          const free = await h.rpc("tools/call", { name: "free_tool", arguments: {} });
+          assert.equal(free.body.result?.content?.[0]?.text, "ok:free_tool");
+        },
+      );
+    } finally {
+      await sink.close();
+    }
+  });
+
+  it("counts connection-level failures of tool calls as well", async () => {
+    await withHarness(
+      {
+        gateway: {
+          reconnect: { maxAttempts: 100, baseDelayMs: 20, maxDelayMs: 40 },
+          upstreamHealthCheck: { intervalMs: 0, maxFailures: 2 },
+        },
+      },
+      async h => {
+        h.upstream.unreachable = true;
+        for (let i = 0; i < 2; i++) {
+          const res = await h.rpc("tools/call", { name: "free_tool", arguments: {} });
+          assert.equal(res.body.error?.code, -32603);
+        }
+        assert.equal((await fetch(`${h.base}/health`)).status, 503, "two failed calls in a row mark the upstream as lost");
+        h.upstream.unreachable = false;
+        await eventually(async () => (await fetch(`${h.base}/health`)).status === 200, 3_000, "/health to recover");
+      },
+    );
+  });
+
+  it("does not count tool errors the upstream answered with", async () => {
+    await withHarness(
+      {
+        tools: [
+          {
+            name: "free_tool",
+            handler: () => {
+              throw new Error("kaput");
+            },
+          },
+          { name: "paid_tool" },
+        ],
+        gateway: { upstreamHealthCheck: { intervalMs: 0, maxFailures: 2 } },
+      },
+      async h => {
+        for (let i = 0; i < 3; i++) await h.rpc("tools/call", { name: "free_tool", arguments: {} });
+        assert.equal((await fetch(`${h.base}/health`)).status, 200);
+      },
+    );
   });
 
   it("reports a fatal error when reconnecting gives up", async () => {

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { ENV_UPSTREAM_FIXTURE, osBaselineEnvironment } from "./testing/env.js";
-import { connectUpstream, listAllTools, MAX_TOOL_PAGES, upstreamEnvironment } from "./upstream.js";
+import { classifyUpstreamError, connectUpstream, listAllTools, MAX_TOOL_PAGES, upstreamEnvironment } from "./upstream.js";
 
 describe("stdio upstream environment (M34)", () => {
   it("only passes the SDK's default variables plus upstream.env, never the gateway's own secrets", () => {
@@ -62,5 +64,25 @@ describe("listAllTools (M37)", () => {
     let n = 0;
     const endless = { listTools: async () => page([`t${n}`], String(++n)) } as unknown as Client;
     await assert.rejects(listAllTools(endless, 1_000), new RegExp(`within ${MAX_TOOL_PAGES} pages`));
+  });
+});
+
+describe("classifyUpstreamError (M39)", () => {
+  it("counts only connection-level trouble as a failure", () => {
+    const timeout = new McpError(ErrorCode.RequestTimeout, "Request timed out");
+    const cases: Array<[unknown, boolean, string]> = [
+      [new TypeError("fetch failed"), false, "failure"],
+      [new StreamableHTTPError(502, "Bad Gateway"), false, "failure"],
+      [new McpError(ErrorCode.ConnectionClosed, "Connection closed"), false, "failure"],
+      [new Error("Not connected"), false, "failure"],
+      [timeout, true, "failure"],
+      [timeout, false, "neutral"],
+      [new McpError(ErrorCode.InvalidParams, "no such tool"), false, "answered"],
+      [new McpError(ErrorCode.MethodNotFound, "ping"), true, "answered"],
+      [new Error("something else"), false, "neutral"],
+    ];
+    for (const [err, timeoutIsFailure, expected] of cases) {
+      assert.equal(classifyUpstreamError(err, timeoutIsFailure), expected, String(err));
+    }
   });
 });

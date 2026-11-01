@@ -58,6 +58,7 @@ import {
   createUpstreamTransport,
   UpstreamSupervisor,
   UpstreamUnavailableError,
+  type HealthCheckPolicy,
   type ReconnectPolicy,
   type UpstreamState,
 } from "./upstream.js";
@@ -98,6 +99,8 @@ export interface GatewayOptions {
   receiptsPath?: string;
   /** Upstream reconnect policy. */
   reconnect?: Partial<ReconnectPolicy>;
+  /** Upstream liveness checks (periodic pings, failure threshold). */
+  upstreamHealthCheck?: Partial<HealthCheckPolicy>;
   /**
    * How long close() waits for calls in flight (a paid call may be settling) before it cuts
    * the remaining connections. Default: timeouts.facilitatorMs + upstreamMs + settleMs.
@@ -233,6 +236,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       createTransport: options.createUpstreamTransport ?? (() => createUpstreamTransport(cfg.upstream)),
       timeoutMs: cfg.timeouts.upstreamMs,
       reconnect: options.reconnect,
+      healthCheck: options.upstreamHealthCheck,
     },
     {
       onTools: tools => {

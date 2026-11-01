@@ -81,6 +81,8 @@ export async function startHarness(
     tools?: FakeTool[];
     pageSize?: number;
     gateway?: GatewayOptions;
+    /** Adjust the fake upstream before the gateway connects to it. */
+    onUpstream?: (upstream: FakeUpstream) => void;
   } = {},
 ): Promise<Harness> {
   const events: string[] = [];
@@ -90,6 +92,7 @@ export async function startHarness(
     pageSize: opts.pageSize,
     events,
   });
+  opts.onUpstream?.(upstream);
   const dir = mkdtempSync(join(tmpdir(), "cascet-gateway-test-"));
   const receiptsPath = join(dir, "receipts.jsonl");
   const cfg = testConfig({ facilitator: { url: facilitator.url }, ...opts.config });
