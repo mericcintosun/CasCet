@@ -84,7 +84,12 @@ payment: the payer can cancel it or spend it on another authorization.
   `acceptThirdPartySettlement` is on, otherwise recorded as `unknown`.
   Leave it off when several gateways share this `payTo` without sharing one
   facilitator nonce cache: a buyer could present one authorization to each.
-- Nonce canceled or used by another authorization: failed.
+- Nonce canceled by the payer: failed.
+- Nonce used without the matching transfer right after it: noted on the
+  receipt, but an `unknown` outcome stays `unknown`. That reading depends on
+  the token's event layout; a token upgrade that reordered the events would
+  otherwise turn the facilitator's own transfer into a "failure" and invite
+  the buyer to pay twice.
 
 ## Operations
 

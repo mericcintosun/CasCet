@@ -496,6 +496,32 @@ describe("settlement preemption", () => {
     );
   });
 
+  it("keeps an indeterminate settlement unknown when the nonce looks consumed elsewhere (layout-dependent evidence)", async () => {
+    const consumed: PreemptionOutcome = { kind: "consumed-elsewhere", eventIndex: 12, detail: "no transfer event follows the authorization" };
+    await withHarness({ config: { timeouts: { settleMs: 200 } }, gateway: { preemptionChecker: checker(consumed) } }, async h => {
+      h.facilitator.onSettle = () => ({ hang: true });
+      const { header } = await payFor(h, "paid_tool");
+      const res = await callPaid(h, "paid_tool", header);
+      assert.equal(res.body.error?.code, -32003, "the buyer is told not to pay again");
+      const [receipt] = await receipts(h);
+      assert.equal(receipt?.status, "unknown");
+      assert.match(String(receipt?.note), /event #12/);
+    });
+  });
+
+  it("keeps a reverted settlement failed and notes where the nonce went", async () => {
+    const consumed: PreemptionOutcome = { kind: "consumed-elsewhere", eventIndex: 7, detail: "the authorization paid a different recipient" };
+    await withHarness({ gateway: { preemptionChecker: checker(consumed) } }, async h => {
+      h.facilitator.onSettle = reverted;
+      const { header } = await payFor(h, "paid_tool");
+      const res = await callPaid(h, "paid_tool", header);
+      assert.equal(res.status, 402);
+      const [receipt] = await receipts(h);
+      assert.equal(receipt?.status, "failed");
+      assert.match(String(receipt?.note), /different recipient/);
+    });
+  });
+
   it("does not consult the chain for rejections that happen before submission", async () => {
     const seen: unknown[] = [];
     await withHarness({ gateway: { preemptionChecker: checker({ kind: "paid", eventIndex: 1 }, seen) } }, async h => {

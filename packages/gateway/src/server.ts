@@ -439,7 +439,14 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
    * - this exact authorization already paid payTo (settlement preemption, or a
    *   facilitator that lost track of its own transfer): settled by a third
    *   party when `settlement.acceptThirdPartySettlement` is on, else unknown;
-   * - the nonce was canceled or used by a different authorization: failed;
+   * - the payer canceled the nonce: failed (the cancel event alone proves the
+   *   transfer can never execute);
+   * - the nonce was used without the expected transfer right after it: noted,
+   *   but an unknown outcome stays unknown. That reading depends on the token's
+   *   event layout (AuthorizationUsed immediately followed by its Transfer); if
+   *   a token upgrade changed the order, the facilitator's own successful
+   *   transfer would look "consumed elsewhere", and calling it failed would
+   *   invite the buyer to pay twice;
    * - nothing found: the facilitator's verdict stands.
    */
   async function reconcile(outcome: SettleOutcome, auth: CasperAuthorization): Promise<SettleOutcome> {
@@ -470,10 +477,10 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
         case "canceled":
           return { ...outcome, status: "failed", note: `the payer canceled the authorization nonce on-chain (token event #${found.eventIndex})` };
         case "consumed-elsewhere":
+          // Layout-dependent evidence: never turns an unknown outcome into a failure.
           return {
             ...outcome,
-            status: "failed",
-            note: `the authorization nonce was used on-chain without paying this price to payTo (token event #${found.eventIndex}: ${found.detail})`,
+            note: `the authorization nonce was used on-chain without the expected transfer to payTo right after it (token event #${found.eventIndex}: ${found.detail})`,
           };
         case "not-found":
           return outcome;
