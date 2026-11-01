@@ -147,6 +147,26 @@ describe("TokenStateReader (recorded RPC fixtures)", () => {
     }
   });
 
+  test("one transport failure is retried (idempotent read); a second one is indeterminate", async () => {
+    const usedSeed = namedKey(fx.testnetContractResponse, "used_nonces");
+    const addr = dictionaryAddress(usedSeed, usedNonceItemKey(PAYER, TESTNET_NONCE));
+    let attempts = 0;
+    const flaky = () => (++attempts === 1 ? new Error("socket hang up") : fx.testnetUsedNonceResponse);
+    assert.equal(await testnetReader({ [`query_global_state ${addr}`]: flaky }).isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE), true);
+    assert.equal(attempts, 2);
+
+    const calls: string[] = [];
+    const down = testnetReader({ [`query_global_state ${addr}`]: new Error("ECONNREFUSED") }, calls);
+    await assert.rejects(down.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE), TokenStateError);
+    assert.equal(calls.filter(c => c.endsWith(addr)).length, 2, "exactly one retry");
+
+    // An answer from the node (here: a JSON-RPC error) is final and not retried.
+    const answered: string[] = [];
+    const failing = testnetReader({ [`query_global_state ${addr}`]: rpcError(-32003, "Query failed", "state root hash not available") }, answered);
+    await assert.rejects(failing.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE), TokenStateError);
+    assert.equal(answered.filter(c => c.endsWith(addr)).length, 1);
+  });
+
   test("an unexpected value type is rejected rather than guessed", async () => {
     const balSeed = namedKey(fx.testnetContractResponse, "balances");
     const reader = testnetReader({

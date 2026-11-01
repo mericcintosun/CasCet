@@ -1,5 +1,5 @@
 import casperSdk from "casper-js-sdk";
-import { isValueNotFound, type CasperRpc } from "./casper-rpc.js";
+import { isValueNotFound, RpcTransportError, type CasperRpc } from "./casper-rpc.js";
 
 const { byteHash } = casperSdk;
 
@@ -196,9 +196,24 @@ export class TokenStateReader {
     this.now = opts.now ?? Date.now;
   }
 
+  /**
+   * `query_global_state` for one key. Reads are idempotent, so a transport
+   * failure (timeout, network, HTTP error, garbage) is retried once before the
+   * caller has to answer "unavailable"; an answer from the node is never retried.
+   */
+  private async read(key: string): Promise<StoredValueEnvelope> {
+    const params = { key, path: [] };
+    try {
+      return await this.rpc.call<StoredValueEnvelope>("query_global_state", params);
+    } catch (err) {
+      if (!(err instanceof RpcTransportError)) throw err;
+      return await this.rpc.call<StoredValueEnvelope>("query_global_state", params);
+    }
+  }
+
   private async query(key: string, what: string): Promise<StoredValueEnvelope> {
     try {
-      return await this.rpc.call<StoredValueEnvelope>("query_global_state", { key, path: [] });
+      return await this.read(key);
     } catch (err) {
       throw new TokenStateError(`${what}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
@@ -207,7 +222,7 @@ export class TokenStateReader {
   /** Query a dictionary item; `undefined` when the node says it does not exist. */
   private async queryItem(address: string, what: string): Promise<StoredValueEnvelope | undefined> {
     try {
-      return await this.rpc.call<StoredValueEnvelope>("query_global_state", { key: address, path: [] });
+      return await this.read(address);
     } catch (err) {
       if (isValueNotFound(err)) return undefined;
       throw new TokenStateError(`${what}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
