@@ -29,8 +29,14 @@ published. Check the tool list again before you move the pin.
 
 - Node.js 22 or newer, pnpm, and a clone of this repository (the self-hosted
   facilitator lives in `tools/e2e`; it is not published to npm).
-- `@cascet/cli` **0.1.1 or later**. Version 0.1.0 is unsupported: it silently
-  ignores the allowlist variables used below.
+- The CasCet CLI of this checkout, **0.1.1 or later**
+  (`node packages/cli/dist/cli.js --version` after `pnpm build`). Every command
+  below runs it from there. Never run this example with the published
+  `@cascet/cli` 0.1.0: its gateway listens on every network interface, allows
+  any website (CORS `*`) and passes every unpriced tool through for free, so it
+  would serve `get-env` (the gateway's whole environment) and
+  `gzip-file-as-resource` (fetches any URL) to anyone who can reach it, and its
+  `connect` silently ignores the allowlist and budget variables.
 - Three Casper testnet key pairs (ed25519 PEM files):
   - **seller**: receives the payments;
   - **fee payer**: the facilitator pays the gas for each settlement from this
@@ -64,7 +70,7 @@ All commands run from the repository root.
 pnpm install --frozen-lockfile && pnpm build
 
 # 1. payTo is the seller's account hash ("00" + 64 hex), never a public key.
-npx @cascet/cli@latest account-hash "$(cat tools/e2e/keys/seller-data.pub)"
+node packages/cli/dist/cli.js account-hash "$(cat tools/e2e/keys/seller-data.pub)"
 #    Paste the printed value into "payTo" in examples/wrap-third-party/cascet.config.json.
 
 # 2. Start the self-hosted facilitator (testnet, 127.0.0.1:4501). It only
@@ -75,7 +81,7 @@ CASCET_SELLER_ACCOUNT_HASH=<the 00... value from step 1> \
 pnpm --filter @cascet/e2e facilitator
 
 # 3. In a second terminal, start the paid gateway (127.0.0.1:4410).
-npx @cascet/cli@latest wrap examples/wrap-third-party/cascet.config.json
+node packages/cli/dist/cli.js wrap examples/wrap-third-party/cascet.config.json
 
 # 4. Discover the paid tools (x402 Bazaar format).
 curl http://127.0.0.1:4410/.well-known/x402.json
@@ -87,7 +93,7 @@ CASCET_ALLOWED_PAYTO=<the 00... value from step 1> \
 CASCET_ALLOWED_ASSETS=hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3 \
 CASCET_MAX_PER_CALL=2500000000 \
 CASCET_MAX_SESSION=10000000000 \
-npx @cascet/cli@latest connect http://127.0.0.1:4410/mcp
+node packages/cli/dist/cli.js connect http://127.0.0.1:4410/mcp
 ```
 
 `connect` refuses to start without the payTo and asset allowlists and without

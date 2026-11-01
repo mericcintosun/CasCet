@@ -236,9 +236,15 @@ You'll see an agent pay `$0.10` for `analyze_portfolio`, which autonomously spen
 ### Monetize your own MCP server
 
 ```bash
-npx @cascet/cli@latest init                                 # writes cascet.config.json
-npx @cascet/cli@latest account-hash <your-public-key-hex>   # prints your payTo: "00" + account hash
+npx "@cascet/cli@^0.1.1" init                                 # writes cascet.config.json
+npx "@cascet/cli@^0.1.1" account-hash <your-public-key-hex>   # prints your payTo: "00" + account hash
 ```
+
+The version range keeps `npx` off the unsupported 0.1.0 (see
+[`SECURITY.md`](SECURITY.md)): until 0.1.1 is on npm, these commands stop with
+`ETARGET` instead of running 0.1.0. In a clone of this repository, run the
+checkout's CLI instead: `node packages/cli/dist/cli.js <command>` after
+`pnpm build`.
 
 Then edit `cascet.config.json`:
 
@@ -260,7 +266,7 @@ Then edit `cascet.config.json`:
   priced nor listed here is hidden from `tools/list` and rejected.
 
 ```bash
-npx @cascet/cli@latest wrap   # your server is now paid; the gateway listens on 127.0.0.1
+npx "@cascet/cli@^0.1.1" wrap   # your server is now paid; the gateway listens on 127.0.0.1
 ```
 
 **Which facilitator settles which token.**
@@ -298,7 +304,7 @@ CASCET_ALLOWED_PAYTO=00<seller account hash> \
 CASCET_ALLOWED_ASSETS=hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3 \
 CASCET_MAX_PER_CALL=1000000000 \
 CASCET_MAX_SESSION=5000000000 \
-npx @cascet/cli@latest connect http://127.0.0.1:4402/mcp
+npx "@cascet/cli@^0.1.1" connect http://127.0.0.1:4402/mcp
 ```
 
 Budgets are in raw token units: with 9 decimals, `1000000000` is one token. The
@@ -314,6 +320,7 @@ to start without the allowlists and both budgets.
 | `CASCET_ALLOWED_ASSETS` | yes¹ | comma-separated token package hashes |
 | `CASCET_MAX_PER_CALL` | yes² | most raw token units one call may cost |
 | `CASCET_MAX_SESSION` | yes² | most raw token units the whole session may spend (tracked per token) |
+| `CASCET_TIMEOUT_MS` | no | deadline per paid call in milliseconds, settlement included (default `30000`) |
 | `CASCET_TOOL_PINS` | no | file where the bridge records each gateway's tools (default `~/.cascet/tool-pins.json`); `--accept-tool-changes` accepts a changed tool list after you have reviewed it |
 
 ¹ Unless `CASCET_ALLOW_ANY_SELLER=1` or `--allow-any-seller`, which lets any
@@ -322,14 +329,17 @@ gateway name any payee and token. Not recommended.
 recommended.
 
 To use the bridge from an MCP host such as Claude Desktop or Cursor, register it
-as a stdio server with the same variables (use absolute paths):
+as a stdio server with the same variables (use absolute paths). Pin an exact
+version there and raise it on purpose: the host runs this command, which holds
+your wallet key, every time it starts, so it should never float on `@latest`
+and pick up whatever is published next.
 
 ```json
 {
   "mcpServers": {
     "cascet-paid": {
       "command": "npx",
-      "args": ["-y", "@cascet/cli@latest", "connect", "http://127.0.0.1:4402/mcp"],
+      "args": ["-y", "@cascet/cli@0.1.1", "connect", "http://127.0.0.1:4402/mcp"],
       "env": {
         "CASCET_KEY_PATH": "/absolute/path/to/agent.pem",
         "CASCET_NETWORK": "casper:casper-test",

@@ -22,7 +22,7 @@ body:
       description: The exact commands or actions that trigger the bug.
       placeholder: |
         1. pnpm install --frozen-lockfile && pnpm build
-        2. npx @cascet/cli@latest connect http://127.0.0.1:4410/mcp
+        2. node packages/cli/dist/cli.js connect http://127.0.0.1:4410/mcp
         3. ...
     validations:
       required: true

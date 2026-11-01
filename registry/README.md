@@ -19,11 +19,14 @@ The registry requires the remote URL to be publicly reachable over HTTPS, and a
 remote URL can belong to only one server name.
 
 1. On the host, clone this repository and build it
-   (`pnpm install --frozen-lockfile && pnpm build`).
+   (`pnpm install --frozen-lockfile && pnpm build`). The steps below run the
+   CLI of this checkout (`node packages/cli/dist/cli.js`), which must be 0.1.1
+   or later; never the npm 0.1.0, whose gateway serves every unpriced tool for
+   free on all interfaces.
 2. Copy [`casper-defi-data.config.json`](casper-defi-data.config.json), set
    `payTo` to the seller's account hash
-   (`npx @cascet/cli@latest account-hash <seller-public-key-hex>`, which prints
-   `00` + 64 hex), and fund the accounts as described in
+   (`node packages/cli/dist/cli.js account-hash <seller-public-key-hex>`, which
+   prints `00` + 64 hex), and fund the accounts as described in
    [`examples/wrap-third-party`](../examples/wrap-third-party/README.md#funding-testnet).
 3. Start the self-hosted facilitator next to the gateway. It listens on
    127.0.0.1:4501 and settles only payments to that seller in the testnet x402
@@ -40,7 +43,7 @@ remote URL can belong to only one server name.
 4. Start the gateway from the repository root. It stays on 127.0.0.1:4402:
 
    ```bash
-   npx @cascet/cli@latest wrap path/to/your/casper-defi-data.config.json
+   node packages/cli/dist/cli.js wrap path/to/your/casper-defi-data.config.json
    ```
 
 5. Put an HTTPS reverse proxy or tunnel in front of it, for example

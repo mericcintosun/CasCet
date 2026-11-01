@@ -81,18 +81,21 @@ need a CSPR.cloud access token in `CSPR_CLOUD_TOKEN`; without it they stay empty
 
 ## Option C — A real paid call on testnet, with your own keys
 
-Follow [`examples/wrap-third-party`](../examples/wrap-third-party/README.md). In
-short:
+Follow [`examples/wrap-third-party`](../examples/wrap-third-party/README.md). It
+runs the CLI of your checkout (`node packages/cli/dist/cli.js`, after
+`pnpm build`), never the unsupported npm 0.1.0. In short:
 
 1. Make three testnet keys (seller, facilitator fee payer, buyer), fund the fee
    payer from the faucet, and ask for test tokens for the buyer in a GitHub
    issue.
-2. `npx @cascet/cli@latest account-hash <seller public key>` gives the `payTo`.
+2. `node packages/cli/dist/cli.js account-hash <seller public key>` gives the
+   `payTo`.
 3. Start the self-hosted facilitator
    (`CASCET_FACILITATOR_KEY=… CASCET_SELLER_ACCOUNT_HASH=… pnpm --filter @cascet/e2e facilitator`),
-   then the gateway (`npx @cascet/cli@latest wrap examples/wrap-third-party/cascet.config.json`).
-4. Connect an MCP host with `npx @cascet/cli@latest connect` and the allowlist,
-   network and budget variables shown in the example.
+   then the gateway
+   (`node packages/cli/dist/cli.js wrap examples/wrap-third-party/cascet.config.json`).
+4. Connect an MCP host with `node packages/cli/dist/cli.js connect` and the
+   allowlist, network, budget and timeout variables shown in the example.
 
 Expected:
 
@@ -188,12 +191,16 @@ deploys and settlements are real.
 ## Monetize your own MCP server (the product surface)
 
 ```bash
-npx @cascet/cli@latest init                                 # writes cascet.config.json
-npx @cascet/cli@latest account-hash <your-public-key-hex>   # your payTo ("00" + account hash)
+npx "@cascet/cli@^0.1.1" init                                 # writes cascet.config.json
+npx "@cascet/cli@^0.1.1" account-hash <your-public-key-hex>   # your payTo ("00" + account hash)
 # edit cascet.config.json: upstream, payTo, asset, facilitator.url, prices,
 # pricing.freeTools and settleBeforeExecute where needed
-npx @cascet/cli@latest wrap                                 # your MCP server is now paid
+npx "@cascet/cli@^0.1.1" wrap                                 # your MCP server is now paid
 ```
+
+The quoted range never resolves to the unsupported 0.1.0: until 0.1.1 is on
+npm, `npx` stops with `ETARGET`. In a clone, `node packages/cli/dist/cli.js`
+runs the same commands from your checkout.
 
 Point an agent at it (all of these limits are required by `connect`):
 
@@ -204,7 +211,7 @@ CASCET_ALLOWED_PAYTO=00<seller account hash> \
 CASCET_ALLOWED_ASSETS=hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3 \
 CASCET_MAX_PER_CALL=1000000000 \
 CASCET_MAX_SESSION=5000000000 \
-npx @cascet/cli@latest connect http://127.0.0.1:4402/mcp
+npx "@cascet/cli@^0.1.1" connect http://127.0.0.1:4402/mcp
 ```
 
 The README sections
