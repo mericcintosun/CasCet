@@ -2,7 +2,6 @@ import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { NETWORK_CASPER_MAINNET, NETWORK_CASPER_TESTNET } from "@cascet/core";
 import {
-  DEFAULT_TIMEOUT_MS,
   normalizeAllowedPayTo,
   normalizeAssetHash,
   normalizeNetworks,
@@ -35,6 +34,16 @@ export interface ConnectInputs {
 
 export const CONNECT_USAGE =
   "usage: cascet connect <gateway-mcp-url> [--allow-any-seller] [--allow-unlimited-budget] [--accept-tool-changes]";
+
+/**
+ * Default deadline of `cascet connect` per forwarded call (CASCET_TIMEOUT_MS).
+ * Longer than the library's 30 s on purpose: a paid tools/call includes the
+ * on-chain settlement (the facilitator may wait up to 60 s for the transfer,
+ * and a gateway may spend 60 s on the tool plus 90 s on settling), and a
+ * deadline that fires after the payment was sent leaves the call paid but
+ * unanswered.
+ */
+export const DEFAULT_CONNECT_TIMEOUT_MS = 180_000;
 
 /**
  * Resolve `cascet connect` settings. Spending controls are mandatory: the payee
@@ -179,10 +188,10 @@ function attribute<T>(name: string, run: () => T): T {
 
 function parseTimeout(raw: string | undefined): number {
   const text = value(raw);
-  if (text === undefined) return DEFAULT_TIMEOUT_MS;
+  if (text === undefined) return DEFAULT_CONNECT_TIMEOUT_MS;
   const ms = /^[0-9]{1,10}$/.test(text) ? Number(text) : Number.NaN;
   if (!Number.isSafeInteger(ms) || ms <= 0 || ms > 2_147_483_647) {
-    throw new CliError(`CASCET_TIMEOUT_MS must be a whole number of milliseconds (e.g. 30000); got "${text}"`);
+    throw new CliError(`CASCET_TIMEOUT_MS must be a whole number of milliseconds (e.g. 180000); got "${text}"`);
   }
   return ms;
 }

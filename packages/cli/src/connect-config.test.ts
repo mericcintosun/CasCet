@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { checkGatewayUrl, resolveConnectConfig, type ConnectInputs } from "./connect-config.js";
+import { checkGatewayUrl, DEFAULT_CONNECT_TIMEOUT_MS, resolveConnectConfig, type ConnectInputs } from "./connect-config.js";
 import { checkArgs, parseArgs } from "./args.js";
 
 const SELLER = "00" + "a1".repeat(32);
@@ -48,10 +48,12 @@ describe("resolveConnectConfig", () => {
     assert.match(cfg.notices.join("\n"), /MAINNET payments enabled/);
   });
 
-  it("defaults to testnet, a 30 s timeout and ~/.cascet/tool-pins.json", () => {
+  it("defaults to testnet, a 180 s deadline (paid calls settle on-chain) and ~/.cascet/tool-pins.json", () => {
     const cfg = resolveConnectConfig(inputs());
     assert.deepEqual(cfg.paying.networks, ["casper:casper-test"]);
-    assert.equal(cfg.paying.timeoutMs, 30_000);
+    assert.equal(DEFAULT_CONNECT_TIMEOUT_MS, 180_000);
+    assert.equal(cfg.paying.timeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
+    assert.equal(cfg.bridge.timeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
     assert.equal(cfg.bridge.toolPins.path, "/home/agent/.cascet/tool-pins.json");
     assert.deepEqual(cfg.notices, []);
   });

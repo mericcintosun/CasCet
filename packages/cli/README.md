@@ -114,7 +114,7 @@ The same in an MCP host config:
 | `CASCET_ALLOWED_ASSETS` | Comma-separated CEP-18 package hashes to pay in. Required unless `--allow-any-seller`. |
 | `CASCET_MAX_PER_CALL` | Largest single payment, in raw token units. Required unless `--allow-unlimited-budget`. |
 | `CASCET_MAX_SESSION` | Total per token for this bridge session, in raw token units. Required unless `--allow-unlimited-budget`. |
-| `CASCET_TIMEOUT_MS` | Deadline per call in ms, default `30000`. A timed-out paid call may still settle. |
+| `CASCET_TIMEOUT_MS` | Deadline per call in ms, default `180000`. A paid call includes the on-chain settlement, which can take a minute or more, and a call that times out after its payment was sent may still settle, so keep this above the gateway's own tool and settlement timeouts. |
 | `CASCET_TOOL_PINS` | Tool pin file, default `~/.cascet/tool-pins.json`. |
 | `CASCET_ALLOW_ANY_SELLER=1` | Same as `--allow-any-seller`. |
 | `CASCET_ALLOW_UNLIMITED_BUDGET=1` | Same as `--allow-unlimited-budget`. |

@@ -130,7 +130,7 @@ connect env vars:
   CASCET_ALLOWED_ASSETS           comma-separated CEP-18 package hashes to pay in (required*)
   CASCET_MAX_PER_CALL             largest single payment, raw token units (required**)
   CASCET_MAX_SESSION              session total per token, raw token units (required**)
-  CASCET_TIMEOUT_MS               deadline per call in ms (default 30000)
+  CASCET_TIMEOUT_MS               deadline per call in ms (default 180000: a paid call settles on-chain)
   CASCET_TOOL_PINS                tool pin file (default ~/.cascet/tool-pins.json)
   CASCET_ALLOW_ANY_SELLER=1       same as --allow-any-seller
   CASCET_ALLOW_UNLIMITED_BUDGET=1 same as --allow-unlimited-budget
