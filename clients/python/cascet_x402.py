@@ -76,6 +76,7 @@ __all__ = [
     "AUTHORIZATION_STYLE_EXTRA_KEY",
     "LEGACY_AMOUNT_TOKENS",
     "CONTRACT_PAYEE_REASON",
+    "HOSTED_FACILITATOR_HOST",
     "X402Error",
     "ProtocolError",
     "PaymentAborted",
@@ -89,6 +90,7 @@ __all__ = [
     "normalize_asset",
     "default_authorization_style",
     "authorization_style",
+    "is_hosted_facilitator_url",
     "parse_amount",
     "validate_requirements",
     "select_requirement",
@@ -148,6 +150,10 @@ CONTRACT_PAYEE_REASON = (
     "contract-package payees cannot be settled by @make-software/casper-x402 1.0.0 facilitators; "
     "the payment would be credited to an account nobody controls"
 )
+#: Host of the hosted CSPR.cloud x402 facilitator. It takes the raw CSPR.cloud
+#: access key in the Authorization header (never "Bearer <key>") and settles
+#: only "cep3009-value" tokens.
+HOSTED_FACILITATOR_HOST = "x402-facilitator.cspr.cloud"
 
 _U64_MAX = 2**64 - 1
 _U256_LIMIT = 2**256
@@ -450,6 +456,24 @@ def authorization_style(requirements: Mapping[str, Any]) -> Optional[str]:
             f"({', '.join(AUTHORIZATION_STYLES)})"
         )
     return style
+
+
+def is_hosted_facilitator_url(url: str) -> bool:
+    """Whether `url` points at the hosted CSPR.cloud facilitator (HOSTED_FACILITATOR_HOST). False for anything unparsable.
+
+    That facilitator takes the raw access key in the Authorization header, never "Bearer <key>".
+    """
+    if not isinstance(url, str):
+        return False
+    try:
+        host = urlsplit(url.strip()).hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host.endswith("."):
+        host = host[:-1]
+    return host == HOSTED_FACILITATOR_HOST
 
 
 def _nonempty_text(value: Any) -> bool:

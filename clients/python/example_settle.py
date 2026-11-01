@@ -1,85 +1,298 @@
 """
 End-to-end proof: a Python program signs an x402 authorization with a Casper
-ed25519 key and settles it on-chain through the self-hosted CasCet facilitator.
-It moves real tokens (0.5 of the CasCet x402 token): testnet by default,
-mainnet with CASCET_NET=mainnet.
+ed25519 key and settles it on-chain through an x402 facilitator. It moves real
+tokens (0.5 of the chosen token): testnet by default, mainnet with
+CASCET_NET=mainnet.
 
-Testnet (run from the repo root; the script finds its files from any directory):
+Two tokens, one per authorization style. Both are signed the same way (the
+same EIP-712 TransferWithAuthorization message); they differ only in the
+argument the facilitator passes to the token's transfer_with_authorization:
+
+    legacy  CasCet X402 Token ("legacy-amount": `amount`), the default.
+            CasCet's self-hosted facilitator settles it. The hosted CSPR.cloud
+            facilitator sends `value`, which this token reverts on, so that
+            pairing is refused here.
+    wcspr   Wrapped CSPR on testnet ("cep3009-value": `value`), the official
+            CEP-3009 token. The hosted facilitator settles it. The payer needs
+            a WCSPR balance: wrap some testnet CSPR first.
+
+Both carry the symbol WCSPR; only the second is the official Wrapped CSPR.
+
+Testnet, CasCet token, self-hosted facilitator (run from the repo root; the
+script finds its files from any directory):
     pnpm --filter @cascet/e2e facilitator
     clients/python/venv/bin/python clients/python/example_settle.py
 
-Mainnet has no defaults: name the payer key and the payee yourself. The repo's
-demo key (tools/e2e/keys/agent.pem) is a throwaway key, and the old demo payee
-was the account of the single hot deployer key. Start the facilitator for
-mainnet as tools/e2e/src/run-facilitator.ts describes, then:
+Testnet, Wrapped CSPR, hosted facilitator:
+    CSPR_CLOUD_TOKEN=<CSPR.cloud access key> \\
+    clients/python/venv/bin/python clients/python/example_settle.py --asset wcspr --facilitator hosted
+
+Mainnet (CasCet token only) has no defaults: name the payer key and the payee
+yourself. The repo's demo key (tools/e2e/keys/agent.pem) is a throwaway key,
+and the old demo payee was the account of the single hot deployer key. Start
+the facilitator for mainnet as tools/e2e/src/run-facilitator.ts describes, then:
     CASCET_NET=mainnet CASCET_KEY_PATH=/secure/payer.pem \\
     CASCET_SELLER_ACCOUNT_HASH=00<seller account hash> CASCET_FACILITATOR_TOKEN=<token> \\
     clients/python/venv/bin/python clients/python/example_settle.py
 
+Options (each overrides its environment variable):
+    --asset legacy|wcspr          CASCET_ASSET (default legacy)
+    --facilitator URL|self|hosted FACILITATOR (default self, http://127.0.0.1:4501;
+                                  hosted is https://x402-facilitator.cspr.cloud)
+
 Environment:
     CASCET_NET=mainnet           settle on Casper mainnet instead of testnet
+    CASCET_ASSET                 legacy or wcspr (testnet only)
     CASCET_KEY_PATH              payer PEM; testnet default: tools/e2e/keys/agent.pem
                                  in this repo; required on mainnet
-    FACILITATOR                  facilitator base URL (default http://127.0.0.1:4501)
-    CASCET_FACILITATOR_TOKEN     sent as "Authorization: Bearer <token>" when set
-                                 (the facilitator requires it on mainnet)
+    FACILITATOR                  facilitator base URL, or self / hosted
+    CSPR_CLOUD_TOKEN             CSPR.cloud access key, sent raw ("Authorization:
+                                 <key>", never "Bearer") and only to the hosted
+                                 facilitator, which requires it
+    CASCET_FACILITATOR_TOKEN     token of any other facilitator, sent as
+                                 "Authorization: Bearer <token>" (the self-hosted
+                                 facilitator requires it on mainnet); never sent
+                                 to the hosted facilitator
     CASCET_SELLER_ACCOUNT_HASH   payee account hash (64 hex, 00 + 64 hex or
                                  account-hash-<hex>); testnet default: the demo
                                  seller; required on mainnet
+
+A key is never sent over plain http:// to a host other than this machine.
 """
+from __future__ import annotations
+
+import argparse
+import ipaddress
 import os
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Dict, Mapping, Optional, Sequence
+from urllib.parse import urlsplit
 
 import requests
 
-from cascet_x402 import CasperKey, build_payment_payload, normalize_pay_to
+from cascet_x402 import (
+    NETWORK_CASPER_MAINNET,
+    NETWORK_CASPER_TESTNET,
+    X402_VERSION,
+    CasperKey,
+    build_payment_payload,
+    is_hosted_facilitator_url,
+    normalize_pay_to,
+)
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
-MAINNET = os.environ.get("CASCET_NET") == "mainnet"
-FACILITATOR = os.environ.get("FACILITATOR", "http://127.0.0.1:4501").rstrip("/")
-
-if MAINNET:
-    NETWORK = "casper:casper"
-    TOKEN = "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41"
-    DEFAULT_SELLER = None  # no default payee on mainnet: CASCET_SELLER_ACCOUNT_HASH is required
-    DEFAULT_KEY_PATH = None  # no default payer on mainnet: CASCET_KEY_PATH is required
-    EXPLORER = "https://cspr.live/transaction/"
-else:
-    NETWORK = "casper:casper-test"
-    TOKEN = "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3"
-    DEFAULT_SELLER = "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36"
-    DEFAULT_KEY_PATH = REPO_ROOT / "tools" / "e2e" / "keys" / "agent.pem"
-    EXPLORER = "https://testnet.cspr.live/transaction/"
-
-AMOUNT = "500000000"  # 0.5 token (9 decimals)
+SELF_HOSTED_FACILITATOR_URL = "http://127.0.0.1:4501"
+HOSTED_FACILITATOR_URL = "https://x402-facilitator.cspr.cloud"
+FACILITATOR_SHORTHANDS = {"self": SELF_HOSTED_FACILITATOR_URL, "hosted": HOSTED_FACILITATOR_URL}
+TESTNET_DEMO_SELLER = "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36"
+TESTNET_DEMO_KEY_PATH = REPO_ROOT / "tools" / "e2e" / "keys" / "agent.pem"
+EXPLORERS = {
+    NETWORK_CASPER_TESTNET: "https://testnet.cspr.live/transaction/",
+    NETWORK_CASPER_MAINNET: "https://cspr.live/transaction/",
+}
+AMOUNT = "500000000"  # 0.5 token: both tokens have 9 decimals
 
 
-def missing_mainnet_settings() -> list:
-    """The variables mainnet needs that are unset (testnet has defaults for both)."""
-    if not MAINNET:
-        return []
-    return [name for name in ("CASCET_KEY_PATH", "CASCET_SELLER_ACCOUNT_HASH") if not os.environ.get(name, "").strip()]
+@dataclass(frozen=True)
+class Token:
+    package_hash: str
+    name: str  # the EIP-712 domain name: the token's on-chain name
+    symbol: str
+    style: str  # extra.authorizationStyle, as a CasCet gateway advertises it
 
 
-def seller_pay_to() -> str:
-    value = os.environ.get("CASCET_SELLER_ACCOUNT_HASH", "").strip()
+#: The tokens this example pays, by --asset and network.
+TOKENS: Dict[str, Dict[str, Token]] = {
+    "legacy": {
+        NETWORK_CASPER_TESTNET: Token(
+            "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3", "CasCet X402 Token", "WCSPR", "legacy-amount"
+        ),
+        NETWORK_CASPER_MAINNET: Token(
+            "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41", "CasCet X402 Token", "WCSPR", "legacy-amount"
+        ),
+    },
+    "wcspr": {
+        NETWORK_CASPER_TESTNET: Token(
+            "3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e", "Wrapped CSPR", "WCSPR", "cep3009-value"
+        ),
+    },
+}
+
+
+class ConfigError(ValueError):
+    """A setting is missing or invalid; nothing has been signed or sent."""
+
+
+@dataclass(frozen=True)
+class Settings:
+    network: str
+    asset: str
+    token: Token
+    facilitator_url: str
+    key_path: Path
+    seller: str
+    headers: Dict[str, str] = field(repr=False)  # holds the facilitator key
+
+
+def _is_loopback(host: Optional[str]) -> bool:
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def token_for(asset: Optional[str], network: str) -> Token:
+    """The token `asset` (legacy or wcspr; default legacy) names on `network`."""
+    name = (asset or "legacy").strip().lower()
+    if name not in TOKENS:
+        raise ConfigError(f"asset must be one of {', '.join(TOKENS)}, got {asset!r}")
+    token = TOKENS[name].get(network)
+    if token is None:
+        raise ConfigError(
+            f"asset {name} is only set up on {', '.join(TOKENS[name])}, not {network} "
+            "(the mainnet Wrapped CSPR is not verified for x402 settlement yet)"
+        )
+    return token
+
+
+def facilitator_url(value: Optional[str]) -> str:
+    """The facilitator base URL: `value` itself, or the URL of the shorthand self / hosted (default self)."""
+    raw = (value or "self").strip()
+    url = FACILITATOR_SHORTHANDS.get(raw.lower(), raw).rstrip("/")
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        host = None
+    if host is None or parts.scheme not in ("http", "https"):
+        raise ConfigError(f"the facilitator must be an http(s) URL, self or hosted; got {value!r}")
+    if parts.username is not None or parts.password is not None:
+        raise ConfigError("put the facilitator key in CSPR_CLOUD_TOKEN or CASCET_FACILITATOR_TOKEN, not in the URL")
+    return url
+
+
+def facilitator_headers(url: str, env: Mapping[str, str]) -> Dict[str, str]:
+    """
+    The Authorization header for the facilitator at `url`.
+
+    The hosted facilitator takes the raw CSPR.cloud access key (CSPR_CLOUD_TOKEN),
+    never "Bearer <key>"; any other facilitator gets CASCET_FACILITATOR_TOKEN as
+    "Bearer <token>" when it is set. Each secret only ever goes to its own kind
+    of facilitator, and never over plain http:// to another machine.
+    """
+    if is_hosted_facilitator_url(url):
+        key = (env.get("CSPR_CLOUD_TOKEN") or "").strip()
+        if not key:
+            raise ConfigError("the hosted facilitator needs your CSPR.cloud access key: set CSPR_CLOUD_TOKEN")
+        value = key  # raw: the hosted facilitator refuses "Bearer <key>"
+    else:
+        token = (env.get("CASCET_FACILITATOR_TOKEN") or "").strip()
+        if not token:
+            return {}
+        value = f"Bearer {token}"
+    parts = urlsplit(url)
+    if parts.scheme != "https" and not _is_loopback(parts.hostname):
+        raise ConfigError(
+            f"refusing to send the facilitator key over {parts.scheme}:// to {parts.hostname}: use https:// "
+            "(or a facilitator on this machine)"
+        )
+    return {"Authorization": value}
+
+
+def seller_pay_to(value: Optional[str], network: str) -> str:
+    """The payee: CASCET_SELLER_ACCOUNT_HASH, or the demo seller on testnet."""
+    value = (value or "").strip()
     if not value:
-        return DEFAULT_SELLER  # testnet only: main() stops first on mainnet
+        if network != NETWORK_CASPER_TESTNET:
+            raise ConfigError("CASCET_SELLER_ACCOUNT_HASH is required on mainnet")
+        return TESTNET_DEMO_SELLER
     if len(value) == 64:  # a bare account hash
         value = "00" + value
     try:
         pay_to = normalize_pay_to(value)
     except ValueError as exc:
-        raise SystemExit(f"CASCET_SELLER_ACCOUNT_HASH: {exc}") from None
+        raise ConfigError(f"CASCET_SELLER_ACCOUNT_HASH: {exc}") from None
     if not pay_to.startswith("00"):
-        raise SystemExit(f"CASCET_SELLER_ACCOUNT_HASH must be an account hash, got {value!r}")
+        raise ConfigError(f"CASCET_SELLER_ACCOUNT_HASH must be an account hash, got {value!r}")
     return pay_to
 
 
-def main() -> int:
-    missing = missing_mainnet_settings()
+def missing_mainnet_settings(env: Mapping[str, str]) -> list:
+    """The variables mainnet needs that are unset (testnet has defaults for both)."""
+    if env.get("CASCET_NET") != "mainnet":
+        return []
+    return [name for name in ("CASCET_KEY_PATH", "CASCET_SELLER_ACCOUNT_HASH") if not (env.get(name) or "").strip()]
+
+
+def load_settings(argv: Optional[Sequence[str]], env: Mapping[str, str]) -> Settings:
+    """Read the options and the environment; raises ConfigError (or SystemExit for bad options)."""
+    parser = argparse.ArgumentParser(
+        prog="example_settle.py",
+        description="Sign an x402 authorization in Python and settle it through a facilitator (moves real tokens).",
+    )
+    parser.add_argument("--asset", help="legacy (CasCet X402 Token, the default) or wcspr (testnet Wrapped CSPR)")
+    parser.add_argument("--facilitator", help="facilitator base URL, or self (the default) or hosted")
+    args = parser.parse_args(argv)
+
+    network = NETWORK_CASPER_MAINNET if env.get("CASCET_NET") == "mainnet" else NETWORK_CASPER_TESTNET
+    asset = (args.asset or env.get("CASCET_ASSET") or "legacy").strip().lower()
+    token = token_for(asset, network)
+    url = facilitator_url(args.facilitator or env.get("FACILITATOR"))
+    if is_hosted_facilitator_url(url) and token.style != "cep3009-value":
+        raise ConfigError(
+            f"the hosted facilitator settles only cep3009-value tokens, and the {token.name} is {token.style}: its "
+            "settle would revert and burn the gas. Use CasCet's self-hosted facilitator (--facilitator self)."
+        )
+    headers = facilitator_headers(url, env)
+    seller = seller_pay_to(env.get("CASCET_SELLER_ACCOUNT_HASH"), network)
+    key_path = (env.get("CASCET_KEY_PATH") or "").strip()
+    if not key_path and network != NETWORK_CASPER_TESTNET:
+        raise ConfigError("CASCET_KEY_PATH is required on mainnet")
+    return Settings(
+        network=network,
+        asset=asset,
+        token=token,
+        facilitator_url=url,
+        key_path=Path(key_path) if key_path else TESTNET_DEMO_KEY_PATH,
+        seller=seller,
+        headers=headers,
+    )
+
+
+def requirements_for(token: Token, network: str, seller: str) -> dict:
+    """The payment requirements a CasCet gateway would advertise in its 402 (`accepts[0]`)."""
+    return {
+        "scheme": "exact",
+        "network": network,
+        "amount": AMOUNT,
+        "asset": token.package_hash,
+        "payTo": seller,
+        "maxTimeoutSeconds": 300,
+        "extra": {
+            "name": token.name,
+            "symbol": token.symbol,
+            "version": "1",
+            "decimals": "9",
+            "authorizationStyle": token.style,
+        },
+    }
+
+
+def settle_request(payment_payload: dict, requirements: dict) -> dict:
+    """The body of a facilitator's /settle (and /verify): an x402 v2 SettleRequest."""
+    return {"x402Version": X402_VERSION, "paymentPayload": payment_payload, "paymentRequirements": requirements}
+
+
+def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] = None) -> int:
+    env = os.environ if env is None else env
+    missing = missing_mainnet_settings(env)
     if missing:
         print(
             "set CASCET_KEY_PATH and CASCET_SELLER_ACCOUNT_HASH explicitly for mainnet "
@@ -88,45 +301,37 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    seller = seller_pay_to()
-    # The payment requirements a CasCet gateway would advertise in its 402 (`accepts[0]`).
-    requirements = {
-        "scheme": "exact",
-        "network": NETWORK,
-        "amount": AMOUNT,
-        "asset": TOKEN,
-        "payTo": seller,
-        "maxTimeoutSeconds": 300,
-        "extra": {"name": "CasCet X402 Token", "symbol": "WCSPR", "version": "1", "decimals": "9"},
-    }
-
-    key_path = Path(os.environ.get("CASCET_KEY_PATH", "").strip() or DEFAULT_KEY_PATH)
-    if not key_path.is_file():
-        hint = "" if MAINNET else "\nset CASCET_KEY_PATH or run `pnpm --filter @cascet/e2e gen-keys`"
-        print(f"payer key not found: {key_path}{hint}", file=sys.stderr)
+    try:
+        settings = load_settings(argv, env)
+    except ConfigError as exc:
+        print(f"configuration error: {exc}", file=sys.stderr)
         return 1
-    key = CasperKey.from_pem(key_path)
-    print(f"[python] network: {NETWORK}")
+    requirements = requirements_for(settings.token, settings.network, settings.seller)
+
+    if not settings.key_path.is_file():
+        hint = "" if settings.network == NETWORK_CASPER_MAINNET else "\nset CASCET_KEY_PATH or run `pnpm --filter @cascet/e2e gen-keys`"
+        print(f"payer key not found: {settings.key_path}{hint}", file=sys.stderr)
+        return 1
+    key = CasperKey.from_pem(settings.key_path)
+    print(f"[python] network: {settings.network}")
+    print(f"[python] token: {settings.token.name} ({settings.token.style}) {settings.token.package_hash[:10]}...")
+    print(f"[python] facilitator: {settings.facilitator_url}")
     print(f"[python] payer account-hash: {key.account_hash_hex()}")
 
     # Signs the EIP-712 authorization; the payload carries `accepted` (the full requirements).
     payment_payload = build_payment_payload(key=key, requirements=requirements)
-    print(f"[python] signed authorization for {AMOUNT} raw units -> {seller[:12]}...")
+    print(f"[python] signed authorization for {AMOUNT} raw units -> {settings.seller[:12]}...")
 
-    headers = {}
-    token = os.environ.get("CASCET_FACILITATOR_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     try:
         resp = requests.post(
-            f"{FACILITATOR}/settle",
-            json={"paymentPayload": payment_payload, "paymentRequirements": requirements},
-            headers=headers,
-            timeout=120,  # the facilitator waits for the deploy to execute
-            allow_redirects=False,  # never hand the signed authorization to another origin
+            f"{settings.facilitator_url}/settle",
+            json=settle_request(payment_payload, requirements),
+            headers=settings.headers,
+            timeout=120,  # the facilitator waits for the transaction to execute
+            allow_redirects=False,  # never hand the signed authorization (or the key) to another origin
         )
     except requests.RequestException as exc:
-        print(f"\n❌ facilitator unreachable at {FACILITATOR}: {exc}")
+        print(f"\n❌ facilitator unreachable at {settings.facilitator_url}: {exc}")
         return 1
 
     try:
@@ -144,11 +349,11 @@ def main() -> int:
         print(f"\n❌ facilitator refused the settle (HTTP {resp.status_code}): {reason}")
         return 1
     if data.get("success"):
-        tx = data["transaction"]
-        net_label = "MAINNET" if MAINNET else "testnet"
+        tx = data.get("transaction")
+        net_label = "MAINNET" if settings.network == NETWORK_CASPER_MAINNET else "testnet"
         print(f"\n✅ Python-signed x402 payment settled on Casper {net_label}")
         print(f"   tx: {tx}")
-        print(f"   {EXPLORER}{tx}")
+        print(f"   {EXPLORERS[settings.network]}{tx}")
         return 0
     print(f"\n❌ settle failed: {data.get('errorReason')} — {data.get('errorMessage') or ''}")
     return 1

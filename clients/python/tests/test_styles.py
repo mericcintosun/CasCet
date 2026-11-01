@@ -38,6 +38,7 @@ class TestStyleConstants(unittest.TestCase):
         self.assertEqual(x402.AUTHORIZATION_STYLES, ("legacy-amount", "cep3009-value"))
         self.assertEqual(x402.AUTHORIZATION_STYLE_EXTRA_KEY, "authorizationStyle")
         self.assertEqual(dict(x402.LEGACY_AMOUNT_TOKENS), {TOKEN: TESTNET, OTHER_TOKEN: MAINNET})
+        self.assertEqual(x402.HOSTED_FACILITATOR_HOST, "x402-facilitator.cspr.cloud")
 
     def test_legacy_tokens_are_read_only(self):
         with self.assertRaises(TypeError):
@@ -395,6 +396,36 @@ class TestFromEnvPreferStyles(unittest.TestCase):
             self.from_env({**self.env, "CASCET_ALLOWED_PAYTO": f"{SELLER},hash-{'cd' * 32}"})
         self.assertIn("CASCET_ALLOWED_PAYTO", str(ctx.exception))
         self.assertIn("contract-package payee", str(ctx.exception))
+
+
+class TestHostedFacilitatorUrl(unittest.TestCase):
+    def test_recognizes_the_hosted_facilitator(self):
+        for url in (
+            "https://x402-facilitator.cspr.cloud",
+            "https://x402-facilitator.cspr.cloud/",
+            "https://X402-Facilitator.CSPR.cloud/settle",
+            "https://x402-facilitator.cspr.cloud.:443",
+            " https://x402-facilitator.cspr.cloud ",
+            "http://x402-facilitator.cspr.cloud",
+        ):
+            with self.subTest(url=url):
+                self.assertTrue(x402.is_hosted_facilitator_url(url))
+
+    def test_everything_else(self):
+        for url in (
+            "http://127.0.0.1:4501",
+            "https://x402-facilitator.cspr.cloud.evil.test",
+            "https://evil.test/x402-facilitator.cspr.cloud",
+            "https://x402-facilitator.cspr.cloud@evil.test",
+            "https://evil-x402-facilitator.cspr.cloud",
+            "x402-facilitator.cspr.cloud",
+            "https://[::1",
+            "",
+            None,
+            42,
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(x402.is_hosted_facilitator_url(url))
 
 
 if __name__ == "__main__":
