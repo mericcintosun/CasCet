@@ -4,7 +4,12 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { v4 as uuidv4 } from "uuid";
 import { ErrorCode, McpError, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { HTTPProcessResult, HTTPRequestContext, HTTPResponseInstructions } from "@x402/core/server";
+import type {
+  HTTPProcessResult,
+  HTTPRequestContext,
+  HTTPResponseInstructions,
+  VerifiedPaymentCancelOptions,
+} from "@x402/core/server";
 import { decodePaymentRequiredHeader, decodePaymentSignatureHeader, encodePaymentRequiredHeader } from "@x402/core/http";
 import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import {
@@ -476,17 +481,40 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     return undefined;
   }
 
+  /**
+   * Tell x402 that verified work ended before settlement: it runs the
+   * verified-payment cancellation hooks and, for schemes that refund on
+   * cancel, settles the refund. "exact" defines no refund, so nothing moves
+   * on-chain. Never throws: the caller is already answering a failure.
+   */
+  async function cancelVerified(verified: VerifiedPayment, tool: string, options: VerifiedPaymentCancelOptions): Promise<void> {
+    try {
+      const refund = await verified.cancellationDispatcher.cancel(options);
+      if (refund && !refund.success) {
+        log.warn(`[x402] cancel settlement for ${logSafe(tool, 80)} failed: ${logSafe(refund.errorReason ?? "unknown reason")}`);
+      }
+    } catch (err) {
+      log.warn(`[x402] canceling the verified payment for ${logSafe(tool, 80)} failed: ${logSafe(err)}`);
+    }
+  }
+
   /** Settle a verified payment and classify the outcome. */
   async function settle(call: PaidCall): Promise<SettleOutcome> {
     let result;
     try {
+      // A flow that already settled before the handler (x402 "upfront"; no CasCet route uses it) echoes
+      // that settlement instead of settling twice.
       result = await call.table.http.processSettlement(
         call.verified.paymentPayload,
         call.verified.paymentRequirements,
         call.verified.declaredExtensions,
         { request: call.context },
+        undefined,
+        call.verified.beforeHandlerSettlement,
       );
     } catch (err) {
+      // FacilitatorResponseError (including our SettlementIndeterminateError and x402's
+      // FacilitatorTimeoutError) or anything unexpected: the transfer may still execute.
       const reason =
         err instanceof SettlementIndeterminateError ? err.message : `facilitator gave an unusable settle answer: ${errorMessage(err)}`;
       return reconcile({ status: "unknown", reason }, call);
@@ -665,11 +693,13 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
         _meta: { cascet: { paymentId: call.paymentId, server: cfg.name } },
       });
     } catch (err) {
+      await cancelVerified(call.verified, call.name, { reason: "handler_threw", error: err });
       sendUpstreamError(res, call.id, err, " (not charged)");
       return;
     }
     if (result.isError) {
       // Not charged: the authorization is left unsettled (and stays single-use here).
+      await cancelVerified(call.verified, call.name, { reason: "handler_failed" });
       res.json(rpcResult(call.id, result));
       return;
     }
@@ -691,6 +721,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       await upstream.ping(Math.min(cfg.timeouts.upstreamMs, UPSTREAM_PING_TIMEOUT_MS));
     } catch (err) {
       log.warn(`[upstream] not answering before settlement of ${logSafe(call.name, 80)}: ${logSafe(err)}`);
+      await cancelVerified(call.verified, call.name, { reason: "handler_failed", error: err, responseStatus: 503 });
       res.status(503).json(rpcError(call.id, RPC_INTERNAL_ERROR, "upstream MCP server is unavailable; nothing was charged"));
       return;
     }
@@ -822,6 +853,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     }
     if (processed.type === "no-payment-required" || !authorization || !requested || !reservation) {
       if (reservation) replay.release(reservation);
+      if (processed.type === "payment-verified") await cancelVerified(processed, name, { reason: "after_verify_aborted" });
       log.error(`[x402] payment for ${logSafe(name, 80)} was not verified as expected; refusing to run it`);
       res.status(500).json(rpcError(id, RPC_INTERNAL_ERROR, "payment could not be verified; the tool was not run and nothing was charged"));
       return;
@@ -834,6 +866,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       const reason = mismatch ?? "verified payment is in another asset";
       // Nothing ran and nothing was charged: the authorization stays the buyer's.
       replay.release(reservation);
+      await cancelVerified(processed, name, { reason: "after_verify_aborted" });
       log.error(`[x402] ${logSafe(reason)} for ${logSafe(name, 80)}; refusing to run it`);
       const { headers, paymentRequired } = await challenge(req, snapshot, name, reason);
       res.status(402).set(headers).json(rpcError(id, RPC_PAYMENT_REQUIRED, `payment rejected: ${reason}`, paymentRequired));
@@ -856,6 +889,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       });
     } catch (err) {
       replay.release(reservation);
+      await cancelVerified(processed, name, { reason: "after_verify_aborted", error: err });
       log.error(`[receipts] cannot record a paid call to ${logSafe(name, 80)} (${logSafe(err)}); refusing to run it`);
       res
         .status(503)

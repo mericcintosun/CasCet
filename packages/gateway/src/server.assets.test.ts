@@ -6,7 +6,12 @@ import { describe, it, mock } from "node:test";
 import casperSdk from "casper-js-sdk";
 import { x402Client } from "@x402/core/client";
 import { encodePaymentSignatureHeader } from "@x402/core/http";
-import { x402HTTPResourceServer } from "@x402/core/server";
+import {
+  FacilitatorTimeoutError,
+  x402HTTPResourceServer,
+  x402ResourceServer,
+  type VerifiedPaymentCancelOptions,
+} from "@x402/core/server";
 import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { ExactCasperScheme } from "@x402/casper/exact/client";
 import { DEFAULT_FACILITATOR_URL, type CascetConfig } from "@cascet/core";
@@ -49,6 +54,26 @@ async function withTwoAssets(opts: Parameters<typeof startTwoAssetHarness>[0], r
   } finally {
     await h.close();
   }
+}
+
+/** Record every cancel() of x402's verified-payment cancellation dispatchers (reasons, in order). */
+function spyOnCancellations(): { reasons: Array<VerifiedPaymentCancelOptions["reason"]>; restore: () => void } {
+  const reasons: Array<VerifiedPaymentCancelOptions["reason"]> = [];
+  const original = x402ResourceServer.prototype.createPaymentCancellationDispatcher;
+  const patched = mock.method(
+    x402ResourceServer.prototype,
+    "createPaymentCancellationDispatcher",
+    function (this: x402ResourceServer, ...args: Parameters<typeof original>) {
+      const dispatcher = original.apply(this, args);
+      return {
+        cancel: (options: VerifiedPaymentCancelOptions) => {
+          reasons.push(options.reason);
+          return dispatcher.cancel(options);
+        },
+      };
+    },
+  );
+  return { reasons, restore: () => patched.mock.restore() };
 }
 
 /** Facilitator calls other than /supported, as "<op> <asset>" lines. */
@@ -280,6 +305,25 @@ describe("settlement outcomes stay with the token of the payment", () => {
     });
   });
 
+  it("maps x402's own facilitator timeout on settle to an unknown receipt in the payment's token", async () => {
+    const patched = mock.method(x402ResourceServer.prototype, "settlePayment", async () => {
+      throw new FacilitatorTimeoutError("settle", 90_000);
+    });
+    try {
+      await withTwoAssets({}, async h => {
+        const { header } = await payInAsset(h, "paid_tool", LEGACY_TOKEN);
+        const res = await callPaid(h, "paid_tool", header);
+        assert.equal(res.body.error?.code, -32003);
+        assert.match(res.body.error?.message ?? "", /do not pay again/);
+        const [receipt] = await receipts(h);
+        assert.deepEqual([receipt?.status, receipt?.asset, receipt?.amountRaw], ["unknown", LEGACY_TOKEN, LEGACY_PRICE_RAW]);
+        assert.match(String(receipt?.note), /Facilitator settle request timed out after 90000ms/);
+      });
+    } finally {
+      patched.mock.restore();
+    }
+  });
+
   it("asks the on-chain check about the events of the token the payment was in", async () => {
     const seen: PreemptionQuery[] = [];
     const checker: SettlementPreemptionChecker = {
@@ -304,6 +348,112 @@ describe("settlement outcomes stay with the token of the payment", () => {
       const [receipt] = await receipts(h);
       assert.deepEqual([receipt?.status, receipt?.asset], ["failed", WCSPR_TOKEN]);
     });
+  });
+});
+
+describe("x402 2.29 flow hooks", () => {
+  it("tells x402 when verified work ends before settlement: a throwing tool, a tool that returns an error", async () => {
+    const cancels = spyOnCancellations();
+    const tools = [
+      {
+        name: "boom",
+        handler: () => {
+          throw new Error("upstream exploded");
+        },
+      },
+      { name: "soft", handler: () => ({ isError: true, content: [{ type: "text" as const, text: "nope" }] }) },
+      { name: "paid_tool" },
+    ];
+    const config = { pricing: { tools: { boom: { price: "$0.01" }, soft: { price: "$0.01" }, paid_tool: { price: "$0.01" } } } };
+    try {
+      await withTwoAssets({ config, tools }, async h => {
+        const boom = await payInAsset(h, "boom", WCSPR_TOKEN);
+        assert.match((await callPaid(h, "boom", boom.header)).body.error?.message ?? "", /not charged/);
+        const soft = await payInAsset(h, "soft", LEGACY_TOKEN);
+        assert.equal((await callPaid(h, "soft", soft.header)).body.result?.isError, true);
+        const ok = await payInAsset(h, "paid_tool", WCSPR_TOKEN);
+        assert.equal((await callPaid(h, "paid_tool", ok.header)).status, 200);
+        assert.deepEqual(cancels.reasons, ["handler_threw", "handler_failed"], "a settled call is never canceled");
+        assert.deepEqual([h.legacy.count("settle"), h.cep.count("settle")], [0, 1]);
+        assert.deepEqual(await receipts(h).then(list => list.map(receipt => receipt.tool)), ["paid_tool"]);
+      });
+    } finally {
+      cancels.restore();
+    }
+  });
+
+  it("cancels a verified payment the gateway refuses to run, and one whose upstream is gone before settlement", async () => {
+    const cancels = spyOnCancellations();
+    const original = x402HTTPResourceServer.prototype.processHTTPRequest;
+    let tamper = true;
+    const patched = mock.method(
+      x402HTTPResourceServer.prototype,
+      "processHTTPRequest",
+      async function (this: x402HTTPResourceServer, ...args: Parameters<typeof original>) {
+        const result = await original.apply(this, args);
+        return tamper && result.type === "payment-verified"
+          ? { ...result, paymentRequirements: { ...result.paymentRequirements, amount: "1" } }
+          : result;
+      },
+    );
+    const config = { pricing: { tools: { paid_tool: { price: "$0.01", settleBeforeExecute: true } } } };
+    try {
+      await withTwoAssets({ config, gateway: { reconnect: { maxAttempts: 50, baseDelayMs: 1_000, maxDelayMs: 1_000 } } }, async h => {
+        const refused = await payInAsset(h, "paid_tool", WCSPR_TOKEN);
+        assert.match((await callPaid(h, "paid_tool", refused.header)).body.error?.message ?? "", /amount does not equal the configured price/);
+        assert.deepEqual(cancels.reasons, ["after_verify_aborted"]);
+
+        tamper = false;
+        const { header } = await payInAsset(h, "paid_tool", WCSPR_TOKEN);
+        h.cep.onVerify = async call => {
+          h.upstream.failConnections = true;
+          await h.upstream.crash();
+          return { json: { isValid: true, payer: call.body?.paymentPayload?.payload?.authorization?.from } };
+        };
+        const res = await callPaid(h, "paid_tool", header);
+        assert.equal(res.status, 503);
+        assert.deepEqual(cancels.reasons, ["after_verify_aborted", "handler_failed"]);
+        assert.equal(h.cep.count("settle"), 0);
+      });
+    } finally {
+      patched.mock.restore();
+      cancels.restore();
+    }
+  });
+
+  it("passes a before-handler settlement through to x402, which echoes it instead of settling twice", async () => {
+    const UPFRONT_TX = "77".repeat(32);
+    const original = x402HTTPResourceServer.prototype.processHTTPRequest;
+    const patched = mock.method(
+      x402HTTPResourceServer.prototype,
+      "processHTTPRequest",
+      async function (this: x402HTTPResourceServer, ...args: Parameters<typeof original>) {
+        const result = await original.apply(this, args);
+        if (result.type !== "payment-verified") return result;
+        // As if the route had used x402's "upfront" flow: settled before the handler.
+        return {
+          ...result,
+          beforeHandlerSettlement: {
+            phase: "before-handler" as const,
+            flow: "upfront" as const,
+            result: { success: true, transaction: UPFRONT_TX, network: result.paymentRequirements.network, payer: PAYER },
+            requirements: result.paymentRequirements,
+          },
+        };
+      },
+    );
+    try {
+      await withTwoAssets({}, async h => {
+        const { header } = await payInAsset(h, "paid_tool", WCSPR_TOKEN);
+        const res = await callPaid(h, "paid_tool", header);
+        assert.equal(res.status, 200, JSON.stringify(res.body));
+        assert.equal(h.cep.count("settle"), 0, "no second settlement");
+        const [receipt] = await receipts(h);
+        assert.deepEqual([receipt?.status, receipt?.txHash, receipt?.asset], ["settled", UPFRONT_TX, WCSPR_TOKEN]);
+      });
+    } finally {
+      patched.mock.restore();
+    }
   });
 });
 
