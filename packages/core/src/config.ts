@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DEFAULT_FACILITATOR_URL, DEFAULT_GATEWAY_PORT, NETWORK_CASPER_TESTNET } from "./constants.js";
+import { payToSchema } from "./payto.js";
 
 /** Upstream MCP server the gateway wraps: a local stdio process or a remote HTTP endpoint. */
 export const upstreamSchema = z.discriminatedUnion("type", [
@@ -37,8 +38,16 @@ export const cascetConfigSchema = z.object({
   name: z.string(),
   upstream: upstreamSchema,
   network: z.string().default(NETWORK_CASPER_TESTNET),
-  /** Casper public key that receives payments (or the RevenueSplit contract's account). */
-  payTo: z.string(),
+  /**
+   * Who receives payments: the serialized Casper Key the x402 exact scheme signs over.
+   * Use the payee's ACCOUNT HASH ("00" + 64 hex, or "account-hash-<64 hex>"), or a contract
+   * package such as a RevenueSplit ("hash-<64 hex>" or "package-hash-<64 hex>", stored as
+   * "01" + 64 hex). Never a public key: get the account hash with
+   * `npx @cascet/cli account-hash <public-key>`. Note: @make-software/casper-x402 1.0.0
+   * settles every payTo as an account hash, so a contract-package payee needs a facilitator
+   * that supports contract payees.
+   */
+  payTo: payToSchema,
   asset: assetSchema,
   facilitator: z.object({
     url: z.string().url().default(DEFAULT_FACILITATOR_URL),
