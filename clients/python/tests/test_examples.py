@@ -133,6 +133,9 @@ class TestSettleSettings(unittest.TestCase):
             (["--asset", "wcspr", "--facilitator", "hosted"], {}),
             ([], {"CASCET_ASSET": "wcspr", "FACILITATOR": "hosted"}),
             (["--asset", "wcspr"], {"CASCET_ASSET": "legacy", "FACILITATOR": HOSTED + "/"}),
+            (["--asset", "wcspr"], {}),  # no facilitator named: the hosted one is the default for wcspr
+            ([], {"CASCET_ASSET": "wcspr"}),
+            (["--asset", "wcspr", "--facilitator", ""], {"FACILITATOR": ""}),
         ):
             with self.subTest(argv=argv, env=extra_env):
                 settings = example_settle.load_settings(argv, {**env, **extra_env})
@@ -140,6 +143,28 @@ class TestSettleSettings(unittest.TestCase):
                 self.assertEqual(settings.facilitator_url, HOSTED)
                 self.assertEqual(settings.headers, {"Authorization": "cspr-cloud-key"})
                 self.assertNotIn("cspr-cloud-key", repr(settings))
+
+    def test_default_facilitator_follows_the_token_style(self):
+        self.assertEqual(example_settle.SELF_HOSTED_SETTLE_STYLES, ("legacy-amount",))
+        self.assertEqual(example_settle.HOSTED_SETTLE_STYLES, ("cep3009-value",))
+        self.assertEqual(example_settle.default_facilitator(example_settle.token_for("legacy", TESTNET)), "self")
+        self.assertEqual(example_settle.default_facilitator(example_settle.token_for("wcspr", TESTNET)), "hosted")
+
+    def test_wcspr_alone_needs_the_cspr_cloud_key(self):
+        # `--asset wcspr` alone picks the hosted facilitator, which needs CSPR_CLOUD_TOKEN; the error says why.
+        for env in ({}, {"CASCET_FACILITATOR_TOKEN": "self-hosted-secret"}):
+            with self.subTest(env=sorted(env)):
+                with self.assertRaises(example_settle.ConfigError) as ctx:
+                    example_settle.load_settings(["--asset", "wcspr"], env)
+                message = str(ctx.exception)
+                self.assertIn("CSPR_CLOUD_TOKEN", message)
+                self.assertIn("default", message)
+                self.assertIn("does not settle cep3009-value tokens", message)
+                self.assertNotIn("self-hosted-secret", message)
+        # A facilitator named explicitly keeps the plain message.
+        with self.assertRaises(example_settle.ConfigError) as ctx:
+            example_settle.load_settings(["--asset", "wcspr", "--facilitator", "hosted"], {})
+        self.assertNotIn("default", str(ctx.exception))
 
     def test_command_line_wins(self):
         settings = example_settle.load_settings(["--asset", "legacy", "--facilitator", "self"],
@@ -152,6 +177,36 @@ class TestSettleSettings(unittest.TestCase):
                 with self.assertRaises(example_settle.ConfigError) as ctx:
                     example_settle.load_settings(["--facilitator", "hosted"], {"CSPR_CLOUD_TOKEN": "k", **network_env})
                 self.assertIn("settles only cep3009-value tokens", str(ctx.exception))
+                self.assertIn("User error 64658", str(ctx.exception))
+
+    def test_wcspr_is_never_sent_to_the_self_hosted_facilitator(self):
+        # CasCet's self-hosted facilitator passes `amount`: Wrapped CSPR would revert and burn the gas limit.
+        env = {"CSPR_CLOUD_TOKEN": "cspr-cloud-key", "CASCET_FACILITATOR_TOKEN": "self-hosted-secret"}
+        for argv, extra_env in (
+            (["--asset", "wcspr", "--facilitator", "self"], {}),
+            (["--asset", "wcspr", "--facilitator", "http://localhost:4501"], {}),
+            (["--asset", "wcspr", "--facilitator", SELF_HOSTED + "/"], {}),
+            (["--asset", "wcspr", "--facilitator", "https://facilitator.example.test"], {}),
+            (["--asset", "wcspr"], {"FACILITATOR": "self"}),
+            ([], {"CASCET_ASSET": "wcspr", "FACILITATOR": "http://[::1]:4501"}),
+        ):
+            with self.subTest(argv=argv, env=extra_env):
+                with self.assertRaises(example_settle.ConfigError) as ctx:
+                    example_settle.load_settings(argv, {**env, **extra_env})
+                message = str(ctx.exception)
+                self.assertIn("self-hosted facilitator", message)
+                self.assertIn("User error 64658", message)
+                self.assertIn("--facilitator hosted", message)
+                self.assertNotIn("cspr-cloud-key", message)
+                self.assertNotIn("self-hosted-secret", message)
+
+    def test_wcspr_on_the_self_hosted_facilitator_once_it_settles_both_styles(self):
+        # The day SELF_HOSTED_SETTLE_STYLES gains cep3009-value, Wrapped CSPR may go there, and does by default.
+        with mock.patch.object(example_settle, "SELF_HOSTED_SETTLE_STYLES", x402.AUTHORIZATION_STYLES):
+            for argv in (["--asset", "wcspr", "--facilitator", "self"], ["--asset", "wcspr"]):
+                with self.subTest(argv=argv):
+                    settings = example_settle.load_settings(argv, {})
+                    self.assertEqual((settings.token.package_hash, settings.facilitator_url), (WCSPR, SELF_HOSTED))
 
     def test_mainnet(self):
         env = {"CASCET_NET": "mainnet", "CASCET_KEY_PATH": "/secure/payer.pem", "CASCET_SELLER_ACCOUNT_HASH": SELLER[2:]}
@@ -202,6 +257,15 @@ class TestSettleMain(unittest.TestCase):
         self.assertEqual(body["paymentPayload"]["payload"]["authorization"]["from"], TEST_KEY.account_address())
         self.assertIn("https://testnet.cspr.live/transaction/" + "ab" * 32, out)
 
+    def test_wcspr_alone_settles_through_the_hosted_facilitator(self):
+        env = {"CASCET_KEY_PATH": write_test_pem(self), "CSPR_CLOUD_TOKEN": "cspr-cloud-key"}
+        code, post, out = self.run_main(["--asset", "wcspr"], env)
+        self.assertEqual(code, 0, out)
+        (url,), kwargs = post.call_args
+        self.assertEqual(url, HOSTED + "/settle")
+        self.assertEqual(kwargs["headers"], {"Authorization": "cspr-cloud-key"})
+        self.assertEqual(kwargs["json"]["paymentRequirements"]["asset"], WCSPR)
+
     def test_legacy_settles_through_the_self_hosted_facilitator_with_a_bearer_token(self):
         env = {"CASCET_KEY_PATH": write_test_pem(self), "CASCET_FACILITATOR_TOKEN": "self-hosted-secret"}
         code, post, out = self.run_main([], env)
@@ -216,6 +280,12 @@ class TestSettleMain(unittest.TestCase):
         for argv, env in (
             (["--facilitator", "hosted"], {"CASCET_KEY_PATH": pem, "CSPR_CLOUD_TOKEN": "k"}),  # legacy on hosted
             (["--asset", "wcspr", "--facilitator", "hosted"], {"CASCET_KEY_PATH": pem}),  # no CSPR.cloud key
+            # Wrapped CSPR on CasCet's self-hosted facilitator (it passes `amount`)...
+            (["--asset", "wcspr", "--facilitator", "self"], {"CASCET_KEY_PATH": pem, "CSPR_CLOUD_TOKEN": "k"}),
+            (["--asset", "wcspr", "--facilitator", "http://localhost:4501"], {"CASCET_KEY_PATH": pem}),
+            ([], {"CASCET_KEY_PATH": pem, "CASCET_ASSET": "wcspr", "FACILITATOR": "self"}),
+            # ...and with no facilitator named, the hosted default without its key.
+            (["--asset", "wcspr"], {"CASCET_KEY_PATH": pem}),
             (["--asset", "wcspr"], {"CASCET_KEY_PATH": pem, "CASCET_NET": "mainnet",
                                     "CASCET_SELLER_ACCOUNT_HASH": SELLER}),  # no mainnet WCSPR
             ([], {"CASCET_NET": "mainnet"}),  # mainnet without explicit key and payee

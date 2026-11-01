@@ -44,7 +44,7 @@ A CasCet gateway can sell in two kinds of x402 token, and a 402 may offer both:
 | Style | Tokens | The facilitator settles with |
 |---|---|---|
 | `legacy-amount` | CasCet's own x402 token ("CasCet X402 Token", testnet `cb65a928…`, mainnet `8dd4f1aa…`) | `transfer_with_authorization(…, amount, …)`, through CasCet's self-hosted facilitator |
-| `cep3009-value` | CEP-3009 tokens such as the official Wrapped CSPR (testnet `3d80df21…`) | `transfer_with_authorization(…, value, …)`, for example through the hosted CSPR.cloud facilitator |
+| `cep3009-value` | CEP-3009 tokens such as the official Wrapped CSPR (testnet `3d80df21…`) | `transfer_with_authorization(…, value, …)`, through the hosted CSPR.cloud facilitator |
 
 Both styles verify the same EIP-712 message, so the client signs them the same
 way: the only difference is the token's EIP-712 domain (its name and package
@@ -53,8 +53,10 @@ hash). The gateway names the style in each `accepts` entry as
 refuses an entry whose style it does not know (`build_payment_payload` raises
 `ProtocolError`, a `ValueError`), and can prefer one style over the other
 (`prefer_styles`). An entry without the field (a gateway from before it
-existed) is still paid. Facilitators do not rely on the field: the token's own
-on-chain ABI decides how a payment is settled.
+existed) is still paid. Facilitators do not rely on the field. The hosted
+facilitator always passes `value`, and CasCet's self-hosted facilitator passes
+`amount` for now. A token sent to the facilitator of the other style reverts
+(User error 64658) and still burns the whole gas limit of the settle.
 
 ## Pay a CasCet gateway
 
@@ -207,20 +209,28 @@ Run from the repo root (the script finds its files from any directory):
 pnpm --filter @cascet/e2e facilitator     # in one terminal (fee-sponsored)
 clients/python/venv/bin/python clients/python/example_settle.py
 
-# Wrapped CSPR on testnet, through the hosted CSPR.cloud facilitator
+# Wrapped CSPR on testnet, through the hosted CSPR.cloud facilitator (its default)
 CSPR_CLOUD_TOKEN=<CSPR.cloud access key> \
-clients/python/venv/bin/python clients/python/example_settle.py --asset wcspr --facilitator hosted
+clients/python/venv/bin/python clients/python/example_settle.py --asset wcspr
 ```
 
 This moves 0.5 of the chosen token. The script builds the payment requirements
 a CasCet gateway would advertise (with `extra.authorizationStyle`), signs them
-and posts them to the facilitator's `/settle`. It refuses, before signing
-anything, to send the CasCet X402 Token to the hosted facilitator: that
-facilitator sends `value`, so the token's settle would revert and burn the gas.
-A Wrapped CSPR payment needs a WCSPR balance on the payer's account (wrap some
-testnet CSPR first). On 2026-11-01 the hosted facilitator's testnet fee payer
-held less CSPR than a settle needs, so hosted testnet settles fail until it is
-refilled.
+and posts them to the facilitator's `/settle`. Each token goes to the
+facilitator that settles its style, and the script refuses the other pairing
+before signing anything, because that settle would revert (User error 64658)
+and still burn the whole gas limit:
+
+| Token | Settled by | Refused |
+|---|---|---|
+| `legacy` (CasCet X402 Token, `legacy-amount`) | CasCet's self-hosted facilitator (the default) | the hosted facilitator, which passes `value` |
+| `wcspr` (Wrapped CSPR, `cep3009-value`) | the hosted facilitator (the default) | CasCet's self-hosted facilitator, which passes `amount` for now (`SELF_HOSTED_SETTLE_STYLES`) |
+
+Any facilitator URL other than the hosted one is taken for CasCet's
+self-hosted facilitator. A Wrapped CSPR payment needs a WCSPR balance on the
+payer's account (wrap some testnet CSPR first). On 2026-11-01 the hosted
+facilitator's testnet fee payer held less CSPR than a settle needs, so hosted
+testnet settles fail until it is refilled.
 
 `CASCET_NET=mainnet` moves real funds on mainnet, with the CasCet X402 Token
 only, and there it has no defaults: the script stops unless `CASCET_KEY_PATH`
@@ -231,7 +241,7 @@ Settings:
 | Option / variable | Meaning |
 |---|---|
 | `--asset`, `CASCET_ASSET` | `legacy` (default: the CasCet X402 Token) or `wcspr` (the official Wrapped CSPR, testnet only). |
-| `--facilitator`, `FACILITATOR` | Facilitator base URL, or `self` (default: `http://127.0.0.1:4501`) or `hosted` (`https://x402-facilitator.cspr.cloud`). |
+| `--facilitator`, `FACILITATOR` | Facilitator base URL, or `self` (`http://127.0.0.1:4501`, the default for `legacy`) or `hosted` (`https://x402-facilitator.cspr.cloud`, the default for `wcspr`). |
 | `CSPR_CLOUD_TOKEN` | CSPR.cloud access key for the hosted facilitator. Sent raw as `Authorization: <key>` (never `Bearer`), and to the hosted facilitator only. |
 | `CASCET_FACILITATOR_TOKEN` | Token of any other facilitator, sent as `Authorization: Bearer …`. The self-hosted facilitator requires it on mainnet. Never sent to the hosted facilitator. |
 | `CASCET_KEY_PATH` | Payer key. Testnet default: `tools/e2e/keys/agent.pem`. Required on mainnet. |

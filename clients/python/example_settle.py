@@ -9,23 +9,29 @@ same EIP-712 TransferWithAuthorization message); they differ only in the
 argument the facilitator passes to the token's transfer_with_authorization:
 
     legacy  CasCet X402 Token ("legacy-amount": `amount`), the default.
-            CasCet's self-hosted facilitator settles it. The hosted CSPR.cloud
-            facilitator sends `value`, which this token reverts on, so that
-            pairing is refused here.
+            CasCet's self-hosted facilitator settles it and is its default
+            facilitator. The hosted CSPR.cloud facilitator sends `value`,
+            which this token reverts on, so that pairing is refused here.
     wcspr   Wrapped CSPR on testnet ("cep3009-value": `value`), the official
-            CEP-3009 token. The hosted facilitator settles it. The payer needs
-            a WCSPR balance: wrap some testnet CSPR first.
+            CEP-3009 token. The hosted facilitator settles it and is its
+            default facilitator. CasCet's self-hosted facilitator sends
+            `amount` for now (SELF_HOSTED_SETTLE_STYLES), which this token
+            reverts on, so that pairing is refused too. The payer needs a
+            WCSPR balance: wrap some testnet CSPR first.
 
 Both carry the symbol WCSPR; only the second is the official Wrapped CSPR.
+Any facilitator other than the hosted one is taken for CasCet's self-hosted
+facilitator. A refused pairing stops before anything is signed: its settle
+would revert (User error 64658) and still burn the whole gas limit.
 
 Testnet, CasCet token, self-hosted facilitator (run from the repo root; the
 script finds its files from any directory):
     pnpm --filter @cascet/e2e facilitator
     clients/python/venv/bin/python clients/python/example_settle.py
 
-Testnet, Wrapped CSPR, hosted facilitator:
+Testnet, Wrapped CSPR, hosted facilitator (--facilitator hosted is implied):
     CSPR_CLOUD_TOKEN=<CSPR.cloud access key> \\
-    clients/python/venv/bin/python clients/python/example_settle.py --asset wcspr --facilitator hosted
+    clients/python/venv/bin/python clients/python/example_settle.py --asset wcspr
 
 Mainnet (CasCet token only) has no defaults: name the payer key and the payee
 yourself. The repo's demo key (tools/e2e/keys/agent.pem) is a throwaway key,
@@ -37,7 +43,8 @@ the facilitator for mainnet as tools/e2e/src/run-facilitator.ts describes, then:
 
 Options (each overrides its environment variable):
     --asset legacy|wcspr          CASCET_ASSET (default legacy)
-    --facilitator URL|self|hosted FACILITATOR (default self, http://127.0.0.1:4501;
+    --facilitator URL|self|hosted FACILITATOR (default: self for legacy, hosted
+                                  for wcspr; self is http://127.0.0.1:4501,
                                   hosted is https://x402-facilitator.cspr.cloud)
 
 Environment:
@@ -67,7 +74,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Sequence
+from typing import Dict, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 import requests
@@ -94,6 +101,16 @@ EXPLORERS = {
     NETWORK_CASPER_MAINNET: "https://cspr.live/transaction/",
 }
 AMOUNT = "500000000"  # 0.5 token: both tokens have 9 decimals
+#: Authorization styles CasCet's self-hosted facilitator settles. It passes the
+#: `amount` argument to transfer_with_authorization (tools/e2e/src/settlement.ts),
+#: so a cep3009-value token such as Wrapped CSPR would revert with User error
+#: 64658 and burn the settle's whole gas limit; its preflight (balance, nonce,
+#: token name) passes on such a token and does not catch this. Add
+#: "cep3009-value" once the self-hosted facilitator settles by the token's
+#: on-chain style.
+SELF_HOSTED_SETTLE_STYLES: Tuple[str, ...] = ("legacy-amount",)
+#: Authorization styles the hosted CSPR.cloud facilitator settles: it passes `value`.
+HOSTED_SETTLE_STYLES: Tuple[str, ...] = ("cep3009-value",)
 
 
 @dataclass(frozen=True)
@@ -178,6 +195,36 @@ def facilitator_url(value: Optional[str]) -> str:
     return url
 
 
+def default_facilitator(token: Token) -> str:
+    """The facilitator used when none is named: self, or hosted for a token the self-hosted one does not settle."""
+    return "self" if token.style in SELF_HOSTED_SETTLE_STYLES else "hosted"
+
+
+def check_facilitator_settles(token: Token, url: str) -> None:
+    """
+    Refuse a facilitator that would settle `token` with the wrong argument.
+
+    Such a settle reverts (User error 64658) and still burns its whole gas
+    limit, so it is refused before anything is signed. The hosted facilitator
+    settles HOSTED_SETTLE_STYLES; any other facilitator is taken for CasCet's
+    self-hosted one, which settles SELF_HOSTED_SETTLE_STYLES.
+    """
+    if is_hosted_facilitator_url(url):
+        if token.style not in HOSTED_SETTLE_STYLES:
+            raise ConfigError(
+                f"the hosted facilitator settles only cep3009-value tokens (it passes `value`), and the {token.name} "
+                f"is {token.style} (it takes `amount`): its settle would revert (User error 64658) and burn the gas "
+                "limit. Use CasCet's self-hosted facilitator (--facilitator self)."
+            )
+    elif token.style not in SELF_HOSTED_SETTLE_STYLES:
+        raise ConfigError(
+            "any facilitator other than the hosted one is taken for CasCet's self-hosted facilitator, which settles "
+            f"only {', '.join(SELF_HOSTED_SETTLE_STYLES)} tokens for now: it passes `amount`, and the {token.name} is "
+            f"{token.style} (it takes `value`), so its settle would revert (User error 64658) and burn the gas limit. "
+            "Use --facilitator hosted (with CSPR_CLOUD_TOKEN)."
+        )
+
+
 def facilitator_headers(url: str, env: Mapping[str, str]) -> Dict[str, str]:
     """
     The Authorization header for the facilitator at `url`.
@@ -238,19 +285,26 @@ def load_settings(argv: Optional[Sequence[str]], env: Mapping[str, str]) -> Sett
         description="Sign an x402 authorization in Python and settle it through a facilitator (moves real tokens).",
     )
     parser.add_argument("--asset", help="legacy (CasCet X402 Token, the default) or wcspr (testnet Wrapped CSPR)")
-    parser.add_argument("--facilitator", help="facilitator base URL, or self (the default) or hosted")
+    parser.add_argument(
+        "--facilitator", help="facilitator base URL, or self or hosted (default: self for legacy, hosted for wcspr)"
+    )
     args = parser.parse_args(argv)
 
     network = NETWORK_CASPER_MAINNET if env.get("CASCET_NET") == "mainnet" else NETWORK_CASPER_TESTNET
     asset = (args.asset or env.get("CASCET_ASSET") or "legacy").strip().lower()
     token = token_for(asset, network)
-    url = facilitator_url(args.facilitator or env.get("FACILITATOR"))
-    if is_hosted_facilitator_url(url) and token.style != "cep3009-value":
+    chosen = args.facilitator or env.get("FACILITATOR")
+    url = facilitator_url(chosen or default_facilitator(token))
+    check_facilitator_settles(token, url)
+    try:
+        headers = facilitator_headers(url, env)
+    except ConfigError as exc:
+        if chosen or not is_hosted_facilitator_url(url):
+            raise
         raise ConfigError(
-            f"the hosted facilitator settles only cep3009-value tokens, and the {token.name} is {token.style}: its "
-            "settle would revert and burn the gas. Use CasCet's self-hosted facilitator (--facilitator self)."
-        )
-    headers = facilitator_headers(url, env)
+            f"{exc}. The hosted facilitator is the default for the {token.name}: CasCet's self-hosted facilitator "
+            f"does not settle {token.style} tokens yet"
+        ) from None
     seller = seller_pay_to(env.get("CASCET_SELLER_ACCOUNT_HASH"), network)
     key_path = (env.get("CASCET_KEY_PATH") or "").strip()
     if not key_path and network != NETWORK_CASPER_TESTNET:
