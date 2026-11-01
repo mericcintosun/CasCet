@@ -163,12 +163,12 @@ This is not a portable pattern dressed in Casper branding — it leans on things
 - **[`/build`](https://cascet.vercel.app/build) — a config-generator wizard.** Fill
   in your server, payment account and per-tool prices; get a schema-validated
   `cascet.config.json` (copy/download) plus the exact `npx @cascet/cli` commands.
-- **[`/withdraw`](https://cascet.vercel.app/withdraw) — wallet-signed revenue.**
+- **[`/withdraw`](https://cascet.vercel.app/withdraw) — wallet-signed revenue (testnet).**
   Connect Casper Wallet and call `release` on the `RevenueSplit` to pull your
   weighted share on-chain, linked to cspr.live.
 - **[`/explorer`](https://cascet.vercel.app/explorer) — on-chain-backed.** Rebuilds
   the whole x402 economy (revenue leaderboard, top tools, cascade stats, anchored
-  receipts) straight from the **ReceiptRegistry**'s `record` transactions — not an
+  receipts) straight from the testnet **ReceiptRegistry**'s `record` transactions — not an
   off-chain cache.
 - **x402 Bazaar discovery** — every gateway serves a Bazaar-compatible catalog at
   `/.well-known/x402.json`, so any x402 agent can *discover* CasCet-monetized MCP
@@ -456,8 +456,11 @@ account exactly **400 WCSPR** (its 40%), zeroing its releasable balance.
 
 **PaymentChannel — prepaid channels for high-frequency agents.** An agent opens a
 channel with one CEP-18 deposit, then authorizes usage off-chain by signing
-monotonic vouchers (`channel_id || cumulative`); the payee redeems the latest
-voucher on-chain, verified in-contract with Casper's native `verify_signature`.
+monotonic vouchers over
+`CASCET_PAYMENT_CHANNEL_VOUCHER_V2 || contract package hash || channel_id || cumulative`,
+so a voucher cannot be replayed on another deployment or chain; the payee
+redeems the latest voucher on-chain, verified in-contract with Casper's native
+`verify_signature`.
 Two on-chain writes cover thousands of paid calls. Unit-tested with real ed25519
 signatures (redeem, forged-voucher rejection, expiry guard).
 
@@ -476,8 +479,8 @@ to them.
 
 This is a real project, not a hackathon throwaway — there's a live [roadmap section on the site](https://cascet.vercel.app/#roadmap) and a concrete path to a business.
 
-- **Shipped (Qualification · Jul 2026):** 5 Odra contracts; real x402 settlement (no mock); the `CascadeController` primitive (budget tree + recursive attribution); an autonomous LLM buyer; a live dashboard, an interactive cascade playground, a proposed [x402-MCP spec](docs/x402-mcp-spec.md); and the CLI + libraries **published on npm** (`npx @cascet/cli`).
-- **Shipped (Final round · Jul 2026) — live on Casper mainnet:** the full contract set redeployed to **Casper mainnet** after an internal pre-mainnet review; real x402 settled from both the **TypeScript and Python** clients; the **`CascadeController` primitive proven on mainnet** (budget cap → attribution up the tree → over-budget revert → refund); an on-chain-backed dashboard + explorer (rebuilt from the ReceiptRegistry); a `/build` config wizard; and a wallet-signed `RevenueSplit` withdraw.
+- **Shipped (Qualification · Jul 2026):** 5 Odra contracts; real x402 settlement (no mock); the `CascadeController` primitive (budget tree + recursive attribution); an autonomous LLM buyer; a live dashboard, an interactive cascade playground, and a proposed [x402-MCP spec](docs/x402-mcp-spec.md).
+- **Shipped (Final round · Jul 2026) — live on Casper mainnet:** the full contract set redeployed to **Casper mainnet** after an internal pre-mainnet review; real x402 settled from both the **TypeScript and Python** clients; the **`CascadeController` primitive proven on mainnet** (budget cap → attribution up the tree → over-budget revert → refund); an on-chain-backed dashboard + explorer (rebuilt from the testnet ReceiptRegistry); a `/build` config wizard; a `/withdraw` page for `RevenueSplit` `release` on testnet (its wallet signing was fixed in the hardening after the 2026-10-20 review); and the CLI + libraries **published on npm** (`@cascet/*` 0.1.0).
 - **Now — hardening:** fixing the findings of the 2026-10-20 internal review, `@cascet/*` 0.1.1, and an external security audit before more value flows through the system.
 - **Q4 2026 — monetization:** **a protocol take-rate on settled volume** (the business model); a hosted CasCet control plane (register a server, get a paid endpoint + dashboard in one step); per-second / streaming price schemes for high-frequency agent traffic; a public metrics API.
 - **2027 — the agent-economy layer:** an agent-facing pricing-discovery API and a Bazaar marketplace of paid MCP tools; on-chain reputation for tools and agents; cross-chain settlement — CasCet as default rails for machine-to-machine commerce.
