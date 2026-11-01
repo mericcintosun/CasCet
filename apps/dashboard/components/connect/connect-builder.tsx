@@ -116,11 +116,12 @@ export function ConnectBuilder() {
   const params = useSearchParams();
   const [prefill] = React.useState(() => readConnectPrefill(params));
   const [s, setS] = React.useState<FormState>(() => initialState(prefill));
-  // A prefilled page shows no "all set" assurance until the user has edited a field or confirmed the notice.
+  // A prefilled page shows no "all set" assurance until the user has changed one of the fields the link
+  // filled in, or confirmed the notice. Typing the key path (never prefilled) does not count.
   const [edited, setEdited] = React.useState(false);
   const [prefillChecked, setPrefillChecked] = React.useState(false);
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => {
-    setEdited(true);
+    if ((prefill.appliedFields as readonly string[]).includes(k)) setEdited(true);
     setS((p) => ({ ...p, [k]: v }));
   };
   const prefilled = prefill.applied.length > 0;

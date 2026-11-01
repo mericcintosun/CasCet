@@ -160,6 +160,7 @@ test("a /connect link prefills fields and lists them, but never switches to main
   assert.equal(p.requestedMainnet, true);
   assert.equal("network" in p, false);
   assert.deepEqual(p.applied, ["gateway URL", "sellers", "token", "token decimals", "per-call cap"]);
+  assert.deepEqual(p.appliedFields, ["gatewayUrl", "sellers", "assets", "decimals", "perCall"]);
 
   assert.deepEqual(readConnectPrefill(null).applied, []);
   assert.deepEqual(readConnectPrefill(new URLSearchParams()).applied, []);
@@ -168,6 +169,7 @@ test("a /connect link prefills fields and lists them, but never switches to main
   assert.equal(readConnectPrefill(new URLSearchParams({ decimals: "19" })).decimals, null);
   assert.deepEqual(readConnectPrefill(new URLSearchParams({ decimals: "x" })).applied, []);
   assert.deepEqual(readConnectPrefill(new URLSearchParams({ session: "5" })).applied, ["session cap"]);
+  assert.deepEqual(readConnectPrefill(new URLSearchParams({ session: "5" })).appliedFields, ["session"]);
 });
 
 test("empty safety fields warn and add NO opt-out unless the user explicitly chose it", () => {

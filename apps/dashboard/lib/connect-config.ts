@@ -195,7 +195,11 @@ export interface ConnectPrefill {
   requestedMainnet: boolean;
   /** Names of the fields the link filled in, for the "verify before copying" notice. */
   applied: string[];
+  /** The same fields as form keys, so the page knows when the user has touched one of them. */
+  appliedFields: PrefillField[];
 }
+
+export type PrefillField = "gatewayUrl" | "sellers" | "assets" | "decimals" | "perCall" | "session";
 
 const splitEntries = (v: string): string[] => [...new Set(v.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean))];
 
@@ -207,15 +211,26 @@ export function readConnectPrefill(params: { get(name: string): string | null } 
   const decimals = /^\d{1,2}$/.test(get("decimals")) && Number(get("decimals")) <= 18 ? get("decimals") : null;
   const perCall = get("perCall");
   const session = get("session");
-  const applied = [
-    gatewayUrl && "gateway URL",
-    sellers.length > 0 && (sellers.length > 1 ? "sellers" : "seller"),
-    assets.length > 0 && (assets.length > 1 ? "tokens" : "token"),
-    decimals !== null && "token decimals",
-    perCall && "per-call cap",
-    session && "session cap",
-  ].filter((x): x is string => Boolean(x));
-  return { gatewayUrl, sellers, assets, decimals, perCall, session, requestedMainnet: get("network") === "mainnet", applied };
+  const filled: Array<[PrefillField, string] | false> = [
+    Boolean(gatewayUrl) && ["gatewayUrl", "gateway URL"],
+    sellers.length > 0 && ["sellers", sellers.length > 1 ? "sellers" : "seller"],
+    assets.length > 0 && ["assets", assets.length > 1 ? "tokens" : "token"],
+    decimals !== null && ["decimals", "token decimals"],
+    Boolean(perCall) && ["perCall", "per-call cap"],
+    Boolean(session) && ["session", "session cap"],
+  ];
+  const applied = filled.filter((x): x is [PrefillField, string] => Boolean(x));
+  return {
+    gatewayUrl,
+    sellers,
+    assets,
+    decimals,
+    perCall,
+    session,
+    requestedMainnet: get("network") === "mainnet",
+    applied: applied.map(([, label]) => label),
+    appliedFields: applied.map(([field]) => field),
+  };
 }
 
 export interface ConnectWarning {
