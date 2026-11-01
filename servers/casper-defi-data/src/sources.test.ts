@@ -1,6 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { casperStakingApy, coingeckoSimple, computeStakingApy, parseCoingeckoRow, type FetchLike } from "./sources.js";
+import {
+  MAX_BODY_BYTES,
+  casperStakingApy,
+  coingeckoSimple,
+  computeStakingApy,
+  parseCoingeckoRow,
+  type FetchLike,
+} from "./sources.js";
 
 // Example answers from the cspr.cloud REST docs (/supply and /auction-metrics).
 const SUPPLY = {
@@ -26,6 +33,26 @@ const AUCTION = {
 
 function json(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" }, ...init });
+}
+
+/** A response whose body arrives as a stream of small chunks, with no content-length header. */
+function streamed(body: string, chunkBytes = 16 * 1024) {
+  const bytes = new TextEncoder().encode(body);
+  const state = { pulledBytes: 0, cancelled: false };
+  let offset = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset >= bytes.length) return controller.close();
+      const chunk = bytes.subarray(offset, offset + chunkBytes);
+      offset += chunk.length;
+      state.pulledBytes += chunk.length;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { response: new Response(stream, { status: 200 }), state };
 }
 
 describe("parseCoingeckoRow", () => {
@@ -93,6 +120,22 @@ describe("coingeckoSimple", () => {
     for (const fetchImpl of answers) {
       assert.deepEqual(await coingeckoSimple("pax-gold", fallback, fetchImpl), { ...fallback, live: false });
     }
+  });
+
+  it("stops reading a streamed body over 256 KiB that declares no length, and falls back", async () => {
+    // Valid JSON: if the cap did not hold, this would parse into a live quote.
+    const { response, state } = streamed(JSON.stringify({ "pax-gold": { usd: 3400.5 }, pad: "x".repeat(1024 * 1024) }));
+    assert.equal(response.headers.get("content-length"), null);
+    assert.deepEqual(await coingeckoSimple("pax-gold", fallback, async () => response), { ...fallback, live: false });
+    assert.equal(state.cancelled, true, "the rest of the body is not read");
+    assert.ok(state.pulledBytes <= MAX_BODY_BYTES + 2 * 16 * 1024, `read ${state.pulledBytes} bytes`);
+  });
+
+  it("reads a body that arrives in several chunks below the cap", async () => {
+    const { response } = streamed(JSON.stringify({ "pax-gold": { usd: 3400.5 }, pad: "x".repeat(100 * 1024) }));
+    const quote = await coingeckoSimple("pax-gold", fallback, async () => response);
+    assert.equal(quote.live, true);
+    assert.equal(quote.usd, 3400.5);
   });
 });
 

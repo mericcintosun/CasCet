@@ -13,7 +13,7 @@ export const COINGECKO = "https://api.coingecko.com/api/v3";
 export const DEFAULT_CSPR_CLOUD = "https://api.testnet.cspr.cloud";
 const UPSTREAM_TIMEOUT_MS = 4_000;
 /** Upstream answers are a few hundred bytes; anything far larger is not what we asked for. */
-const MAX_BODY_BYTES = 256 * 1024;
+export const MAX_BODY_BYTES = 256 * 1024;
 
 export interface Quote {
   usd: number;
@@ -128,12 +128,32 @@ function optionalNumber(value: unknown, ok: (v: number) => boolean): number | nu
   return typeof value === "number" && Number.isFinite(value) && ok(value) ? value : undefined;
 }
 
-async function readJson(res: Response): Promise<unknown> {
-  const declared = Number(res.headers.get("content-length") ?? "0");
-  if (declared > MAX_BODY_BYTES) throw new Error("body too large");
-  const text = await res.text();
-  if (text.length > MAX_BODY_BYTES) throw new Error("body too large");
-  return JSON.parse(text) as unknown;
+/**
+ * Parse a JSON body of at most MAX_BODY_BYTES. The body is read as a stream
+ * and abandoned as soon as it passes the cap, so an upstream that sends a huge
+ * chunked body (no content-length) cannot make this server buffer all of it.
+ */
+export async function readJson(res: Response): Promise<unknown> {
+  const declared = Number(res.headers.get("content-length") ?? Number.NaN);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+    await res.body?.cancel().catch(() => undefined);
+    throw new Error("body too large");
+  }
+  if (!res.body) throw new Error("empty body");
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error("body too large");
+    }
+    chunks.push(value);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
