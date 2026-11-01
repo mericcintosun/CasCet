@@ -14,14 +14,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { CopyButton } from "@/components/copy-button";
 import { SessionSpend } from "@/components/connect/session-spend";
-import { checkGatewayUrl, parseAssetInput, parsePayeeInput, payToValue } from "@/lib/casper/keys";
+import { checkGatewayUrl, parseAssetInput, parsePayeeInput } from "@/lib/casper/keys";
 import {
+  allowedPayToOf,
   buildMcpConfig,
   buildShellCommand,
   CONNECT_NETWORKS,
   connectWarnings,
   needsBudgetOverride,
   needsSellerOverride,
+  sellerRow,
   tokensToRaw,
   type ConnectNetwork,
   type ConnectSettings,
@@ -124,20 +126,12 @@ export function ConnectBuilder() {
     [sellerEntries],
   );
   const converted = useAccountHashes(sellerKeys);
-  const sellerRows = sellerEntries.map(({ input, parsed }) => {
-    if (parsed.kind === "account" || parsed.kind === "package") {
-      return { input, value: payToValue(parsed), note: parsed.kind === "package" ? "contract package (cannot settle yet)" : "account", error: null };
-    }
-    if (parsed.kind === "public-key") {
-      const c = converted.get(parsed.publicKey);
-      if (c && "hash" in c) return { input, value: `00${c.hash}`, note: "converted from public key", error: null };
-      return { input, value: null, note: null, error: c && "error" in c ? c.error : "converting…" };
-    }
-    return { input, value: null, note: null, error: parsed.kind === "invalid" ? parsed.reason : "empty" };
-  });
-  const sellersError = sellerRows.find((r) => r.error && r.error !== "converting…")?.error ?? null;
-  const sellersPending = sellerRows.some((r) => r.error === "converting…");
-  const allowedPayTo = [...new Set(sellerRows.flatMap((r) => (r.value ? [r.value] : [])))];
+  const sellerRows = sellerEntries.map(({ input, parsed }) =>
+    sellerRow(input, parsed, parsed.kind === "public-key" ? converted.get(parsed.publicKey) : undefined),
+  );
+  const sellersError = sellerRows.find((r) => r.error)?.error ?? null;
+  const sellersPending = sellerRows.some((r) => r.pending);
+  const allowedPayTo = allowedPayToOf(sellerRows);
 
   // ── assets ──
   const assetRows = splitList(s.assets).map((input) => ({ input, parsed: parseAssetInput(input) }));
@@ -290,7 +284,8 @@ export function ConnectBuilder() {
                 <>
                   One per line: an account hash (<code>00…</code> or <code>account-hash-…</code>) or a seller&apos;s public key (
                   <code>01…</code>/<code>02…</code>, converted here). Get a seller&apos;s value with{" "}
-                  <code>npx @cascet/cli account-hash &lt;public-key&gt;</code>.
+                  <code>npx @cascet/cli account-hash &lt;public-key&gt;</code>. A contract package (<code>hash-…</code>) cannot be
+                  paid and is refused.
                 </>
               }
               error={sellersError}
@@ -323,10 +318,12 @@ export function ConnectBuilder() {
                       </>
                     ) : (
                       <>
-                        <Badge variant={r.error === "converting…" ? "secondary" : "destructive"} className="font-mono" title={r.input}>
+                        <Badge variant={r.pending ? "secondary" : "destructive"} className="font-mono" title={r.input}>
                           {shortHex(r.input, 10, 6)}
                         </Badge>
-                        <span className={r.error === "converting…" ? "text-muted-foreground" : "text-destructive"}>{r.error}</span>
+                        <span className={r.pending ? "text-muted-foreground" : "min-w-0 text-destructive"}>
+                          {r.pending ? "converting…" : r.error}
+                        </span>
                       </>
                     )}
                   </li>

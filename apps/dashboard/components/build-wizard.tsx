@@ -260,7 +260,8 @@ export function BuildWizard() {
   }, null);
   const connectHref = (() => {
     const q = new URLSearchParams({ gateway: `http://localhost:${s.port || DEFAULT_GATEWAY_PORT}/mcp`, network: "testnet" });
-    if (payTarget) q.set("seller", payToValue(payTarget));
+    // /connect only allowlists account hashes; a contract package would be refused there.
+    if (payTarget?.kind === "account") q.set("seller", payToValue(payTarget));
     if (asset.ok) q.set("asset", asset.hash);
     if (maxPrice !== null) {
       q.set("perCall", rawToTokens(maxPrice, decimals));

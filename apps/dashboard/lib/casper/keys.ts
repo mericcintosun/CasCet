@@ -8,8 +8,9 @@
  *
  * Formats (all hex is lower-cased on output):
  *   - account payee   "00" + 64 hex, or "account-hash-" + 64 hex
- *   - contract payee  "hash-" + 64 hex or "package-hash-" + 64 hex (a contract package). Accepted by the
- *                     config schema, but x402 cannot settle to it yet (see CONTRACT_PAYEE_UNSUPPORTED).
+ *   - contract payee  "hash-" + 64 hex or "package-hash-" + 64 hex (a contract package). The config schema
+ *                     accepts it, but no facilitator can settle to it yet (CONTRACT_PAYEE_UNSUPPORTED):
+ *                     /build blocks it as a payTo and /connect refuses it as an allowed seller.
  *   - public key      "01" + 64 hex (ed25519) or "02" + 66 hex (secp256k1). Never a valid payTo by itself:
  *                     x402 needs the account hash, so a public key must be converted first (finding M01).
  */
@@ -25,6 +26,13 @@ export type PayeeInput =
   /** A public key that still has to be converted to its account hash. */
   | { kind: "public-key"; publicKey: string; algorithm: KeyAlgorithmName }
   | { kind: "invalid"; reason: string };
+
+/**
+ * One public key → account hash conversion, as `useAccountHashes` reports it.
+ * `retryable` marks a failure to load the converter (casper-js-sdk), which a
+ * retry can fix; otherwise the key itself is invalid.
+ */
+export type KeyConversion = { hash: string } | { error: string; retryable: boolean } | { pending: true };
 
 const ACCOUNT_KEY = /^00([0-9a-f]{64})$/;
 const ACCOUNT_HASH = /^account-hash-([0-9a-f]{64})$/;
@@ -56,24 +64,26 @@ export function parsePayeeInput(raw: string): PayeeInput {
 }
 
 /**
- * A payee as CasCet writes it, both in `cascet.config.json` `payTo` and on a
- * buyer's `CASCET_ALLOWED_PAYTO` list: "00" + account hash for an account,
- * "hash-" + package hash for a contract package. @cascet/core's normalizePayTo
- * (the config schema and `cascet connect`) turns "hash-…" into the "01" Key the
- * 402 challenge carries. A raw "01…" string is rejected there, because it is
- * indistinguishable from an ed25519 public key (M01).
+ * A payee as CasCet writes it: "00" + account hash for an account, "hash-" +
+ * package hash for a contract package. Only the account form is usable today.
+ * The config schema (@cascet/core normalizePayTo) accepts "hash-…" and stores
+ * it as the "01" Key, but no facilitator can settle to it, buyers refuse to pay
+ * it and `cascet connect` refuses it in CASCET_ALLOWED_PAYTO; so /build blocks
+ * it as a payTo and /connect never writes it. A raw "01…" string is rejected
+ * everywhere, because it is indistinguishable from an ed25519 public key (M01).
  */
 export function payToValue(target: { kind: "account" | "package"; hash: string }): string {
   return target.kind === "account" ? `00${target.hash}` : `hash-${target.hash}`;
 }
 
 /**
- * Why a contract package cannot be a payTo today: casper-x402 1.0.0 (what
- * CasCet's facilitator runs) settles every payment to the account hash with
- * the payTo's bytes, so a payment to a contract package cannot settle.
+ * Why a contract package cannot be a payTo today: casper-x402 1.0.0, which
+ * every Casper x402 facilitator runs (CasCet's included), settles every payTo
+ * as the account hash with the payTo's bytes, so a payment to a contract
+ * package never reaches it.
  */
 export const CONTRACT_PAYEE_UNSUPPORTED =
-  "x402 on Casper settles to an account hash: casper-x402 1.0.0, which CasCet's facilitator runs, cannot pay a contract package, so a payment to one cannot settle";
+  "x402 on Casper pays account hashes only: casper-x402 1.0.0, which Casper's x402 facilitators run, settles every payTo as an account hash, so a payment to a contract package never reaches it";
 
 export type AssetInput = { ok: true; hash: string } | { ok: false; empty: boolean; reason: string };
 

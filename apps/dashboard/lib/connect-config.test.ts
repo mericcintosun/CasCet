@@ -2,17 +2,21 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { PaymentReceipt } from "@cascet/core";
 import {
+  allowedPayToOf,
   buildMcpConfig,
   buildShellCommand,
   CLI_SPEC,
   connectEnv,
   connectWarnings,
+  CONTRACT_SELLER_ERROR,
   rawToTokens,
   sanitizeServerName,
+  sellerRow,
   shellQuote,
   tokensToRaw,
   type ConnectSettings,
 } from "./connect-config";
+import { parsePayeeInput } from "./casper/keys";
 import { spendByAsset } from "./spend";
 
 const SELLER = `00${"ab".repeat(32)}`;
@@ -76,13 +80,46 @@ test("lists are comma-joined", () => {
   assert.equal(env.get("CASCET_ALLOWED_ASSETS"), `${ASSET},${"ef".repeat(32)}`);
 });
 
-test("a contract-package seller is written as hash-… and flagged: x402 cannot settle to it yet", () => {
-  const pkg = `hash-${"ef".repeat(32)}`;
-  const s = { ...base, allowedPayTo: [SELLER, pkg] };
-  assert.equal(new Map(connectEnv(s)).get("CASCET_ALLOWED_PAYTO"), `${SELLER},${pkg}`);
-  const w = connectWarnings(s);
-  assert.deepEqual(w.map((x) => `${x.level}:${x.field}`), ["warning:sellers"]);
-  assert.match(w[0]!.message, /cannot pay a contract package/);
+test("contract-package sellers are rejected and never reach CASCET_ALLOWED_PAYTO", () => {
+  // cascet connect refuses a contract package in CASCET_ALLOWED_PAYTO, and no facilitator can settle one.
+  const pkgHash = "ef".repeat(32);
+  for (const input of [`hash-${pkgHash}`, `package-hash-${pkgHash}`, `contract-package-${pkgHash}`, `HASH-${pkgHash.toUpperCase()}`]) {
+    const row = sellerRow(input, parsePayeeInput(input));
+    assert.equal(row.value, null, input);
+    assert.equal(row.error, CONTRACT_SELLER_ERROR, input);
+    assert.equal(row.pending, false);
+  }
+  const rows = [SELLER, `hash-${pkgHash}`].map((input) => sellerRow(input, parsePayeeInput(input)));
+  assert.deepEqual(allowedPayToOf(rows), [SELLER]);
+  assert.ok(rows.some((r) => r.error), "the page blocks the output while any line has an error");
+});
+
+test("seller lines: account hashes as 00…, public keys once converted, the rest are errors", () => {
+  const H = "ab".repeat(32);
+  assert.deepEqual(sellerRow(`account-hash-${H}`, parsePayeeInput(`account-hash-${H}`)), {
+    input: `account-hash-${H}`,
+    value: `00${H}`,
+    note: "account",
+    error: null,
+    pending: false,
+    retryable: false,
+  });
+  const key = `01${"cd".repeat(32)}`;
+  const parsed = parsePayeeInput(key);
+  assert.equal(sellerRow(key, parsed).pending, true, "no conversion yet");
+  assert.equal(sellerRow(key, parsed, { pending: true }).pending, true);
+  const converted = sellerRow(key, parsed, { hash: H });
+  assert.equal(converted.value, `00${H}`);
+  assert.equal(converted.note, "converted from public key");
+  const invalid = sellerRow(key, parsed, { error: "not a valid Casper public key", retryable: false });
+  assert.deepEqual([invalid.value, invalid.error, invalid.retryable], [null, "not a valid Casper public key", false]);
+  const offline = sellerRow(key, parsed, { error: "could not load the key converter", retryable: true });
+  assert.equal(offline.retryable, true);
+  assert.equal(sellerRow(H, parsePayeeInput(H)).value, null, "a bare 64-hex value is ambiguous");
+  // Never a raw 01… public key on the allowlist (M01).
+  assert.deepEqual(allowedPayToOf([sellerRow(key, parsed)]), []);
+  // Duplicates collapse.
+  assert.deepEqual(allowedPayToOf([sellerRow(`00${H}`, parsePayeeInput(`00${H}`)), converted]), [`00${H}`]);
 });
 
 test("empty safety fields warn and add NO opt-out unless the user explicitly chose it", () => {

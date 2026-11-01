@@ -40,8 +40,8 @@ test("bare 64-hex, wrong lengths and junk are rejected with a reason", () => {
 });
 
 test("payees are written as 00… or hash-…, never as a raw 01… that reads as a public key", () => {
-  // The config schema and cascet connect (CASCET_ALLOWED_PAYTO) both normalise with core's normalizePayTo,
-  // which turns hash-… into the 01 Key of the 402 challenge and rejects a raw 01… (M01).
+  // The config schema normalises with core's normalizePayTo, which stores hash-… as the 01 Key and rejects a
+  // raw 01… (M01). Only the account form can be paid today: /build blocks hash-… and /connect refuses it.
   assert.equal(payToValue({ kind: "account", hash: H }), `00${H}`);
   assert.equal(payToValue({ kind: "package", hash: H }), `hash-${H}`);
   // What payToValue writes parses back to the same payee (the /build → /connect hand-over).

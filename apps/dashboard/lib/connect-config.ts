@@ -9,6 +9,8 @@
  * opt-outs CASCET_ALLOW_ANY_SELLER / CASCET_ALLOW_UNLIMITED_BUDGET.
  */
 
+import type { KeyConversion, PayeeInput } from "./casper/keys";
+
 export const CLI_PACKAGE = "@cascet/cli";
 /**
  * Version the generated commands run. "latest" until the release that carries
@@ -32,9 +34,9 @@ export interface ConnectSettings {
   keyPath: string;
   keyAlgorithm: "ed25519" | "secp256k1";
   /**
-   * Payees in the form `cascet connect` takes: "00"+hash for an account, "hash-"+hash for a contract
-   * package (the CLI normalises that to the "01" Key of the 402 challenge; a raw "01…" is refused as a
-   * public key).
+   * Seller account hashes in the form `cascet connect` takes: "00" + 64 hex. The CLI refuses a
+   * contract package (hash-…) and a raw "01…" (a public key) in CASCET_ALLOWED_PAYTO, so
+   * `sellerRow` never produces either.
    */
   allowedPayTo: string[];
   /** Bare 64-hex CEP-18 package hashes. */
@@ -49,6 +51,51 @@ export interface ConnectSettings {
   /** Key under `mcpServers`. */
   serverName: string;
 }
+
+/** One line of the seller allowlist textarea, resolved. */
+export interface SellerRow {
+  input: string;
+  /** "00" + account hash, the only form CASCET_ALLOWED_PAYTO takes; null when the line is not usable. */
+  value: string | null;
+  note: "account" | "converted from public key" | null;
+  /** Why the line is not usable (blocks the output). */
+  error: string | null;
+  /** A public key whose conversion has not finished yet. */
+  pending: boolean;
+  /** The key converter could not load; a retry can fix it. */
+  retryable: boolean;
+}
+
+export const CONTRACT_SELLER_ERROR =
+  "contract packages cannot be paid: cascet connect only allowlists account hashes (casper-x402 1.0.0 settles to account hashes); enter the seller's account hash";
+
+/**
+ * Resolve one seller line: an account hash is used as is ("00" + hash), a
+ * public key once converted (`conversion`), and anything else is an error. A
+ * contract package (hash-…, package-hash-…, contract-package-…) is an error
+ * too: `cascet connect` refuses it in CASCET_ALLOWED_PAYTO, and no facilitator
+ * can settle a payment to one.
+ */
+export function sellerRow(input: string, parsed: PayeeInput, conversion?: KeyConversion): SellerRow {
+  const row = (r: Partial<SellerRow>): SellerRow => ({ input, value: null, note: null, error: null, pending: false, retryable: false, ...r });
+  switch (parsed.kind) {
+    case "account":
+      return row({ value: `00${parsed.hash}`, note: "account" });
+    case "package":
+      return row({ error: CONTRACT_SELLER_ERROR });
+    case "public-key":
+      if (!conversion || "pending" in conversion) return row({ pending: true });
+      if ("hash" in conversion) return row({ value: `00${conversion.hash}`, note: "converted from public key" });
+      return row({ error: conversion.error, retryable: conversion.retryable });
+    case "invalid":
+      return row({ error: parsed.reason });
+    case "empty":
+      return row({ error: "empty" });
+  }
+}
+
+/** The de-duplicated CASCET_ALLOWED_PAYTO list of the usable rows. */
+export const allowedPayToOf = (rows: readonly SellerRow[]): string[] => [...new Set(rows.flatMap((r) => (r.value ? [r.value] : [])))];
 
 export const needsSellerOverride = (s: Pick<ConnectSettings, "allowedPayTo" | "allowedAssets">): boolean =>
   s.allowedPayTo.length === 0 || s.allowedAssets.length === 0;
@@ -149,14 +196,6 @@ export function connectWarnings(s: ConnectSettings, gatewayIsLocal = false): Con
       message: s.allowUnlimitedBudget
         ? `No ${missing} cap: with CASCET_ALLOW_UNLIMITED_BUDGET=1 the bridge keeps paying until the key's balance is gone.`
         : `No ${missing} cap: cascet connect refuses to start without CASCET_MAX_PER_CALL and CASCET_MAX_SESSION. Set both, or explicitly allow an unlimited budget.`,
-    });
-  }
-  if (s.allowedPayTo.some((p) => p.startsWith("hash-"))) {
-    out.push({
-      level: "warning",
-      field: "sellers",
-      message:
-        "A contract package (hash-…) is on the seller allowlist. x402 on Casper settles to an account hash: casper-x402 1.0.0, which CasCet's facilitator runs, cannot pay a contract package, so those payments will not settle. Allowlist the seller's account hash instead.",
     });
   }
   if (s.maxPerCallRaw && s.maxSessionRaw && BigInt(s.maxPerCallRaw) > BigInt(s.maxSessionRaw)) {
