@@ -68,17 +68,16 @@ export function buildSpendControls(policy: Pick<SpendPolicy, "networks" | "allow
 }
 
 /**
- * x402 payment policy that keeps the options `policy` would accept, so that a
- * 402 offering several (assets, payees) selects one this client pays. It
- * reserves nothing: the before-payment hook makes the binding decision. When
- * no option passes, every option is kept, so that hook refuses with the
- * precise reason instead of x402's generic "filtered out by policies".
+ * x402 payment policy that keeps only the options `policy` accepts, so that a
+ * 402 offering several (assets, payees) selects one this client pays. When it
+ * accepts none, the list is empty and x402 refuses the 402 ("All payment
+ * requirements were filtered out by policies") before anything is signed;
+ * {@link createPayingFetch} turns that into the policy's own reasons
+ * ({@link refusalReason}). It reserves nothing: the before-payment hook of
+ * {@link createPaymentClient} reserves the budget of the selected option.
  */
 export function spendPolicyFilter(policy: Pick<SpendPolicy, "check">): PaymentPolicy {
-  return (_x402Version, requirements) => {
-    const acceptable = requirements.filter(option => policy.check(option).ok);
-    return acceptable.length > 0 ? acceptable : requirements;
-  };
+  return (_x402Version, requirements) => requirements.filter(option => policy.check(option).ok);
 }
 
 /**
@@ -98,8 +97,9 @@ export function optionAuthorizationStyle(requirements: PaymentRequirements): Aut
 /**
  * x402 payment policy that orders options by authorization style, most
  * preferred first. Options of the same rank, and options whose style is not
- * listed, keep the gateway's order. It never drops an option. Register it
- * after {@link spendPolicyFilter} so that it only orders acceptable options.
+ * listed, keep the gateway's order. It never drops or adds an option, so,
+ * registered after {@link spendPolicyFilter}, it only orders options the
+ * spending policy accepts.
  */
 export function preferStylesPolicy(order: readonly AuthorizationStyle[]): PaymentPolicy {
   const rank = (requirements: PaymentRequirements): number => {
@@ -275,7 +275,9 @@ export interface PaymentClientOptions {
  *   (never a "casper:*" pattern) and capped at the per-call budget and the
  *   policy's longest validity window;
  * - x402's spend controls derived from the policy ({@link buildSpendControls});
- * - the policy filter, then the optional style preference, before selection;
+ * - the policy filter, then the optional style preference, before selection:
+ *   x402 selects nothing the policy refuses, and refuses a 402 when the
+ *   policy accepts none of its options;
  * - hooks that reserve the budget before signing (the binding decision,
  *   atomic with selection), report the payment after signing and give the
  *   reservation back when signing fails.
@@ -304,7 +306,8 @@ export function createPaymentClient(opts: PaymentClientOptions): x402Client {
   // x402's own spend controls: the asset allowlist and the per-call cap when there is an
   // allowlist, otherwise opened up (they would only pay csprUSD up to $1). See buildSpendControls.
   client.setSpendControls(buildSpendControls(policy));
-  // Choose among several offered options one the policy accepts; the hook below still decides.
+  // Select only among the options the policy accepts (none accepted: x402 refuses the 402), in
+  // the preferred style order when there is one.
   client.registerPolicy(spendPolicyFilter(policy));
   if (preferStyles) client.registerPolicy(preferStylesPolicy(preferStyles));
 
@@ -312,14 +315,13 @@ export function createPaymentClient(opts: PaymentClientOptions): x402Client {
   const reservations = new PendingReservations<Extract<SpendDecision, { ok: true }>>();
   client
     .onBeforePaymentCreation(async ctx => {
+      // The binding decision and the atomic reservation: @x402/core 2.29 calls this first hook
+      // right after the selection, with no await in between, so no concurrent payment can use the
+      // budget first. As the filter only lets acceptable options through, it refuses only when
+      // something changed the selection after the filter (such as a policy registered later),
+      // and then nothing is signed.
       const decision = policy.authorize(ctx.selectedRequirements);
-      if (!decision.ok) {
-        // Only reached when no offered option passes (the filter keeps the ones that do), e.g.
-        // when a concurrent payment used the budget after the 402 was checked: name every reason.
-        const offered: unknown = ctx.paymentRequired?.accepts;
-        const reason = (Array.isArray(offered) ? refusalReason(policy, offered) : undefined) ?? decision.reason;
-        return { abort: true as const, reason };
-      }
+      if (!decision.ok) return { abort: true as const, reason: decision.reason };
       reservations.add(ctx.selectedRequirements, decision);
       return undefined;
     })

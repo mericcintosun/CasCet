@@ -20,6 +20,7 @@ import {
   PendingReservations,
   preferStylesPolicy,
   refusalReason,
+  spendPolicyFilter,
   type PayingFetchOptions,
   type PaymentInfo,
 } from "./paying-fetch.js";
@@ -632,8 +633,9 @@ describe("createPayingFetch with a legacy-amount and a cep3009-value token side 
   it("never lets concurrent payments overshoot the session budget together", async () => {
     gateway.accepts = [wcsprOption({ amount: "400" })];
     const paying = await make({ budget: { maxPerCallRaw: "400", maxSessionRaw: "700" } });
-    // Whichever check refuses the later calls (the 402 check or the before-payment hook, see
-    // createPaymentClient), only one authorization may be signed.
+    // Whichever check refuses the later calls (the 402 check, or x402's selection through the
+    // policy filter, see createPaymentClient), only one authorization may be signed, and the
+    // refusal names the policy's reason.
     const results = await Promise.allSettled(
       [1, 2, 3].map(() => paying.fetch(gateway.url(), { method: "POST", body: "{}" })),
     );
@@ -738,6 +740,12 @@ describe("buildSpendControls", () => {
 
 describe("createPaymentClient", () => {
   const signer = clientSignerFromPem(PrivateKey.generate(KeyAlgorithm.ED25519).toPem());
+  /** A signer that fails the test if it is ever asked to sign. */
+  const neverSigns = {
+    accountAddress: signer.accountAddress,
+    publicKey: signer.publicKey,
+    signEIP712: async (): Promise<Uint8Array> => assert.fail("nothing may be signed"),
+  };
 
   it("registers one scheme per network the policy pays on, never a pattern", async () => {
     const policy = new SpendPolicy({ networks: ["casper:casper-test", "casper:casper"] });
@@ -749,22 +757,31 @@ describe("createPaymentClient", () => {
     await assert.rejects(client.createPaymentPayload(challenge(wcsprOption({ network: "casper:other" }))), /No network\/scheme registered/);
   });
 
-  it("refuses in the before-payment hook, naming every option's reason, when the budget ran out after the 402 was checked", async () => {
+  it("selects nothing when the policy accepts no option, e.g. when the budget ran out after the 402 was checked", async () => {
     const policy = new SpendPolicy({ allowedAssets: [LEGACY, WCSPR], maxPerCallRaw: "1000", maxSessionRaw: "700" });
     const payments: PaymentInfo[] = [];
-    const client = createPaymentClient({ policy, signer, onPayment: info => payments.push(info), log: () => undefined });
+    const client = createPaymentClient({ policy, signer: neverSigns, onPayment: info => payments.push(info), log: () => undefined });
     // A concurrent payment reserved 400 of the session budget after this 402 passed its check.
     assert.equal(policy.authorize(wcsprOption({ amount: "400" })).ok, true);
+    // x402's own error; createPayingFetch names the policy's reasons instead (see refusalReason).
     await assert.rejects(
       client.createPaymentPayload(challenge(wcsprOption({ amount: "400" }), legacyOption({ amount: "2000" }))),
-      (err: Error) => {
-        assert.match(err.message, /^Payment creation aborted: none of the 2 payment options the gateway offers is acceptable: /);
-        assert.match(err.message, /price 400 would exceed the session budget 700 for asset 3d80df21/);
-        assert.match(err.message, /price 2000 exceeds the per-call budget 1000/);
-        return true;
-      },
+      /^Error: All payment requirements were filtered out by policies/,
     );
     assert.deepEqual(policy.spentByAsset(), { [WCSPR]: "400" }, "the refusal reserved nothing");
+    assert.deepEqual(payments, []);
+  });
+
+  it("refuses in the before-payment hook when a policy registered later swaps in an option the spending policy refuses", async () => {
+    const policy = new SpendPolicy({ allowedPayTo: [SELLER], allowedAssets: [LEGACY, WCSPR], maxSessionRaw: "1000" });
+    const payments: PaymentInfo[] = [];
+    const client = createPaymentClient({ policy, signer: neverSigns, onPayment: info => payments.push(info), log: () => undefined });
+    client.registerPolicy(() => [wcsprOption({ payTo: OTHER_SELLER }) as unknown as PaymentRequirements]);
+    await assert.rejects(
+      client.createPaymentPayload(challenge(wcsprOption())),
+      new RegExp(`^Error: Payment creation aborted: payTo ${OTHER_SELLER} is not allowlisted$`),
+    );
+    assert.deepEqual(policy.spentByAsset(), {}, "the refusal reserved nothing");
     assert.deepEqual(payments, []);
   });
 
@@ -790,11 +807,6 @@ describe("createPaymentClient", () => {
   });
 
   it("binds each scheme to the policy's validity-window limit, which holds even if the selection changes after the policy check", async () => {
-    const neverSigns = {
-      accountAddress: signer.accountAddress,
-      publicKey: signer.publicKey,
-      signEIP712: async (): Promise<Uint8Array> => assert.fail("nothing may be signed"),
-    };
     const policy = new SpendPolicy({ maxAuthorizationSeconds: 600 });
     const client = createPaymentClient({ policy, signer: neverSigns, log: () => undefined });
     // A hook registered after CasCet's widens the window once the policy has accepted and reserved the option.
@@ -820,6 +832,34 @@ describe("createPaymentClient", () => {
     });
     assert.equal((await client.createPaymentPayload(challenge(wcsprOption()))).accepted.asset, WCSPR);
     assert.deepEqual(lines, ["[cascet] onPayment callback threw: boom"]);
+  });
+});
+
+describe("spendPolicyFilter", () => {
+  const policy = new SpendPolicy({ allowedPayTo: [SELLER], allowedAssets: [LEGACY, WCSPR], maxPerCallRaw: "450" });
+  const filter = spendPolicyFilter(policy);
+  const asAccepts = (...options: Array<Record<string, unknown>>) => options as unknown as PaymentRequirements[];
+
+  it("keeps only the options the policy accepts, in the gateway's order, and reserves nothing", () => {
+    const offered = asAccepts(
+      legacyOption({ amount: "500" }),
+      wcsprOption(),
+      legacyOption({ amount: "450" }),
+      wcsprOption({ payTo: OTHER_SELLER }),
+    );
+    assert.deepEqual(filter(2, offered), [offered[1], offered[2]]);
+    assert.deepEqual(policy.spentByAsset(), {});
+  });
+
+  it("returns no option at all when it refuses every one (it never falls back to the refused ones)", () => {
+    const refusedOnly = asAccepts(
+      legacyOption({ amount: "500" }),
+      wcsprOption({ payTo: OTHER_SELLER }),
+      wcsprOption({ asset: ASSET_A }),
+      wcsprOption({ extra: { name: "Wrapped CSPR", version: "1", authorizationStyle: "permit2" } }),
+    );
+    assert.deepEqual(filter(2, refusedOnly), []);
+    assert.deepEqual(filter(2, []), []);
   });
 });
 
