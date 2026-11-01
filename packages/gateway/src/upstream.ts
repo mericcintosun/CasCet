@@ -244,6 +244,7 @@ export class UpstreamSupervisor {
     this.connecting = undefined;
     this.connectionFailures = 0;
     await this.callbacks.onTools(tools);
+    if (this.closing || this.client !== client) return; // closed or lost meanwhile
     this.lastError = undefined;
     this.setState("connected");
     this.scheduleHealthCheck(client);
@@ -322,6 +323,7 @@ export class UpstreamSupervisor {
     try {
       const { client, tools } = await this.connectOnce();
       if (this.closing) {
+        this.connecting = undefined;
         await client.close().catch(() => {});
         return;
       }
