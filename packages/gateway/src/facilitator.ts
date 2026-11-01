@@ -160,12 +160,31 @@ export class TimeoutFacilitatorClient implements FacilitatorClient {
   ): Promise<{ response: Response; text: string }> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.opts.authorization) headers.authorization = this.opts.authorization;
-    const signal = AbortSignal.timeout(timeoutMs);
-    const response = await this.fetchImpl(`${this.url}/${path}`, { method, headers, body, signal, redirect: "follow" });
-    // The same signal bounds reading the body.
-    const text = await response.text();
-    return { response, text };
+    const { signal, clear } = timeoutSignal(timeoutMs);
+    try {
+      const response = await this.fetchImpl(`${this.url}/${path}`, { method, headers, body, signal, redirect: "follow" });
+      // The same signal bounds reading the body.
+      const text = await response.text();
+      return { response, text };
+    } finally {
+      clear();
+    }
   }
+}
+
+/**
+ * A timeout signal whose timer keeps the event loop alive until it fires or is
+ * cleared. AbortSignal.timeout() uses an unref'd timer, so a facilitator call
+ * that never answers could let a short-lived process (or the Node 22 test
+ * runner) end before the timeout fires instead of failing with a timeout.
+ */
+export function timeoutSignal(timeoutMs: number): { signal: AbortSignal; clear: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new DOMException(`The operation was aborted due to timeout after ${timeoutMs} ms`, "TimeoutError")),
+    timeoutMs,
+  );
+  return { signal: controller.signal, clear: () => clearTimeout(timer) };
 }
 
 function requestBody(paymentPayload: PaymentPayload, paymentRequirements: PaymentRequirements): string {

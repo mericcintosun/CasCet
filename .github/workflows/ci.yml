@@ -41,7 +41,7 @@ jobs:
       - name: Install Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       # Fails if pnpm-lock.yaml is out of date with any package.json.
@@ -116,7 +116,7 @@ jobs:
       - name: Install Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 24
 
       # Reads pnpm-lock.yaml; no install needed. High and critical advisories
       # fail the build. Advisories accepted on purpose are listed, each with its

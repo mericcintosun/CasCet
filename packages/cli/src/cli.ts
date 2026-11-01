@@ -117,8 +117,14 @@ function accountHash(publicKey?: string): void {
 /** `cascet init [name]`: write a starter config. */
 function init(name = "my-paid-mcp"): void {
   const path = resolve("cascet.config.json");
-  if (existsSync(path)) throw new CliError(`${path} already exists`);
-  writeFileSync(path, `${JSON.stringify(initTemplate(name), null, 2)}\n`, { flag: "wx" });
+  // One atomic step: the "wx" flag fails if the file exists, so there is no
+  // check-then-write window (CodeQL js/file-system-race).
+  try {
+    writeFileSync(path, `${JSON.stringify(initTemplate(name), null, 2)}\n`, { flag: "wx" });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") throw new CliError(`${path} already exists`);
+    throw err;
+  }
   console.log(`✅ wrote ${path}\n`);
   console.log(initNextSteps());
 }
