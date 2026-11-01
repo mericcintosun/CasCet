@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import { decodePaymentResponseHeader } from "@x402/core/http";
+import { x402HTTPResourceServer } from "@x402/core/server";
 import type { PaymentRequired } from "@x402/core/types";
 import type { PreemptionOutcome, SettlementPreemptionChecker } from "./preemption.js";
 import { SETTLE_TX } from "./testing/fake-facilitator.js";
@@ -89,6 +90,39 @@ describe("402 answers are JSON-RPC (M19)", () => {
       assert.equal(receipt?.nonce, nonce);
       assert.equal(receipt?.id, res.body.error?.data?.paymentId, "failure receipts keep the payment id forwarded upstream");
     });
+  });
+});
+
+describe("fail closed after verification (M19)", () => {
+  it("refuses a verified payment whose requirements differ from the configured price with a full JSON-RPC 402", async () => {
+    // Unreachable through the public API (x402 returns the route's own requirements), so
+    // simulate an x402 layer that verified something else than this tool's price.
+    const original = x402HTTPResourceServer.prototype.processHTTPRequest;
+    const patched = mock.method(
+      x402HTTPResourceServer.prototype,
+      "processHTTPRequest",
+      async function (this: x402HTTPResourceServer, ...args: Parameters<typeof original>) {
+        const result = await original.apply(this, args);
+        return result.type === "payment-verified" ? { ...result, paymentRequirements: { ...result.paymentRequirements, amount: "1" } } : result;
+      },
+    );
+    try {
+      await withHarness({}, async h => {
+        const { header } = await payFor(h, "paid_tool");
+        const res = await callPaid(h, "paid_tool", header);
+        assert.equal(res.status, 402);
+        assert.equal(res.body.error?.code, -32002);
+        assert.match(res.body.error?.message ?? "", /amount does not equal the configured price/);
+        const data = res.body.error?.data as unknown as PaymentRequired;
+        assert.equal(data.x402Version, 2);
+        assert.equal(data.accepts[0]?.amount, PRICE_RAW);
+        assert.match(challengeOf(res).error ?? "", /amount does not equal/, "the PAYMENT-REQUIRED header carries the reason");
+        assert.equal(h.upstream.calls.length, 0);
+        assert.equal(h.facilitator.count("settle"), 0);
+      });
+    } finally {
+      patched.mock.restore();
+    }
   });
 });
 

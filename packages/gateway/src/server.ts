@@ -722,14 +722,17 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       res.status(500).json(rpcError(id, RPC_INTERNAL_ERROR, "payment could not be verified; the tool was not run and nothing was charged"));
       return;
     }
-    replay.commit(reservation);
 
     const mismatch = requirementsProblem(processed.paymentRequirements, authorization, policy);
     if (mismatch) {
+      // Nothing ran and nothing was charged: the authorization stays the buyer's.
+      replay.release(reservation);
       log.error(`[x402] ${logSafe(mismatch)} for ${logSafe(name, 80)}; refusing to run it`);
-      res.status(402).json(rpcError(id, RPC_PAYMENT_REQUIRED, `payment rejected: ${mismatch}`));
+      const { headers, paymentRequired } = await challenge(req, snapshot, name, mismatch);
+      res.status(402).set(headers).json(rpcError(id, RPC_PAYMENT_REQUIRED, `payment rejected: ${mismatch}`, paymentRequired));
       return;
     }
+    replay.commit(reservation);
 
     const call: PaidCall = {
       id,
