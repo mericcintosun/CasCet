@@ -48,7 +48,7 @@ import time
 import warnings
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 from urllib.parse import urlsplit
 
 from Crypto.Hash import keccak as _keccak
@@ -91,6 +91,7 @@ __all__ = [
     "authorization_style",
     "parse_amount",
     "validate_requirements",
+    "select_requirement",
     "build_payment_payload",
     "payment_signature_header",
     "decode_payment_signature_header",
@@ -520,6 +521,134 @@ def _normalize_allowed_pay_to(value: Any) -> str:
     return pay_to
 
 
+def _allowlist(values: Optional[Union[str, Iterable[str]]], normalize: Callable[[Any], str]) -> Optional[frozenset]:
+    """A normalized allowlist; None means "no allowlist" and an empty list allows nothing."""
+    if values is None:
+        return None
+    return frozenset(normalize(value) for value in _as_list(values))
+
+
+def _networks_tuple(networks: Optional[Union[str, Iterable[str]]]) -> Tuple[str, ...]:
+    if networks is None:
+        networks = DEFAULT_NETWORKS
+    nets = [_normalize_network(network) for network in _as_list(networks)]
+    if not nets:
+        raise ValueError("networks must name at least one network")
+    return tuple(dict.fromkeys(nets))
+
+
+def _prefer_styles_tuple(prefer_styles: Optional[Union[str, Iterable[str]]]) -> Tuple[str, ...]:
+    if prefer_styles is None:
+        return ()
+    styles = []
+    for style in _as_list(prefer_styles):
+        candidate = style.strip() if isinstance(style, str) else style
+        if not isinstance(candidate, str) or candidate not in AUTHORIZATION_STYLES:
+            raise ValueError(
+                f"unknown authorization style {style!r} in prefer_styles (known: {', '.join(AUTHORIZATION_STYLES)})"
+            )
+        styles.append(candidate)
+    return tuple(dict.fromkeys(styles))
+
+
+def _policy_reject_reason(
+    requirements: Any,
+    networks: Tuple[str, ...],
+    allowed_pay_to: Optional[frozenset],
+    allowed_assets: Optional[frozenset],
+) -> Optional[str]:
+    """Why one `accepts` entry may not be paid under these networks and allowlists, or None."""
+    try:
+        validate_requirements(requirements)
+    except ProtocolError as exc:
+        return str(exc)
+    network = requirements["network"]
+    if network not in networks:
+        return f"network {network} is not allowed (allowed: {', '.join(networks)})"
+    pay_to = requirements["payTo"].lower()
+    # Checked before the allowlist and never overridable by it, like the TS client.
+    if not pay_to.startswith("00"):
+        return (
+            f"payTo {requirements['payTo']} carries the 01 tag (a contract package, or a public key used where "
+            f"an account hash belongs): {CONTRACT_PAYEE_REASON}"
+        )
+    if allowed_pay_to is not None and pay_to not in allowed_pay_to:
+        return f"payTo {requirements['payTo']} is not allowlisted"
+    asset = requirements["asset"].lower()
+    if allowed_assets is not None and asset not in allowed_assets:
+        return f"asset {requirements['asset']} is not allowlisted"
+    return None
+
+
+def _by_style_preference(candidates: List[Any], prefer_styles: Tuple[str, ...]) -> List[Any]:
+    """
+    `candidates` (valid `accepts` entries) ordered by `prefer_styles`; entries
+    of the same rank keep the server's order. An entry that advertises no
+    style ranks as default_authorization_style(asset) says.
+    """
+    if not prefer_styles:
+        return list(candidates)
+
+    def rank(requirements: Any) -> int:
+        style = authorization_style(requirements) or default_authorization_style(requirements["asset"])
+        return prefer_styles.index(style) if style in prefer_styles else len(prefer_styles)
+
+    return sorted(candidates, key=rank)  # stable
+
+
+def select_requirement(
+    accepts: Any,
+    allowed_assets: Optional[Union[str, Iterable[str]]],
+    allowed_pay_to: Optional[Union[str, Iterable[str]]],
+    networks: Optional[Union[str, Iterable[str]]] = DEFAULT_NETWORKS,
+    prefer_styles: Optional[Union[str, Iterable[str]]] = None,
+) -> Any:
+    """
+    Pick the entry of a 402's `accepts` list to pay, without budgets.
+
+    An entry qualifies when it is a well-formed Casper `exact` requirement
+    (validate_requirements: scheme "exact", amount, extra.name/version, and a
+    known `extra.authorizationStyle` if it names one), is on one of `networks`
+    (default: testnet only), pays an account ("00" + account hash: a "01"
+    contract-package payee is always refused, see CONTRACT_PAYEE_REASON), and
+    its payTo and asset are in `allowed_pay_to` and `allowed_assets`.
+
+    * `allowed_assets`, `allowed_pay_to`: lists in the forms normalize_asset
+      and normalize_pay_to accept. Pass None explicitly for no allowlist (any
+      asset, or any account payee): a hostile or man-in-the-middled 402 then
+      picks the token or the payee. A contract-package entry (hash-<64 hex>)
+      in `allowed_pay_to` raises ValueError.
+    * `prefer_styles`: authorization styles in order of preference, for
+      example ["cep3009-value"]. Qualifying entries are sorted by it, entries
+      of the same rank keep the server's order, and the first one is returned.
+      An entry without `extra.authorizationStyle` ranks as its asset's
+      default_authorization_style. A preference never makes an entry qualify.
+
+    Returns the chosen entry itself (pass it unchanged to build_payment_payload,
+    which echoes it as `accepted`). Raises PaymentAborted, listing why each
+    entry was refused, when none qualifies, and ValueError for invalid
+    arguments. Budgets and the validity cap are PayingClient's job;
+    build_payment_payload still caps the window at max_validity_seconds.
+    """
+    nets = _networks_tuple(networks)
+    payees = _allowlist(allowed_pay_to, _normalize_allowed_pay_to)
+    assets = _allowlist(allowed_assets, normalize_asset)
+    styles = _prefer_styles_tuple(prefer_styles)
+    if not isinstance(accepts, (list, tuple)) or not accepts:
+        raise PaymentAborted("the 402 offers no payment requirements")
+    candidates = []
+    reasons = []
+    for index, requirements in enumerate(accepts):
+        reason = _policy_reject_reason(requirements, nets, payees, assets)
+        if reason is None:
+            candidates.append(requirements)
+        else:
+            reasons.append(f"accepts[{index}]: {reason}")
+    if not candidates:
+        raise PaymentAborted("refusing to pay: " + "; ".join(reasons))
+    return _by_style_preference(candidates, styles)[0]
+
+
 # ---- payment payload ----
 def build_payment_payload(
     *,
@@ -556,7 +685,8 @@ def build_payment_payload(
     The CasCet gateway and facilitator, and @x402/casper's facilitator, accept
     both.
 
-    This applies no spending policy: use PayingClient for allowlists and budgets.
+    This applies no spending policy: use select_requirement or PayingClient
+    for allowlists, and PayingClient for budgets.
     """
     if isinstance(max_validity_seconds, bool) or not isinstance(max_validity_seconds, int) or max_validity_seconds <= 0:
         raise ValueError(f"max_validity_seconds must be a positive whole number of seconds, got {max_validity_seconds!r}")
@@ -965,6 +1095,11 @@ class PayingClient:
       (a contract package, or a public key pasted where an account hash
       belongs) is always refused, and a contract-package entry (hash-<64 hex>)
       in `allowed_pay_to` raises ValueError (see CONTRACT_PAYEE_REASON).
+    * `prefer_styles`: authorization styles in order of preference (for
+      example ["cep3009-value"]) when a 402 offers several acceptable entries;
+      see select_requirement. Without it the first acceptable entry is paid.
+      An `accepts` entry whose `extra.authorizationStyle` is not one of
+      AUTHORIZATION_STYLES is never paid.
     * `max_per_call_raw` / `max_session_raw`: budgets in raw token units
       (greater than zero); the session budget is tracked per asset. Spend is
       counted when an authorization is signed (a signed authorization can be
@@ -983,13 +1118,15 @@ class PayingClient:
       when this is True.
     * `parent_id`: sent as x-cascet-parent-id so a cascade's receipts link up.
     * `on_payment`: called with {amount_raw, pay_to, asset, network} after each
-      authorization is signed and encoded, before it is sent. An exception it
-      raises is reported as a RuntimeWarning and does not stop the payment.
+      authorization is signed and encoded, before it is sent, plus
+      authorization_style when the 402 advertised one. An exception it raises
+      is reported as a RuntimeWarning and does not stop the payment.
     * `session`: a requests.Session (or compatible object honoring
       `allow_redirects=False` and `stream=True`); one is created by default.
 
-    `request()` sends the request; on a 402 it reads PAYMENT-REQUIRED, picks the
-    first acceptable `accepts` entry, signs it and retries once with
+    `request()` sends the request; on a 402 it reads PAYMENT-REQUIRED, picks an
+    acceptable `accepts` entry (the first, or the first of the most preferred
+    style), signs it and retries once with
     PAYMENT-SIGNATURE. A second 402 is returned as is, never paid again. It
     never follows redirects: a 3xx response comes back to the caller unpaid,
     so PAYMENT-SIGNATURE, the parent id and the request body never reach
@@ -1004,6 +1141,7 @@ class PayingClient:
         networks: Optional[Sequence[str]] = DEFAULT_NETWORKS,
         allowed_pay_to: Optional[Sequence[str]] = None,
         allowed_assets: Optional[Sequence[str]] = None,
+        prefer_styles: Optional[Sequence[str]] = None,
         max_per_call_raw: Union[int, str, None] = None,
         max_session_raw: Union[int, str, None] = None,
         max_authorization_seconds: int = MAX_VALIDITY_SECONDS,
@@ -1015,13 +1153,7 @@ class PayingClient:
     ) -> None:
         if not isinstance(key, CasperKey):
             raise TypeError("key must be a CasperKey")
-        if networks is None:
-            networks = DEFAULT_NETWORKS
-        if isinstance(networks, str):
-            networks = [networks]
-        nets = [_normalize_network(network) for network in networks]
-        if not nets:
-            raise ValueError("networks must name at least one network")
+        nets = _networks_tuple(networks)
         if (
             isinstance(max_authorization_seconds, bool)
             or not isinstance(max_authorization_seconds, int)
@@ -1033,14 +1165,11 @@ class PayingClient:
         if parent_id is not None and (not isinstance(parent_id, str) or not re.fullmatch(r"[\x21-\x7e]{1,128}", parent_id)):
             raise ValueError("parent_id must be 1-128 printable ASCII characters without spaces")
         self._key = key
-        self._networks: Tuple[str, ...] = tuple(dict.fromkeys(nets))
+        self._networks: Tuple[str, ...] = nets
         self._max_authorization_seconds = max_authorization_seconds
-        self._allowed_pay_to: Optional[frozenset] = None
-        if allowed_pay_to is not None:
-            self._allowed_pay_to = frozenset(_normalize_allowed_pay_to(p) for p in _as_list(allowed_pay_to))
-        self._allowed_assets: Optional[frozenset] = None
-        if allowed_assets is not None:
-            self._allowed_assets = frozenset(normalize_asset(a) for a in _as_list(allowed_assets))
+        self._allowed_pay_to: Optional[frozenset] = _allowlist(allowed_pay_to, _normalize_allowed_pay_to)
+        self._allowed_assets: Optional[frozenset] = _allowlist(allowed_assets, normalize_asset)
+        self._prefer_styles: Tuple[str, ...] = _prefer_styles_tuple(prefer_styles)
         self._max_per_call = _parse_budget(max_per_call_raw, "max_per_call_raw")
         self._max_session = _parse_budget(max_session_raw, "max_session_raw")
         self._timeout = _check_timeout(timeout)
@@ -1083,6 +1212,8 @@ class PayingClient:
         * CASCET_ALLOWED_PAYTO, CASCET_ALLOWED_ASSETS: comma lists, required
           unless CASCET_ALLOW_ANY_SELLER is 1, true or yes. Payees are account
           hashes; a contract package (hash-<64 hex>) is an error.
+        * CASCET_PREFER_STYLES: optional comma list of authorization styles in
+          order of preference (legacy-amount, cep3009-value).
         * CASCET_MAX_PER_CALL, CASCET_MAX_SESSION: raw token units (> 0),
           required unless CASCET_ALLOW_UNLIMITED_BUDGET is 1, true or yes.
         * CASCET_TIMEOUT_MS: deadline per call in milliseconds (default 30000).
@@ -1126,6 +1257,7 @@ class PayingClient:
             attribute("CASCET_ALLOWED_PAYTO", _normalize_allowed_pay_to, pay_to)
         for asset in allowed_assets:
             attribute("CASCET_ALLOWED_ASSETS", normalize_asset, asset)
+        prefer_styles = attribute("CASCET_PREFER_STYLES", _prefer_styles_tuple, _split_env(env.get("CASCET_PREFER_STYLES")))
 
         max_per_call = _env_value(env, "CASCET_MAX_PER_CALL")
         max_session = _env_value(env, "CASCET_MAX_SESSION")
@@ -1151,6 +1283,7 @@ class PayingClient:
             "networks": networks or list(DEFAULT_NETWORKS),
             "allowed_pay_to": allowed_pay_to or None,
             "allowed_assets": allowed_assets or None,
+            "prefer_styles": list(prefer_styles) or None,
             "max_per_call_raw": max_per_call,
             "max_session_raw": max_session,
         }
@@ -1162,26 +1295,17 @@ class PayingClient:
     def networks(self) -> Tuple[str, ...]:
         return self._networks
 
+    @property
+    def prefer_styles(self) -> Tuple[str, ...]:
+        return self._prefer_styles
+
     def _reject_reason(self, requirements: Any) -> Optional[str]:
-        try:
-            validate_requirements(requirements)
-        except ProtocolError as exc:
-            return str(exc)
-        network = requirements["network"]
-        if network not in self._networks:
-            return f"network {network} is not allowed (allowed: {', '.join(self._networks)})"
-        pay_to = requirements["payTo"].lower()
-        # Checked before the allowlist and never overridable by it, like the TS client.
-        if not pay_to.startswith("00"):
-            return (
-                f"payTo {requirements['payTo']} carries the 01 tag (a contract package, or a public key used where "
-                f"an account hash belongs): {CONTRACT_PAYEE_REASON}"
-            )
-        if self._allowed_pay_to is not None and pay_to not in self._allowed_pay_to:
-            return f"payTo {requirements['payTo']} is not allowlisted"
+        # select_requirement's rules (format, known style, network, an account payee, allowlists) ...
+        reason = _policy_reject_reason(requirements, self._networks, self._allowed_pay_to, self._allowed_assets)
+        if reason is not None:
+            return reason
+        # ... then the validity cap and the budgets.
         asset = requirements["asset"].lower()
-        if self._allowed_assets is not None and asset not in self._allowed_assets:
-            return f"asset {requirements['asset']} is not allowlisted"
         if "maxTimeoutSeconds" not in requirements:
             return "maxTimeoutSeconds is missing (it bounds how long the signed authorization stays valid)"
         seconds = _max_timeout_seconds(requirements["maxTimeoutSeconds"])  # well-formed: validated above
@@ -1203,17 +1327,25 @@ class PayingClient:
         return None
 
     def select_requirements(self, payment_required: Mapping[str, Any]) -> dict:
-        """The first `accepts` entry this client may pay, or PaymentAborted listing why none qualifies."""
+        """
+        The `accepts` entry this client pays: the first acceptable one, or the
+        first acceptable one of the most preferred style (`prefer_styles`).
+        Raises PaymentAborted listing why each entry was refused when none qualifies.
+        """
         accepts = payment_required.get("accepts") if isinstance(payment_required, Mapping) else None
         if not isinstance(accepts, list) or not accepts:
             raise PaymentAborted("the 402 offers no payment requirements")
+        candidates = []
         reasons = []
         for index, requirements in enumerate(accepts):
             reason = self._reject_reason(requirements)
             if reason is None:
-                return requirements
-            reasons.append(f"accepts[{index}]: {reason}")
-        raise PaymentAborted("refusing to pay: " + "; ".join(reasons))
+                candidates.append(requirements)
+            else:
+                reasons.append(f"accepts[{index}]: {reason}")
+        if not candidates:
+            raise PaymentAborted("refusing to pay: " + "; ".join(reasons))
+        return _by_style_preference(candidates, self._prefer_styles)[0]
 
     def create_payment_payload(self, payment_required: Mapping[str, Any], *, now: Optional[int] = None) -> dict:
         """Pick an acceptable requirement, reserve its budget and sign it. Raises PaymentAborted."""
@@ -1223,6 +1355,7 @@ class PayingClient:
         """Reserve the budget, sign, and encode the PAYMENT-SIGNATURE header: (payload, header)."""
         with self._lock:
             requirements = self.select_requirements(payment_required)
+            style = authorization_style(requirements)  # known: select_requirements refuses any other value
             asset = requirements["asset"].lower()
             amount = int(requirements["amount"])
             self._spent[asset] = self._spent.get(asset, 0) + amount
@@ -1251,6 +1384,8 @@ class PayingClient:
                 "asset": requirements["asset"],
                 "network": requirements["network"],
             }
+            if style is not None:
+                info["authorization_style"] = style
             try:
                 self._on_payment(info)
             except Exception as exc:  # a reporting hook must not stop a payment that is already signed
