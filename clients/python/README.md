@@ -253,6 +253,22 @@ Settings:
 The script never sends a key over plain `http://` to a host other than this
 machine, and never follows a redirect.
 
+| Exit status | Meaning |
+|---|---|
+| `0` | Settled. The script prints the transaction and its explorer link. |
+| `1` | Nothing was paid: a setting or a refusal (before anything is signed), a facilitator that could not be reached, or a settle the facilitator reports failed. |
+| `2` | Invalid options. |
+| `3` | Outcome unknown. The request may have reached the facilitator but no answer came back (a read timeout, a dropped connection), or the facilitator could not confirm the transfer (`settlement_pending`, `settlement_unknown`, or a server error such as a proxy's 504 that does not say what happened). |
+
+After an unknown outcome the settle may still execute. Check the payer's token
+balance and the explorer before you run the script again: a re-run signs a new
+authorization and can pay twice. The script prints the payer's account hash,
+the transaction when the facilitator named one, the authorization's nonce, and
+the time after which the authorization can no longer execute. The hosted
+facilitator answers any failure after the broadcast (for example when it stops
+waiting for the transaction) without a transaction hash, so after a hosted
+failure without one the script prints the same caution.
+
 ## Tests
 
 ```bash

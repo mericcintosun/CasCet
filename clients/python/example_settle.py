@@ -67,19 +67,34 @@ Environment:
                                  seller; required on mainnet
 
 A key is never sent over plain http:// to a host other than this machine.
+
+Exit status:
+    0  settled
+    1  nothing was paid: a setting or a refusal (before anything is signed),
+       a facilitator that could not be reached, or a settle it reports failed
+    2  invalid options
+    3  outcome unknown: the request may have reached the facilitator but no
+       answer came back, or the facilitator could not tell whether the
+       transfer executed (settlement_pending, settlement_unknown, or a server
+       error that does not say). The settle may still execute. Check the
+       payer's token balance and the explorer before running again: a re-run
+       signs a new authorization and can pay twice.
 """
 from __future__ import annotations
 
 import argparse
 import ipaddress
 import os
+import re
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 import requests
+import urllib3
 
 from cascet_x402 import (
     AUTHORIZATION_STYLE_EXTRA_KEY,
@@ -114,6 +129,20 @@ AMOUNT = "500000000"  # 0.5 token: both tokens have 9 decimals
 SELF_HOSTED_SETTLE_STYLES: Tuple[str, ...] = ("legacy-amount",)
 #: Authorization styles the hosted CSPR.cloud facilitator settles: it passes `value`.
 HOSTED_SETTLE_STYLES: Tuple[str, ...] = ("cep3009-value",)
+#: How long to wait for /settle: the facilitator answers once the transaction has executed.
+SETTLE_TIMEOUT_SECONDS = 120
+
+EXIT_SETTLED = 0
+#: Nothing was paid (a setting, a refusal, an unreachable facilitator or a failed settle).
+EXIT_FAILED = 1
+#: The settle may still execute: check the payer's balance before running again.
+EXIT_OUTCOME_UNKNOWN = 3
+#: errorReason and extra.settlementStatus with which CasCet's self-hosted
+#: facilitator answers a settle it broadcast but did not see execute, or whose
+#: submission it cannot confirm (tools/e2e/src/facilitator-core.ts).
+UNKNOWN_OUTCOME_REASONS = frozenset({"settlement_pending", "settlement_unknown"})
+UNKNOWN_SETTLEMENT_STATUSES = frozenset({"pending", "unknown"})
+_TX_HASH_RE = re.compile(r"[0-9a-fA-F]{64}")
 
 
 @dataclass(frozen=True)
@@ -353,6 +382,90 @@ def settle_request(payment_payload: dict, requirements: dict) -> dict:
     return {"x402Version": X402_VERSION, "paymentPayload": payment_payload, "paymentRequirements": requirements}
 
 
+def request_never_left(exc: requests.RequestException) -> bool:
+    """
+    Whether `exc` ended the /settle POST before the facilitator could have
+    received it: the connection, the DNS lookup or the TLS handshake failed,
+    or the request was refused while it was being prepared.
+
+    requests raises a failed connect as ConnectTimeout, as SSLError (TLS
+    handshake), or as a ConnectionError around urllib3's MaxRetryError with a
+    NewConnectionError (connection refused, DNS). A connection dropped or
+    reset after the request went out is a ConnectionError around urllib3's
+    ProtocolError instead, and a slow answer a ReadTimeout. The facilitator
+    may already have broadcast the transfer then, so those, and any other
+    error, leave the outcome unknown.
+    """
+    if isinstance(
+        exc,
+        (
+            requests.exceptions.ConnectTimeout,
+            requests.exceptions.SSLError,
+            requests.exceptions.ProxyError,
+            requests.exceptions.InvalidURL,
+            requests.exceptions.InvalidSchema,
+            requests.exceptions.MissingSchema,
+            requests.exceptions.InvalidHeader,
+        ),
+    ):
+        return True
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        cause = exc.args[0] if exc.args else None
+        return isinstance(cause, urllib3.exceptions.MaxRetryError) and isinstance(
+            cause.reason, urllib3.exceptions.NewConnectionError
+        )
+    return False
+
+
+def settlement_status(data: Any) -> Optional[str]:
+    """`extra.settlementStatus` of a /settle answer (CasCet's self-hosted facilitator sets it), or None."""
+    extra = data.get("extra") if isinstance(data, Mapping) else None
+    status = extra.get("settlementStatus") if isinstance(extra, Mapping) else None
+    return status if isinstance(status, str) else None
+
+
+def outcome_unknown(status_code: int, data: Any) -> bool:
+    """
+    Whether a /settle answer leaves open whether the transfer executes.
+
+    True for settlement_pending / settlement_unknown (as errorReason, or
+    pending / unknown as extra.settlementStatus), and for a server error
+    (5xx, such as a proxy's 502 or 504) that does not say what happened: the
+    facilitator may already have broadcast the transaction.
+    """
+    reason = data.get("errorReason") if isinstance(data, Mapping) else None
+    status = settlement_status(data)
+    if (isinstance(reason, str) and reason in UNKNOWN_OUTCOME_REASONS) or status in UNKNOWN_SETTLEMENT_STATUSES:
+        return True
+    return status_code >= 500 and status is None
+
+
+def transaction_hash(data: Any) -> Optional[str]:
+    """The `transaction` of a /settle answer when it is a 64-hex transaction hash, else None."""
+    tx = data.get("transaction") if isinstance(data, Mapping) else None
+    return tx if isinstance(tx, str) and _TX_HASH_RE.fullmatch(tx) else None
+
+
+def shown(value: Any, limit: int = 300) -> str:
+    """A value from the facilitator, fit for the terminal: control characters escaped, at most `limit` characters."""
+    text = value if isinstance(value, str) else repr(value)
+    text = "".join(ch if ch.isprintable() else ascii(ch)[1:-1] for ch in text)
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def unknown_outcome_caution(token: Token, key: CasperKey, authorization: Mapping[str, str]) -> str:
+    """What to do when a settle may still execute: a re-run signs a new authorization and can pay twice."""
+    valid_before = int(authorization["validBefore"])
+    until = datetime.fromtimestamp(valid_before, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return (
+        f"   The settle may still execute. Check the payer's {token.name} balance (account-hash "
+        f"{key.account_hash_hex()}) and the explorer before running this again: a re-run signs a new "
+        "authorization and can pay twice.\n"
+        f"   This authorization (nonce {authorization['nonce']}) cannot execute after {until} "
+        f"(validBefore {valid_before})."
+    )
+
+
 def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] = None) -> int:
     env = os.environ if env is None else env
     missing = missing_mainnet_settings(env)
@@ -363,20 +476,20 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
             "the repo's demo key is a throwaway key and the old demo payee is the hot deployer account.",
             file=sys.stderr,
         )
-        return 1
+        return EXIT_FAILED
     try:
         settings = load_settings(argv, env)
     except ConfigError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
-        return 1
+        return EXIT_FAILED
+    hosted = is_hosted_facilitator_url(settings.facilitator_url)
     # Like a CasCet gateway, keep CasCet's own extra.authorizationStyle away from the hosted facilitator.
-    advertise_style = not is_hosted_facilitator_url(settings.facilitator_url)
-    requirements = requirements_for(settings.token, settings.network, settings.seller, advertise_style=advertise_style)
+    requirements = requirements_for(settings.token, settings.network, settings.seller, advertise_style=not hosted)
 
     if not settings.key_path.is_file():
         hint = "" if settings.network == NETWORK_CASPER_MAINNET else "\nset CASCET_KEY_PATH or run `pnpm --filter @cascet/e2e gen-keys`"
         print(f"payer key not found: {settings.key_path}{hint}", file=sys.stderr)
-        return 1
+        return EXIT_FAILED
     key = CasperKey.from_pem(settings.key_path)
     print(f"[python] network: {settings.network}")
     print(f"[python] token: {settings.token.name} ({settings.token.style}) {settings.token.package_hash[:10]}...")
@@ -386,42 +499,77 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
     # Signs the EIP-712 authorization; the payload carries `accepted` (the full requirements).
     payment_payload = build_payment_payload(key=key, requirements=requirements)
     print(f"[python] signed authorization for {AMOUNT} raw units -> {settings.seller[:12]}...")
+    caution = unknown_outcome_caution(settings.token, key, payment_payload["payload"]["authorization"])
+    explorer = EXPLORERS[settings.network]
 
     try:
         resp = requests.post(
             f"{settings.facilitator_url}/settle",
             json=settle_request(payment_payload, requirements),
             headers=settings.headers,
-            timeout=120,  # the facilitator waits for the transaction to execute
+            timeout=SETTLE_TIMEOUT_SECONDS,
             allow_redirects=False,  # never hand the signed authorization (or the key) to another origin
         )
     except requests.RequestException as exc:
-        print(f"\n❌ facilitator unreachable at {settings.facilitator_url}: {exc}")
-        return 1
+        if request_never_left(exc):
+            print(f"\n❌ facilitator unreachable at {settings.facilitator_url}: {exc}")
+            return EXIT_FAILED
+        print(
+            f"\n⚠ outcome unknown: the settle request may have reached {settings.facilitator_url}, "
+            f"but no answer came back ({type(exc).__name__}: {exc})"
+        )
+        print(caution)
+        return EXIT_OUTCOME_UNKNOWN
 
     try:
         data = resp.json()
     except ValueError:
         data = None
+    if isinstance(data, dict):
+        print(f"[python] facilitator response (HTTP {resp.status_code}): {data}")
+    tx = transaction_hash(data)
+
+    if outcome_unknown(resp.status_code, data):
+        if isinstance(data, dict):
+            reason = data.get("errorReason") or data.get("error") or settlement_status(data)
+            detail = shown(reason) if reason else "no reason given"
+            if data.get("errorMessage"):
+                detail += f": {shown(data['errorMessage'])}"
+        else:
+            detail = f"a non-JSON body {resp.text[:300]!r}"
+        print(
+            f"\n⚠ outcome unknown: the facilitator answered HTTP {resp.status_code} without confirming the settle "
+            f"({detail})"
+        )
+        if tx:
+            print(f"   tx: {tx}\n   {explorer}{tx}")
+        print(caution)
+        return EXIT_OUTCOME_UNKNOWN
     if not isinstance(data, dict):
         print(f"\n❌ facilitator answered HTTP {resp.status_code} with a non-JSON body: {resp.text[:300]!r}")
-        return 1
-    print(f"[python] facilitator response (HTTP {resp.status_code}): {data}")
-
+        return EXIT_FAILED
     if resp.status_code != 200:
         # Policy rejections (401 auth, 403 allowlist, 429 rate limit, 503 gas cap) carry {"error": ...}.
         reason = data.get("error") or data.get("errorReason") or "unknown error"
-        print(f"\n❌ facilitator refused the settle (HTTP {resp.status_code}): {reason}")
-        return 1
-    if data.get("success"):
-        tx = data.get("transaction")
+        print(f"\n❌ facilitator refused the settle (HTTP {resp.status_code}): {shown(reason)}")
+        return EXIT_FAILED
+    if data.get("success") is True:
         net_label = "MAINNET" if settings.network == NETWORK_CASPER_MAINNET else "testnet"
         print(f"\n✅ Python-signed x402 payment settled on Casper {net_label}")
-        print(f"   tx: {tx}")
-        print(f"   {EXPLORERS[settings.network]}{tx}")
-        return 0
-    print(f"\n❌ settle failed: {data.get('errorReason')} — {data.get('errorMessage') or ''}")
-    return 1
+        if tx:
+            print(f"   tx: {tx}\n   {explorer}{tx}")
+        else:
+            print(f"   tx: {shown(data.get('transaction'))} (not a transaction hash)")
+        return EXIT_SETTLED
+    print(f"\n❌ settle failed: {shown(data.get('errorReason'))} — {shown(data.get('errorMessage') or '')}")
+    if tx:
+        print(f"   tx: {tx}\n   {explorer}{tx}")
+    elif hosted:
+        # @x402/casper 2.29's facilitator answers any failure after the broadcast (such as giving up waiting for
+        # the transaction) with success false and an empty transaction, so this one may still execute.
+        print("   The hosted facilitator gives no transaction hash even for a transfer it had already broadcast.")
+        print(caution)
+    return EXIT_FAILED
 
 
 if __name__ == "__main__":

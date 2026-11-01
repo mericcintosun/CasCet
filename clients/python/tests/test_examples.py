@@ -1,21 +1,25 @@
 """example_settle.py and example_gateway.py: the asset and facilitator choices and the hosted facilitator's raw key.
 
-Nothing here touches a network: requests.post and the PayingClient's session are replaced by fakes.
+Nothing here touches an external network: requests.post and the PayingClient's session are replaced by fakes,
+or by a session talking to a small server on 127.0.0.1 for the transport failures of a settle.
 """
 import base64
 import contextlib
 import io
 import json
 import os
+import socket
 import tempfile
 import unittest
 from unittest import mock
 
+import requests
+import urllib3
 from cryptography.hazmat.primitives import serialization
 
 from helpers import (
-    MAINNET, SELLER, TEST_KEY, TESTNET, TOKEN, OTHER_TOKEN, WCSPR, FakeResponse, FakeSession, challenge,
-    legacy_requirements, make_payment_required, wcspr_requirements, x402,
+    MAINNET, SELLER, TEST_KEY, TESTNET, TOKEN, OTHER_TOKEN, WCSPR, FakeResponse, FakeSession, LocalServer, challenge,
+    direct_session, legacy_requirements, make_payment_required, wcspr_requirements, x402,
 )
 
 import example_gateway  # noqa: E402  (helpers puts clients/python on sys.path)
@@ -334,6 +338,212 @@ class TestSettleMain(unittest.TestCase):
         code, _, out = self.run_main([], env, failed)
         self.assertEqual(code, 1)
         self.assertIn("insufficient_funds", out)
+
+
+def refused_connection():
+    """What requests raises when nothing listens on the facilitator's port."""
+    reason = urllib3.exceptions.NewConnectionError(None, "Failed to establish a new connection: [Errno 61] Connection refused")
+    return requests.exceptions.ConnectionError(urllib3.exceptions.MaxRetryError(None, "/settle", reason))
+
+
+def dropped_connection():
+    """What requests raises when the facilitator (or a proxy) hangs up after the request went out."""
+    return requests.exceptions.ConnectionError(
+        urllib3.exceptions.ProtocolError("Connection aborted.", ConnectionResetError(54, "Connection reset by peer"))
+    )
+
+
+class TestSettleOutcome(unittest.TestCase):
+    """A settle that may still execute is reported as an unknown outcome (exit 3), never as a failure to re-run."""
+
+    def setUp(self):
+        self.env = {"CASCET_KEY_PATH": write_test_pem(self)}
+        self.hosted_env = {**self.env, "CSPR_CLOUD_TOKEN": "cspr-cloud-key"}
+
+    def run_main(self, argv, env, *, response=None, error=None):
+        out = io.StringIO()
+        with mock.patch.object(example_settle.requests, "post", return_value=response, side_effect=error) as post:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                code = example_settle.main(argv, env)
+        post.assert_called_once()
+        self.authorization = post.call_args.kwargs["json"]["paymentPayload"]["payload"]["authorization"]
+        return code, out.getvalue()
+
+    def assert_unknown(self, code, out):
+        self.assertEqual(code, example_settle.EXIT_OUTCOME_UNKNOWN, out)
+        self.assertEqual(code, 3)
+        self.assertIn("outcome unknown", out)
+        self.assertIn("may still execute", out)
+        self.assertIn("can pay twice", out)
+        self.assertIn(TEST_KEY.account_hash_hex(), out)  # whose balance to check
+        self.assertIn(self.authorization["nonce"], out)
+        self.assertIn(f"validBefore {self.authorization['validBefore']}", out)
+        self.assertNotIn("❌", out)
+        self.assertNotIn("unreachable", out)
+
+    def assert_failed(self, code, out):
+        self.assertEqual(code, example_settle.EXIT_FAILED, out)
+        self.assertIn("❌", out)
+        self.assertNotIn("outcome unknown", out)
+        self.assertNotIn("can pay twice", out)
+
+    def test_no_answer_after_the_request_went_out(self):
+        for error in (
+            requests.exceptions.ReadTimeout("HTTPConnectionPool(host='127.0.0.1', port=4501): Read timed out."),
+            dropped_connection(),
+            requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead(0 bytes read)"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                code, out = self.run_main([], self.env, error=error)
+                self.assert_unknown(code, out)
+                self.assertIn("no answer came back", out)
+
+    def test_a_request_that_never_left_failed(self):
+        for error in (
+            refused_connection(),
+            requests.exceptions.ConnectTimeout("HTTPSConnectionPool(host='x402-facilitator.cspr.cloud'): timed out"),
+            requests.exceptions.SSLError(urllib3.exceptions.MaxRetryError(
+                None, "/settle", urllib3.exceptions.SSLError("certificate verify failed"))),
+        ):
+            with self.subTest(error=type(error).__name__):
+                code, out = self.run_main(["--asset", "wcspr"], self.hosted_env, error=error)
+                self.assert_failed(code, out)
+                self.assertIn("facilitator unreachable", out)
+
+    def test_request_never_left(self):
+        self.assertTrue(example_settle.request_never_left(refused_connection()))
+        self.assertTrue(example_settle.request_never_left(requests.exceptions.ConnectTimeout("timed out")))
+        self.assertFalse(example_settle.request_never_left(dropped_connection()))
+        self.assertFalse(example_settle.request_never_left(requests.exceptions.ReadTimeout("read timed out")))
+        self.assertFalse(example_settle.request_never_left(requests.exceptions.ConnectionError("no cause")))
+        self.assertFalse(example_settle.request_never_left(requests.exceptions.RequestException("anything else")))
+
+    def test_pending_and_unknown_answers(self):
+        tx = "cd" * 32
+        cases = (
+            # CasCet's self-hosted facilitator broadcast the transfer but did not see it execute in time.
+            (SettleResponse(200, {}, body={
+                "success": False, "errorReason": "settlement_pending", "transaction": tx, "network": TESTNET,
+                "errorMessage": "transaction submitted; its execution was not observed yet",
+                "extra": {"settlementStatus": "pending"}}), tx),
+            # ...or it cannot tell whether its submission went through.
+            (SettleResponse(500, {}, body={
+                "success": False, "errorReason": "settlement_unknown", "transaction": "", "network": TESTNET,
+                "extra": {"settlementStatus": "unknown"}}), None),
+            (SettleResponse(200, {}, body={"success": False, "errorReason": "settlement_unknown", "transaction": tx}), tx),
+            (SettleResponse(200, {}, body={"success": False, "errorReason": "something_new", "transaction": "",
+                                           "extra": {"settlementStatus": "pending"}}), None),
+        )
+        for response, shown_tx in cases:
+            with self.subTest(body=response._body):
+                code, out = self.run_main([], self.env, response=response)
+                self.assert_unknown(code, out)
+                if shown_tx:
+                    self.assertIn("https://testnet.cspr.live/transaction/" + shown_tx, out)
+                else:
+                    self.assertNotIn("cspr.live/transaction/", out)
+
+    def test_a_server_error_that_does_not_say_is_an_unknown_outcome(self):
+        gateway_timeout = SettleResponse(504, {})
+        gateway_timeout.text = "<html><body>504 Gateway Time-out</body></html>"
+        for response in (gateway_timeout, SettleResponse(502, {}, body={"error": "bad gateway"}),
+                         SettleResponse(500, {}, body={"error": "internal error"})):
+            with self.subTest(status=response.status_code):
+                code, out = self.run_main(["--asset", "wcspr"], self.hosted_env, response=response)
+                self.assert_unknown(code, out)
+                self.assertIn(f"HTTP {response.status_code}", out)
+
+    def test_answers_that_say_nothing_moved_are_failures(self):
+        for response in (
+            SettleResponse(403, {}, body={"error": "asset_not_allowlisted"}),
+            SettleResponse(503, {}, body={"success": False, "errorReason": "facilitator_busy", "transaction": "",
+                                          "extra": {"settlementStatus": "not_submitted"}}),
+            SettleResponse(200, {}, body={"success": False, "errorReason": "insufficient_funds", "transaction": "",
+                                          "extra": {"settlementStatus": "not_submitted"}}),
+        ):
+            with self.subTest(status=response.status_code):
+                code, out = self.run_main([], self.env, response=response)
+                self.assert_failed(code, out)
+
+    def test_a_reverted_settle_shows_its_transaction(self):
+        tx = "ef" * 32
+        reverted = SettleResponse(200, {}, body={
+            "success": False, "errorReason": "settlement_failed", "transaction": tx, "network": TESTNET,
+            "errorMessage": "transaction execution failed: User error: 64658", "extra": {"settlementStatus": "failed"}})
+        code, out = self.run_main([], self.env, response=reverted)
+        self.assert_failed(code, out)
+        self.assertIn("https://testnet.cspr.live/transaction/" + tx, out)
+
+    def test_a_hosted_failure_without_a_transaction_hash_carries_the_caution(self):
+        # @x402/casper 2.29's facilitator drops the hash when anything fails after the broadcast.
+        failed = SettleResponse(200, {}, body={
+            "success": False, "errorReason": "invalid_exact_casper_facilitator_settle_failed", "transaction": "",
+            "errorMessage": "Timed out waiting for transaction", "network": TESTNET})
+        code, out = self.run_main(["--asset", "wcspr"], self.hosted_env, response=failed)
+        self.assertEqual(code, example_settle.EXIT_FAILED, out)
+        self.assertIn("settle failed: invalid_exact_casper_facilitator_settle_failed", out)
+        self.assertIn("no transaction hash", out)
+        self.assertIn("may still execute", out)
+        self.assertIn("can pay twice", out)
+        self.assertIn(self.authorization["nonce"], out)
+        # The same answer from CasCet's self-hosted facilitator says nothing was broadcast.
+        code, out = self.run_main([], self.env, response=failed)
+        self.assert_failed(code, out)
+
+    def test_facilitator_text_is_escaped(self):
+        hostile = SettleResponse(200, {}, body={"success": False, "errorReason": "bad\x1b[2Jreason", "transaction": "",
+                                                "errorMessage": "line\nbreak"})
+        code, out = self.run_main([], self.env, response=hostile)
+        self.assert_failed(code, out)
+        self.assertNotIn("\x1b", out)
+        self.assertIn("bad\\x1b[2Jreason", out)
+        settled = SettleResponse(200, {}, body={"success": True, "transaction": "not-a-hash\x1b", "network": TESTNET})
+        code, out = self.run_main([], self.env, response=settled)
+        self.assertEqual(code, example_settle.EXIT_SETTLED, out)
+        self.assertNotIn("\x1b", out)
+        self.assertNotIn("cspr.live/transaction/", out)
+
+
+class TestSettleOverSockets(unittest.TestCase):
+    """The same outcomes with requests' real transport errors, against a facilitator on 127.0.0.1."""
+
+    def run_main(self, url):
+        env = {"CASCET_KEY_PATH": write_test_pem(self)}
+        out = io.StringIO()
+        with direct_session() as session:  # ignores proxy settings from the environment
+            with mock.patch.object(example_settle.requests, "post", side_effect=session.post):
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                    code = example_settle.main(["--facilitator", url], env)
+        return code, out.getvalue()
+
+    def test_a_facilitator_that_hangs_up_after_reading_the_request(self):
+        def hang_up(handler, server):
+            handler.close_connection = True  # read the settle request, answer nothing
+
+        with LocalServer(hang_up) as server:
+            code, out = self.run_main(server.url)
+        self.assertEqual(code, example_settle.EXIT_OUTCOME_UNKNOWN, out)
+        self.assertEqual(len(server.requests), 1)
+        self.assertIn("outcome unknown", out)
+
+    def test_a_facilitator_that_does_not_answer_in_time(self):
+        def stall(handler, server):
+            server.stop.wait(5)
+            handler.close_connection = True
+
+        with mock.patch.object(example_settle, "SETTLE_TIMEOUT_SECONDS", 0.3), LocalServer(stall) as server:
+            code, out = self.run_main(server.url)
+        self.assertEqual(code, example_settle.EXIT_OUTCOME_UNKNOWN, out)
+        self.assertIn("ReadTimeout", out)
+
+    def test_a_facilitator_that_is_not_listening(self):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        code, out = self.run_main(f"http://127.0.0.1:{port}")
+        self.assertEqual(code, example_settle.EXIT_FAILED, out)
+        self.assertIn("facilitator unreachable", out)
+        self.assertNotIn("outcome unknown", out)
 
 
 class GatewayResponse(FakeResponse):
