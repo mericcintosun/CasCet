@@ -11,11 +11,18 @@ The digest, signature, payload and header encoding match the TypeScript client
 `@x402/core`) byte for byte. `tests/eip712_vectors.json` holds vectors produced
 by those packages and `tests/test_vectors.py` checks this module against them.
 
-Protocol helpers: `parse_payment_required` (reads the 402's `PAYMENT-REQUIRED`
-header), `build_payment_payload` (signs one `accepts` entry and echoes it as
-`accepted`), `payment_signature_header`. They apply no spending policy.
+Two layers:
 
-Deps: cryptography (ed25519 PEM), pycryptodome (keccak-256).
+* Protocol helpers with no policy: `parse_payment_required` (reads the 402's
+  `PAYMENT-REQUIRED` header), `build_payment_payload` (signs one `accepts`
+  entry and echoes it as `accepted`), `payment_signature_header`.
+* `PayingClient`: the same guard rails as the TypeScript `createPayingFetch`
+  around a 402 -> sign -> retry flow: network, payTo and asset allowlists,
+  strict amount parsing, per-call and per-asset session budgets, and a request
+  timeout. It also refuses to pay over plain HTTP to a non-loopback host.
+
+Deps: cryptography (ed25519 PEM), pycryptodome (keccak-256); requests is only
+needed by `PayingClient`.
 """
 from __future__ import annotations
 
@@ -24,25 +31,35 @@ import base64
 import binascii
 import copy
 import hashlib
+import ipaddress
 import json
+import math
 import os
 import re
 import secrets
 import sys
+import threading
 import time
+import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from urllib.parse import urlsplit
 
 from Crypto.Hash import keccak as _keccak
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    import requests
+
 __all__ = [
     "X402_VERSION",
     "SCHEME_EXACT",
     "NETWORK_CASPER_MAINNET",
     "NETWORK_CASPER_TESTNET",
+    "DEFAULT_NETWORKS",
+    "DEFAULT_TIMEOUT_SECONDS",
     "MAX_VALIDITY_SECONDS",
     "HEADER_PAYMENT_SIGNATURE",
     "HEADER_PAYMENT_REQUIRED",
@@ -51,6 +68,8 @@ __all__ = [
     "HEADER_CASCET_PAYMENT_ID",
     "X402Error",
     "ProtocolError",
+    "PaymentAborted",
+    "InsecurePaymentConfigWarning",
     "keccak256",
     "transfer_with_auth_digest",
     "CasperKey",
@@ -66,6 +85,7 @@ __all__ = [
     "decode_payment_required_header",
     "parse_payment_required",
     "parse_payment_response",
+    "PayingClient",
 ]
 
 # ---- protocol constants (same values as @cascet/core and @x402/core) ----
@@ -79,6 +99,10 @@ HEADER_PAYMENT_RESPONSE = "PAYMENT-RESPONSE"
 HEADER_CASCET_PARENT_ID = "x-cascet-parent-id"
 HEADER_CASCET_PAYMENT_ID = "x-cascet-payment-id"
 
+#: Networks a PayingClient pays on unless told otherwise (TS client default too).
+DEFAULT_NETWORKS: Tuple[str, ...] = (NETWORK_CASPER_TESTNET,)
+#: Per-request HTTP timeout, the TypeScript client's `timeoutMs: 30000`.
+DEFAULT_TIMEOUT_SECONDS = 30.0
 #: validAfter is back-dated by this much to tolerate clock skew (same as the TS scheme).
 VALID_AFTER_SKEW_SECONDS = 600
 #: Upper bound on how long a signed authorization stays valid, whatever
@@ -100,6 +124,14 @@ class X402Error(Exception):
 
 class ProtocolError(X402Error, ValueError):
     """A 402 challenge, x402 header or payment requirement is malformed."""
+
+
+class PaymentAborted(X402Error):
+    """The client refused to sign a payment (policy, budget or unsafe transport)."""
+
+
+class InsecurePaymentConfigWarning(UserWarning):
+    """A PayingClient was built without allowlists or without a budget."""
 
 
 def keccak256(data: bytes) -> bytes:
@@ -270,6 +302,18 @@ def parse_amount(value: Any, *, what: str = "amount") -> int:
     return amount
 
 
+def _parse_budget(value: Union[int, str, None], what: str) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool):
+        if not 0 <= value < 10**40:
+            raise ValueError(f"{what} must be between 0 and 10^40 - 1 raw units, got {value!r}")
+        return value
+    if isinstance(value, str) and _DIGITS_RE.fullmatch(value):
+        return int(value)
+    raise ValueError(f"{what} must be raw token units as an int or a string of 1-40 ASCII digits, got {value!r}")
+
+
 def normalize_pay_to(value: str) -> str:
     """Canonical lowercase form of a payTo allowlist entry: a serialized Casper Key in hex.
 
@@ -398,7 +442,7 @@ def build_payment_payload(
     `valid_before` the window is the TS client's: from `now - 600` to `now +
     maxTimeoutSeconds` (capped at MAX_VALIDITY_SECONDS).
 
-    This applies no spending policy: check payTo, asset, network and amount first.
+    This applies no spending policy: use PayingClient for allowlists and budgets.
     """
     validate_requirements(requirements)
     if resource is not None and not isinstance(resource, Mapping):
@@ -562,6 +606,342 @@ def parse_payment_response(response: Any) -> Optional[dict]:
     if not isinstance(decoded, dict):
         raise ProtocolError(f"{HEADER_PAYMENT_RESPONSE} must decode to a JSON object")
     return decoded
+
+
+# ---- paying client ----
+_warned: set = set()
+
+
+def _warn_once(kind: str, message: str) -> None:
+    if kind in _warned:
+        return
+    _warned.add(kind)
+    # stacklevel 3: attribute the warning to the code that built the PayingClient.
+    warnings.warn(message, InsecurePaymentConfigWarning, stacklevel=3)
+
+
+def _is_loopback_host(host: Optional[str]) -> bool:
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+Timeout = Union[float, Tuple[float, float], None]
+
+
+def _check_timeout(timeout: Any) -> Timeout:
+    def positive(x: Any) -> bool:
+        return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and x > 0
+
+    if timeout is None or positive(timeout):
+        return timeout
+    if isinstance(timeout, tuple) and len(timeout) == 2 and all(positive(x) for x in timeout):
+        return timeout
+    raise ValueError(f"timeout must be positive seconds, a (connect, read) tuple, or None, got {timeout!r}")
+
+
+def _split_env(value: Optional[str]) -> List[str]:
+    return [part.strip() for part in (value or "").split(",") if part.strip()]
+
+
+class PayingClient:
+    """
+    HTTP client that answers x402 challenges with Casper payments, within limits.
+
+    The Python counterpart of the TypeScript `createPayingFetch`:
+
+    * `networks`: CAIP-2 networks it pays on (default: testnet only). A 402 on
+      any other network is refused.
+    * `allowed_pay_to` / `allowed_assets`: only pay these sellers in these
+      tokens. Leaving either out logs a warning, because then a hostile or
+      man-in-the-middled 402 picks the payee or the token. Without a payTo
+      allowlist a '01'-tagged payTo (a contract package, or a public key pasted
+      where an account hash belongs) is refused.
+    * `max_per_call_raw` / `max_session_raw`: budgets in raw token units; the
+      session budget is tracked per asset. Spend is counted when an
+      authorization is signed (a signed authorization can be settled even if
+      the server then fails), and never refunded.
+    * `timeout`: seconds per HTTP request (default 30, like the TS `timeoutMs`).
+    * `allow_insecure_http`: pay over plain http:// to a non-loopback host only
+      when this is True.
+    * `parent_id`: sent as x-cascet-parent-id so a cascade's receipts link up.
+    * `on_payment`: called with {amount_raw, pay_to, asset, network} after each
+      authorization is signed.
+
+    `request()` sends the request; on a 402 it reads PAYMENT-REQUIRED, picks the
+    first acceptable `accepts` entry, signs it and retries once with
+    PAYMENT-SIGNATURE. A second 402 is returned as is, never paid again. The
+    request body must be replayable (json=, data= bytes/str/dict).
+    """
+
+    def __init__(
+        self,
+        key: CasperKey,
+        *,
+        networks: Sequence[str] = DEFAULT_NETWORKS,
+        allowed_pay_to: Optional[Sequence[str]] = None,
+        allowed_assets: Optional[Sequence[str]] = None,
+        max_per_call_raw: Union[int, str, None] = None,
+        max_session_raw: Union[int, str, None] = None,
+        timeout: Timeout = DEFAULT_TIMEOUT_SECONDS,
+        allow_insecure_http: bool = False,
+        parent_id: Optional[str] = None,
+        on_payment: Optional[Callable[[Dict[str, str]], None]] = None,
+        session: Any = None,
+    ) -> None:
+        if not isinstance(key, CasperKey):
+            raise TypeError("key must be a CasperKey")
+        if isinstance(networks, str):
+            networks = [networks]
+        nets = []
+        for network in networks:
+            if not isinstance(network, str) or not network.startswith("casper:") or len(network) == len("casper:"):
+                raise ValueError(f"networks must be Casper CAIP-2 ids such as 'casper:casper-test', got {network!r}")
+            if "*" in network:
+                raise ValueError(f"list the networks to pay on explicitly; wildcards are not supported: {network!r}")
+            nets.append(network)
+        if not nets:
+            raise ValueError("networks must name at least one network")
+        self._key = key
+        self._networks: Tuple[str, ...] = tuple(dict.fromkeys(nets))
+        self._allowed_pay_to: Optional[frozenset] = None
+        if allowed_pay_to is not None:
+            self._allowed_pay_to = frozenset(normalize_pay_to(p) for p in _as_list(allowed_pay_to))
+        self._allowed_assets: Optional[frozenset] = None
+        if allowed_assets is not None:
+            self._allowed_assets = frozenset(normalize_asset(a) for a in _as_list(allowed_assets))
+        self._max_per_call = _parse_budget(max_per_call_raw, "max_per_call_raw")
+        self._max_session = _parse_budget(max_session_raw, "max_session_raw")
+        self._timeout = _check_timeout(timeout)
+        self._allow_insecure_http = bool(allow_insecure_http)
+        self._parent_id = parent_id
+        self._on_payment = on_payment
+        self._session = session
+        self._owns_session = False
+        self._spent: Dict[str, int] = {}
+        self._lock = threading.Lock()
+
+        if self._allowed_pay_to is None or self._allowed_assets is None:
+            _warn_once(
+                "allowlist",
+                "PayingClient has no allowed_pay_to/allowed_assets: it will sign whatever payee and token a 402 "
+                "names on the allowed networks. Pin the sellers and tokens you intend to pay.",
+            )
+        if self._max_per_call is None and self._max_session is None:
+            _warn_once(
+                "budget",
+                "PayingClient has no max_per_call_raw/max_session_raw: spending is unlimited.",
+            )
+
+    # -- configuration from the same env vars as `cascet connect` --
+    @classmethod
+    def from_env(
+        cls,
+        environ: Optional[Mapping[str, str]] = None,
+        *,
+        key: Optional[CasperKey] = None,
+        **kwargs: Any,
+    ) -> PayingClient:
+        """
+        Build a client from the environment variables `cascet connect` reads.
+
+        CASCET_KEY_PATH (PEM; ignored when `key` is given), CASCET_NETWORK
+        (comma list, default casper:casper-test), CASCET_ALLOWED_PAYTO and
+        CASCET_ALLOWED_ASSETS (comma lists, required unless
+        CASCET_ALLOW_ANY_SELLER=1), CASCET_MAX_PER_CALL and CASCET_MAX_SESSION
+        (raw token units, required unless CASCET_ALLOW_UNLIMITED_BUDGET=1).
+        """
+        env = os.environ if environ is None else environ
+        if key is None:
+            key_path = env.get("CASCET_KEY_PATH", "").strip()
+            if not key_path:
+                raise ValueError("CASCET_KEY_PATH (path to the payer's PEM private key) is required")
+            key = CasperKey.from_pem(key_path)
+        networks = _split_env(env.get("CASCET_NETWORK")) or list(DEFAULT_NETWORKS)
+        allowed_pay_to = _split_env(env.get("CASCET_ALLOWED_PAYTO"))
+        allowed_assets = _split_env(env.get("CASCET_ALLOWED_ASSETS"))
+        if env.get("CASCET_ALLOW_ANY_SELLER") != "1" and (not allowed_pay_to or not allowed_assets):
+            raise ValueError(
+                "CASCET_ALLOWED_PAYTO and CASCET_ALLOWED_ASSETS are required "
+                "(set CASCET_ALLOW_ANY_SELLER=1 to pay any seller in any token)"
+            )
+        max_per_call = env.get("CASCET_MAX_PER_CALL", "").strip() or None
+        max_session = env.get("CASCET_MAX_SESSION", "").strip() or None
+        if env.get("CASCET_ALLOW_UNLIMITED_BUDGET") != "1" and (max_per_call is None or max_session is None):
+            raise ValueError(
+                "CASCET_MAX_PER_CALL and CASCET_MAX_SESSION (raw token units) are required "
+                "(set CASCET_ALLOW_UNLIMITED_BUDGET=1 to run without a budget)"
+            )
+        return cls(
+            key,
+            networks=networks,
+            allowed_pay_to=allowed_pay_to or None,
+            allowed_assets=allowed_assets or None,
+            max_per_call_raw=max_per_call,
+            max_session_raw=max_session,
+            **kwargs,
+        )
+
+    # -- policy --
+    @property
+    def networks(self) -> Tuple[str, ...]:
+        return self._networks
+
+    def _reject_reason(self, requirements: Any) -> Optional[str]:
+        try:
+            validate_requirements(requirements)
+        except ProtocolError as exc:
+            return str(exc)
+        network = requirements["network"]
+        if network not in self._networks:
+            return f"network {network} is not allowed (allowed: {', '.join(self._networks)})"
+        pay_to = requirements["payTo"].lower()
+        if self._allowed_pay_to is not None:
+            if pay_to not in self._allowed_pay_to:
+                return f"payTo {requirements['payTo']} is not allowlisted"
+        elif pay_to.startswith("01"):
+            return (
+                f"payTo {requirements['payTo']} carries the 01 tag (a contract package, or a public key used where "
+                "an account hash belongs); add it to allowed_pay_to as hash-<64 hex> to pay it"
+            )
+        asset = requirements["asset"].lower()
+        if self._allowed_assets is not None and asset not in self._allowed_assets:
+            return f"asset {requirements['asset']} is not allowlisted"
+        amount = int(requirements["amount"])
+        if self._max_per_call is not None and amount > self._max_per_call:
+            return f"price {amount} exceeds the per-call budget {self._max_per_call}"
+        if self._max_session is not None:
+            spent = self._spent.get(asset, 0)
+            if spent + amount > self._max_session:
+                return (
+                    f"price {amount} would exceed the session budget {self._max_session} "
+                    f"for asset {asset} (already authorized {spent})"
+                )
+        return None
+
+    def select_requirements(self, payment_required: Mapping[str, Any]) -> dict:
+        """The first `accepts` entry this client may pay, or PaymentAborted listing why none qualifies."""
+        accepts = payment_required.get("accepts") if isinstance(payment_required, Mapping) else None
+        if not isinstance(accepts, list) or not accepts:
+            raise PaymentAborted("the 402 offers no payment requirements")
+        reasons = []
+        for index, requirements in enumerate(accepts):
+            reason = self._reject_reason(requirements)
+            if reason is None:
+                return requirements
+            reasons.append(f"accepts[{index}]: {reason}")
+        raise PaymentAborted("refusing to pay: " + "; ".join(reasons))
+
+    def create_payment_payload(self, payment_required: Mapping[str, Any], *, now: Optional[int] = None) -> dict:
+        """Pick an acceptable requirement, reserve its budget and sign it. Raises PaymentAborted."""
+        with self._lock:
+            requirements = self.select_requirements(payment_required)
+            asset = requirements["asset"].lower()
+            amount = int(requirements["amount"])
+            self._spent[asset] = self._spent.get(asset, 0) + amount
+        try:
+            payload = build_payment_payload(
+                key=self._key,
+                requirements=requirements,
+                resource=payment_required.get("resource"),
+                extensions=payment_required.get("extensions"),
+                now=now,
+            )
+        except BaseException:
+            # Nothing was handed out, so the reservation can be released.
+            with self._lock:
+                self._spent[asset] -= amount
+                if self._spent[asset] == 0:
+                    del self._spent[asset]
+            raise
+        if self._on_payment is not None:
+            self._on_payment({
+                "amount_raw": str(amount),
+                "pay_to": requirements["payTo"],
+                "asset": requirements["asset"],
+                "network": requirements["network"],
+            })
+        return payload
+
+    def spent_raw(self, asset: str) -> int:
+        """Raw units authorized so far in `asset` (hash-<hex> or bare hex)."""
+        with self._lock:
+            return self._spent.get(normalize_asset(asset), 0)
+
+    def spending(self) -> Dict[str, int]:
+        """Raw units authorized so far, per asset."""
+        with self._lock:
+            return dict(self._spent)
+
+    # -- HTTP --
+    def _http(self) -> Any:
+        if self._session is None:
+            import requests  # deferred: only the HTTP flow needs it
+
+            self._session = requests.Session()
+            self._owns_session = True
+        return self._session
+
+    def _check_transport(self, *urls: str) -> None:
+        if self._allow_insecure_http:
+            return
+        for url in urls:
+            parts = urlsplit(url)
+            scheme = parts.scheme.lower()
+            if scheme == "https" or (scheme == "http" and _is_loopback_host(parts.hostname)):
+                continue
+            raise PaymentAborted(
+                f"refusing to pay over {scheme or '?'}:// to {parts.hostname or url}: a man-in-the-middle could "
+                "rewrite the 402. Use https:// (or allow_insecure_http=True on a network you trust)."
+            )
+
+    def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        """Send a request; answer a 402 with one payment within the limits, then retry once."""
+        http = self._http()
+        kwargs.setdefault("timeout", self._timeout)
+        headers = dict(kwargs.pop("headers", None) or {})
+        if self._parent_id and not _has_header(headers, HEADER_CASCET_PARENT_ID):
+            headers[HEADER_CASCET_PARENT_ID] = self._parent_id
+        response = http.request(method, url, headers=headers, **kwargs)
+        if response.status_code != 402 or _has_header(headers, HEADER_PAYMENT_SIGNATURE):
+            return response
+        self._check_transport(url, getattr(response, "url", None) or url)
+        payment_required = parse_payment_required(response)
+        payload = self.create_payment_payload(payment_required)
+        headers[HEADER_PAYMENT_SIGNATURE] = payment_signature_header(payload)
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()  # release the connection of the 402 (matters with stream=True)
+        return http.request(method, url, headers=headers, **kwargs)
+
+    def get(self, url: str, **kwargs: Any) -> requests.Response:
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url: str, **kwargs: Any) -> requests.Response:
+        return self.request("POST", url, **kwargs)
+
+    def close(self) -> None:
+        if self._owns_session and self._session is not None:
+            self._session.close()
+            self._session = None
+            self._owns_session = False
+
+    def __enter__(self) -> PayingClient:
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+
+def _as_list(values: Sequence[str]) -> List[str]:
+    if isinstance(values, str):
+        return [values]
+    return list(values)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
