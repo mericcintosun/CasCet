@@ -134,8 +134,10 @@ AMOUNT = "500000000"  # 0.5 token: both tokens have 9 decimals
 SELF_HOSTED_SETTLE_STYLES: Tuple[str, ...] = ("legacy-amount",)
 #: Authorization styles the hosted CSPR.cloud facilitator settles: it passes `value`.
 HOSTED_SETTLE_STYLES: Tuple[str, ...] = ("cep3009-value",)
-#: How long to wait for /settle: the facilitator answers once the transaction has executed.
-SETTLE_TIMEOUT_SECONDS = 120
+#: (connect, read) timeouts of the /settle POST in seconds. The facilitator answers once the transaction has
+#: executed (CasCet's self-hosted one waits up to 60 s by default), so the read timeout is long; a failed
+#: connect sends nothing and fails fast.
+SETTLE_TIMEOUT: Tuple[float, float] = (10, 120)
 
 #: The transfer executed.
 EXIT_SETTLED = 0
@@ -541,7 +543,7 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
             f"{settings.facilitator_url}/settle",
             json=settle_request(payment_payload, requirements),
             headers=settings.headers,
-            timeout=SETTLE_TIMEOUT_SECONDS,
+            timeout=SETTLE_TIMEOUT,
             allow_redirects=False,  # never hand the signed authorization (or the key) to another origin
         )
     except requests.RequestException as exc:

@@ -305,6 +305,7 @@ class TestSettleMain(unittest.TestCase):
         self.assertEqual(url, HOSTED + "/settle")
         self.assertEqual(kwargs["headers"], {"Authorization": "cspr-cloud-key"})
         self.assertFalse(kwargs["allow_redirects"])
+        self.assertEqual(kwargs["timeout"], example_settle.SETTLE_TIMEOUT)
         body = kwargs["json"]
         self.assertEqual(body["x402Version"], 2)
         requirements = body["paymentRequirements"]
@@ -581,7 +582,8 @@ class TestSettleOverSockets(unittest.TestCase):
             server.stop.wait(5)
             handler.close_connection = True
 
-        with mock.patch.object(example_settle, "SETTLE_TIMEOUT_SECONDS", 0.3), LocalServer(stall) as server:
+        self.assertEqual(example_settle.SETTLE_TIMEOUT, (10, 120))  # (connect, read)
+        with mock.patch.object(example_settle, "SETTLE_TIMEOUT", (5, 0.3)), LocalServer(stall) as server:
             code, out = self.run_main(server.url)
         self.assertEqual(code, example_settle.EXIT_OUTCOME_UNKNOWN, out)
         self.assertIn("ReadTimeout", out)
