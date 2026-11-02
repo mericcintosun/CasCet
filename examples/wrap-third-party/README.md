@@ -37,14 +37,17 @@ published. Check the tool list again before you move the pin.
 
 - Node.js 22 or newer, pnpm, and a clone of this repository (the self-hosted
   facilitator lives in `tools/e2e`; it is not published to npm).
-- The CasCet CLI of this checkout, **0.1.1 or later**
-  (`node packages/cli/dist/cli.js --version` after `pnpm build`). Every command
-  below runs it from there. Never run this example with the published
-  `@cascet/cli` 0.1.0: its gateway listens on every network interface, allows
-  any website (CORS `*`) and passes every unpriced tool through for free, so it
-  would serve `get-env` (the gateway's whole environment) and
-  `gzip-file-as-resource` (fetches any URL) to anyone who can reach it, and its
-  `connect` silently ignores the allowlist and budget variables.
+- The CasCet CLI of this checkout (`node packages/cli/dist/cli.js` after
+  `pnpm build`). Every command below runs it from there. Its `--version` prints
+  `0.1.0` until the 0.1.1 release bumps the checkout's packages; that is
+  expected, and it is still this checkout's code. The published `@cascet/cli`
+  0.1.0 has no `--version` (it prints its usage text instead) and no
+  `account-hash`. Never run this example with it: its gateway listens on every
+  network interface, allows any website (CORS `*`) and passes every unpriced
+  tool through for free, so it would serve `get-env` (the gateway's whole
+  environment) and `gzip-file-as-resource` (fetches any URL) to anyone who can
+  reach it, and its `connect` silently ignores the allowlist and budget
+  variables.
 - Three Casper testnet key pairs (ed25519 PEM files):
   - **seller**: receives the payments;
   - **fee payer**: the facilitator pays the gas for each settlement from this

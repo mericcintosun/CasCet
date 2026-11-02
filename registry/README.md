@@ -20,9 +20,11 @@ remote URL can belong to only one server name.
 
 1. On the host, clone this repository and build it
    (`pnpm install --frozen-lockfile && pnpm build`). The steps below run the
-   CLI of this checkout (`node packages/cli/dist/cli.js`), which must be 0.1.1
-   or later; never the npm 0.1.0, whose gateway serves every unpriced tool for
-   free on all interfaces.
+   CLI of this checkout (`node packages/cli/dist/cli.js`), never the npm 0.1.0,
+   whose gateway serves every unpriced tool for free on all interfaces. The
+   checkout's `--version` prints `0.1.0` until the 0.1.1 release bumps its
+   packages, which is expected; the npm 0.1.0 has no `--version` and prints its
+   usage text instead.
 2. Copy [`casper-defi-data.config.json`](casper-defi-data.config.json), set
    `payTo` to the seller's account hash
    (`node packages/cli/dist/cli.js account-hash <seller-public-key-hex>`, which
