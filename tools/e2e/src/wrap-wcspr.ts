@@ -27,6 +27,7 @@ import {
   MIN_WRAP_GAS_MOTES,
   planWrap,
   TESTNET_WCSPR,
+  wrappedReport,
 } from "./wcspr.js";
 
 /**
@@ -182,11 +183,10 @@ async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<number> {
     return 1;
   }
   if (report.cost.status !== "success") return 1;
-  const after = await new TokenProbe(rpc).balanceOf(TESTNET_WCSPR.packageHash, accountHash);
-  console.log(`\nwrapped: the signer now holds ${formatAmount(after, TESTNET_WCSPR.decimals)} ${TESTNET_WCSPR.symbol}`);
-  console.log(
-    `give some to a buyer: pnpm --filter @cascet/e2e fund-token ${TESTNET_WCSPR.packageHash} <buyer account hash> <amount> --send`,
-  );
+  // The wrap succeeded: from here on nothing may exit 1 (a re-run would wrap again).
+  const wrapped = await wrappedReport(() => new TokenProbe(rpc).balanceOf(TESTNET_WCSPR.packageHash, accountHash));
+  for (const line of wrapped.lines) console.log(line);
+  if (wrapped.warning) console.warn(`${TAG} warning: ${wrapped.warning}`);
   return 0;
 }
 

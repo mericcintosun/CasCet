@@ -69,19 +69,21 @@ export const TOKEN_STATE_CACHE_MS = 5 * 60_000;
  * one CasCet-owned transaction builder sends `amount` or `value` according to
  * each token's on-chain ABI, fee-sponsored by a Casper key. Signatures are
  * checked with @x402/casper's EIP-712 digest (both styles sign the same
- * message).
+ * message), ed25519 ones as strictly as the tokens check them (verify_strict).
  *
  * SECURITY: the fee payer pays real CSPR gas for every settle it submits, and
  * a reverted deploy burns its whole gas limit. The server therefore:
  *   - binds to 127.0.0.1 by default; a non-loopback host requires the token;
  *   - requires a bearer token (constant-time compare) on /verify and /settle —
  *     always on mainnet, where it must be ≥ 32 characters;
- *   - rate-limits per client IP before authentication, and globally plus per
- *     payer on /verify and /settle (express-rate-limit); a settle of an
- *     authorization it already submitted a transaction for passes the limits
- *     after authentication (it only follows that transaction or is answered as
- *     a duplicate with its hash), so the x402 `settlement_pending` retry never
- *     loses the hash to a 429;
+ *   - rate-limits per client IP the requests without the token, before
+ *     authentication (behind a TLS proxy every client has one address, and
+ *     traffic without the token must not use up the gateway's budget), and
+ *     globally plus per payer on /verify and /settle (express-rate-limit); a
+ *     settle of an authorization it already submitted a transaction for passes
+ *     the limits after authentication (it only follows that transaction or is
+ *     answered as a duplicate with its hash), so the x402 `settlement_pending`
+ *     retry never loses the hash to a 429;
  *   - only settles to allowlisted payees and assets (required on mainnet);
  *   - reads every allowlisted token's ABI, chain_name and name at start-up and
  *     refuses to start when the chain contradicts the configured style or name,
@@ -167,10 +169,12 @@ export interface RealFacilitatorOptions {
   /** Max /verify + /settle requests per payer per minute. Default 30. */
   maxRequestsPerPayerPerMinute?: number;
   /**
-   * Max requests per client IP per minute on any route, before authentication.
-   * Default 600. It cannot tell a settle retry of a known transaction from any
-   * other request: keep it above `maxRequestsPerMinute`, and raise it when one
-   * gateway sends a lot of traffic.
+   * Max requests per client IP per minute on any route, before authentication,
+   * counting only requests without the token (`authToken`): the gateway's are
+   * limited after authentication. Default 600. Without a token every request
+   * counts, and the limit cannot tell a settle retry of a known transaction
+   * from any other request: keep it above `maxRequestsPerMinute`, and raise it
+   * when one gateway sends a lot of traffic.
    */
   maxRequestsPerIpPerMinute?: number;
   /**
@@ -413,14 +417,21 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     sendRejection(req, res, network, 429, Reason.rateLimited, "too many requests; retry after the window resets");
   };
 
-  // 1) Per client IP, before anything else (also shields the token check). It
-  // runs before the request is authenticated, so it cannot tell a settle retry
-  // of a known transaction from any other request: keep it well above the
-  // limits after authentication (default 600 against 300 a minute).
+  // 1) Per client IP, before anything else (also shields the token check), for
+  // requests without the token only. Behind a TLS proxy every client has the
+  // proxy's address: counting the gateway's requests there would let anyone
+  // without the token use up its budget. Its requests are limited after
+  // authentication instead. Without a token configured every request counts, and
+  // this limit cannot tell a settle retry of a known transaction from any other
+  // request: keep it well above the limits after authentication (default 600
+  // against 300 a minute).
+  const carriesToken = (req: Request): boolean =>
+    opts.authToken !== undefined && authorizationMatches(req.get("authorization"), opts.authToken);
   app.use(
     rateLimit({
       windowMs: 60_000,
       limit: opts.maxRequestsPerIpPerMinute,
+      skip: carriesToken,
       standardHeaders: "draft-8",
       legacyHeaders: false,
       handler: onLimit,
@@ -712,7 +723,8 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   if (!Number.isSafeInteger(maxRequestsPerIpPerMinute) || maxRequestsPerIpPerMinute < 1) {
     throw new Error("maxRequestsPerIpPerMinute (CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE) must be a positive whole number");
   }
-  if (maxRequestsPerIpPerMinute <= maxRequestsPerMinute) {
+  // With a token, the gateway's requests skip the per-IP limit (createFacilitatorApp).
+  if (!opts.authToken && maxRequestsPerIpPerMinute <= maxRequestsPerMinute) {
     logger.warn(
       `the per-IP limit (${maxRequestsPerIpPerMinute} a minute, CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE) is not above ` +
         `the ${maxRequestsPerMinute} /verify and /settle requests a minute allowed after authentication: it is checked first, ` +

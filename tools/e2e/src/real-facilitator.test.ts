@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import { after, before, describe, test } from "node:test";
 import casperSdk from "casper-js-sdk";
 import { toClientCasperSigner } from "@make-software/casper-x402";
 import { ExactCasperScheme as ClientScheme } from "@make-software/casper-x402/exact/client";
+import { buildTransferWithAuthorizationDigest } from "@x402/casper";
 import { HTTPFacilitatorClient, x402ResourceServer } from "@x402/core/server";
 import type { PaymentPayload, PaymentRequirements, SettleResponse, VerifyResponse } from "@x402/core/types";
 import { clientSignerFromPem, createCasperClientScheme } from "@cascet/client";
@@ -20,6 +22,7 @@ import {
   type KnownTransaction,
   type ParsedPayment,
 } from "./facilitator-core.js";
+import { ORDER_8_POINT, WEAK_KEY_SIGNATURE } from "./ed25519-fixtures.js";
 import { NETWORKS } from "./facilitator-env.js";
 import { serializeFacilitatorState } from "./facilitator-state.js";
 import {
@@ -34,7 +37,7 @@ import {
 import * as fx from "./rpc-fixtures.js";
 import { startFakeRpcServer, type FakeRpcServer } from "./test-helpers.js";
 
-const { PrivateKey, KeyAlgorithm } = casperSdk;
+const { PrivateKey, PublicKey, KeyAlgorithm } = casperSdk;
 
 const NETWORK = "casper:casper-test" as const;
 const TOKEN = "9d2f4b6c8e0a1c3e5f7b9d1f3a5c7e9b0d2f4a6c8e0b1d3f5a7c9e1b3d5f7a9c";
@@ -271,10 +274,35 @@ describe("HTTP surface: rate limits (CodeQL js/missing-rate-limiting)", () => {
     const core = new FakeCore();
     const s = await serve(core, { maxRequestsPerPayerPerMinute: 1, maxRequestsPerMinute: 1, maxRequestsPerIpPerMinute: 6 });
     try {
-      for (let i = 0; i < 4; i++) assert.equal((await s.post("/verify", requestBody(), "wrong")).status, 401);
+      for (let i = 0; i < 5; i++) assert.equal((await s.post("/verify", requestBody(), "wrong")).status, 401);
       assert.equal((await s.post("/verify", requestBody())).status, 200);
       assert.equal((await fetch(`${s.base}/health`)).status, 200);
       assert.equal((await fetch(`${s.base}/health`)).status, 429, "per-IP limit covers every route");
+    } finally {
+      await s.close();
+    }
+  });
+
+  test("requests with the token never count per IP: traffic without it from the same address (a TLS proxy) cannot starve the gateway", async () => {
+    // Behind a proxy every client has the proxy's address; here every request comes from 127.0.0.1.
+    const core = new FakeCore();
+    const s = await serve(core, { maxRequestsPerIpPerMinute: 3 });
+    try {
+      for (let i = 0; i < 3; i++) assert.equal((await s.post("/verify", requestBody(), null)).status, 401);
+      const junk = await s.post("/settle", requestBody(), "Bearer guess");
+      assert.deepEqual([junk.status, junk.body["errorReason"]], [429, "rate_limited"], "traffic without the token is still limited");
+      assert.equal((await fetch(`${s.base}/health`)).status, 429);
+
+      // The gateway sends the token on every call: none of them is refused, however many.
+      const withToken = { headers: { authorization: TOKEN } };
+      for (let i = 0; i < 4; i++) {
+        assert.equal((await s.post("/verify", requestBody(`00${"a1".repeat(32)}`, `${i}`.padStart(64, "0")))).status, 200);
+        assert.equal((await s.post("/settle", requestBody(`00${"a1".repeat(32)}`, `${i}`.padStart(64, "0")), `Bearer ${TOKEN}`)).status, 200);
+        assert.equal((await fetch(`${s.base}/supported`, withToken)).status, 200);
+        assert.equal((await fetch(`${s.base}/health`, withToken)).status, 200);
+      }
+      assert.equal(core.calls.length, 8);
+      assert.equal((await s.post("/verify", requestBody(), "wrong")).status, 429, "and the token-less bucket stays spent");
     } finally {
       await s.close();
     }
@@ -623,6 +651,18 @@ describe("startRealFacilitator start-up rules (M07)", () => {
     const raised = await startRealFacilitator({ ...base, maxRequestsPerIpPerMinute: 6_000, logger: { ...quiet, warn: m => quietStart.push(m) } });
     await raised.close();
     assert.ok(!quietStart.some(w => w.includes("per-IP limit")));
+    // With a token, the gateway's requests do not count per IP: nothing to warn about.
+    const tokenStart: string[] = [];
+    const withToken = await startRealFacilitator({ ...base, authToken: TOKEN, maxRequestsPerIpPerMinute: 2, logger: { ...quiet, warn: m => tokenStart.push(m) } });
+    try {
+      assert.ok(!tokenStart.some(w => w.includes("per-IP limit")));
+      for (let i = 0; i < 3; i++) assert.equal((await fetch(`${withToken.url}/health`, { headers: { authorization: TOKEN } })).status, 200);
+      assert.equal((await fetch(`${withToken.url}/health`)).status, 200);
+      assert.equal((await fetch(`${withToken.url}/health`)).status, 200);
+      assert.equal((await fetch(`${withToken.url}/health`)).status, 429);
+    } finally {
+      await withToken.close();
+    }
   });
 });
 
@@ -844,6 +884,53 @@ describe("startRealFacilitator end to end against a local fake node (no network)
       assert.equal(submitted.length, before + 1, "nothing else reached the node");
     } finally {
       await fac.close();
+    }
+  });
+
+  test("a payment the token's ed25519 check refuses (a small-order key) is refused at /verify and /settle, and nothing is submitted", async () => {
+    // The order-8 point as the payer's key: one signature passes casper-js-sdk's
+    // cofactored check over every message, with no private key at all. The token
+    // refuses the key (verify_strict), so a settle would revert and burn its gas.
+    const weakKey = `01${ORDER_8_POINT}`;
+    const weakPayer = `00${PublicKey.fromHex(weakKey).accountHash().toHex()}`;
+    const weakNode = await startFakeRpcServer(nodeRoutes(weakPayer)); // funded, nonce unused
+    const fac = await start({ rpcUrl: weakNode.url });
+    try {
+      const reqs = requirements();
+      const now = Math.floor(Date.now() / 1000);
+      const authorization = {
+        from: weakPayer,
+        to: SELLER,
+        value: PRICE,
+        validAfter: "0",
+        validBefore: String(now + 300),
+        nonce: randomBytes(32).toString("hex"),
+      };
+      const digest = buildTransferWithAuthorizationDigest({ name: "CasCet X402 Token", version: "1", network: NETWORK, asset: TOKEN_PKG, authorization });
+      assert.equal(PublicKey.fromHex(weakKey).verifySignature(digest, Buffer.from(WEAK_KEY_SIGNATURE, "hex")), true, "the sdk's check passes");
+      const body = {
+        x402Version: 2,
+        paymentPayload: { x402Version: 2, accepted: reqs, payload: { signature: WEAK_KEY_SIGNATURE, publicKey: weakKey, authorization } },
+        paymentRequirements: reqs,
+      };
+      const before = submitted.length;
+
+      const verified = await post(fac.url, "/verify", body);
+      assert.deepEqual(
+        [verified.status, verified.body["isValid"], verified.body["invalidReason"]],
+        [200, false, "invalid_exact_casper_facilitator_invalid_signature"],
+      );
+      assert.match(verified.body["invalidMessage"], /verify_strict\) refuses this signature: the public key has small order$/);
+      const settled = await post(fac.url, "/settle", body);
+      assert.deepEqual(
+        [settled.status, settled.body["success"], settled.body["errorReason"], settled.body["transaction"]],
+        [200, false, "invalid_exact_casper_facilitator_invalid_signature", ""],
+      );
+      assert.deepEqual(settled.body["extra"], { settlementStatus: "not_submitted" });
+      assert.equal(submitted.length, before, "nothing reached the node");
+    } finally {
+      await fac.close();
+      await weakNode.close();
     }
   });
 

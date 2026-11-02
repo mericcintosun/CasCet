@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import casperSdk from "casper-js-sdk";
 import { isKnownCep3009Asset, NETWORK_CASPER_TESTNET } from "@cascet/core";
+import { createCasperRpc, TokenProbe, type RpcFetch } from "@cascet/gateway";
 import { wcsprDepositResult } from "./gas-fixtures.js";
 import {
   buildWrapTransaction,
@@ -14,6 +15,7 @@ import {
   planWrap,
   RECORDED_DEPOSIT_CONSUMED_MOTES,
   TESTNET_WCSPR,
+  wrappedReport,
 } from "./wcspr.js";
 
 const { PrivateKey, KeyAlgorithm, TransactionWrapper } = casperSdk;
@@ -68,6 +70,13 @@ describe("WCSPR wrap: expected cost", () => {
     assert.doesNotThrow(() => planWrap(CSPR, 4n * CSPR, true));
   });
 
+  test("a refused limit just below the minimum is named exactly, never rounded up to it", () => {
+    // --gas-cspr takes 9 decimals: 5.445 to 5.449999999 CSPR all rounded to "5.45" at two digits.
+    assert.throws(() => planWrap(CSPR, 5_449_000_000n, false), /^Error: a gas limit of 5\.449 CSPR is below 5\.45 CSPR,/);
+    assert.throws(() => planWrap(CSPR, 5_445_000_000n, false), /a gas limit of 5\.445 CSPR is below 5\.45 CSPR/);
+    assert.throws(() => planWrap(CSPR, 5_449_999_999n, undefined), /a gas limit of 5\.449999999 CSPR is below 5\.45 CSPR/);
+  });
+
   test("the smallest limit is ceil(1.3 × estimate) to 0.01 CSPR; afterwards the 2.5 CSPR floor of --gas-cspr governs", () => {
     assert.equal(minWrapGasMotes(false), 5_450_000_000n);
     assert.equal(minWrapGasMotes(undefined), 5_450_000_000n);
@@ -108,5 +117,26 @@ describe("WCSPR wrap: the transaction", () => {
     assert.deepEqual(built, recorded, "1 CSPR attached, like the recorded deposit");
     assert.equal(json.Version1.payload.pricing_mode.PaymentLimited.payment_amount, 10_000_000_000);
     assert.throws(() => buildWrapTransaction(wasm, 0n, { initiatorPublicKey: key.publicKey.toHex(), chainName: "casper-test", paymentMotes: CSPR }), /more than 0/);
+  });
+});
+
+describe("WCSPR wrap: after the wrap executed", () => {
+  const hint = `give some to a buyer: pnpm --filter @cascet/e2e fund-token ${TESTNET_WCSPR.packageHash} <buyer account hash> <amount> --send`;
+
+  test("prints the signer's new balance and how to hand WCSPR to a buyer", async () => {
+    assert.deepEqual(await wrappedReport(async () => 15_500_000_000n), { lines: ["\nwrapped: the signer now holds 15.5 WCSPR", hint] });
+  });
+
+  test("a balance read that fails (HTTP 503 twice) is a warning, never a failure: a re-run would wrap again", async () => {
+    let reads = 0;
+    const unavailable: RpcFetch = async () => {
+      reads++;
+      return { ok: false, status: 503, text: async () => "Service Unavailable" };
+    };
+    const probe = new TokenProbe(createCasperRpc("http://node.test/rpc", { fetchImpl: unavailable }));
+    const report = await wrappedReport(() => probe.balanceOf(TESTNET_WCSPR.packageHash, "65".repeat(32)));
+    assert.equal(reads, 2, "the probe's one retry");
+    assert.deepEqual(report.lines, ["\nwrapped: the wrap executed; the signer's WCSPR balance is unknown", hint]);
+    assert.match(report.warning!, /^could not read the new WCSPR balance \(.*HTTP 503.*\); the wrap succeeded, so do not wrap again: check the balance on the explorer$/);
   });
 });

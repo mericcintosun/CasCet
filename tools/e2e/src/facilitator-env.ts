@@ -55,9 +55,13 @@ import type { RealFacilitatorOptions } from "./real-facilitator.js";
  *                                 mainnet; "none" runs without one, with a warning; testnet warns when unset). One
  *                                 file per facilitator, on persistent storage, in an existing directory
  *   CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE
- *                                 requests one client IP may send a minute, on every route, before authentication
- *                                 (default 600); raise it when one gateway sends a lot of traffic, and keep it
- *                                 above the 300 /verify + /settle requests a minute allowed after authentication
+ *                                 requests without CASCET_FACILITATOR_TOKEN one client IP may send a minute, on
+ *                                 every route, before authentication (default 600); requests with it (the
+ *                                 gateway's) are limited after authentication only, so traffic without the token
+ *                                 through a TLS proxy (one address for every client) cannot use up the gateway's
+ *                                 budget. Without a token every request counts: raise it when one gateway sends a
+ *                                 lot of traffic, and keep it above the 300 /verify + /settle requests a minute
+ *                                 allowed after authentication
  *   CASCET_FACILITATOR_HOST       bind address (default 127.0.0.1; any other address requires the token)
  *   PORT                          port (default 4501)
  */
@@ -124,8 +128,9 @@ export const DEFAULT_SETTLE_WAIT_MS = 60_000;
 /** /verify + /settle requests a minute from all callers together, after authentication. */
 export const DEFAULT_MAX_REQUESTS_PER_MINUTE = 300;
 /**
- * Requests a minute from one client IP, on every route, before authentication.
- * It cannot tell a settle retry of a known transaction from other requests, so
+ * Requests a minute from one client IP, on every route, before authentication
+ * (only those without the facilitator token, when one is set). Without a token
+ * it cannot tell a settle retry of a known transaction from other requests, so
  * it stays well above {@link DEFAULT_MAX_REQUESTS_PER_MINUTE}.
  */
 export const DEFAULT_MAX_REQUESTS_PER_IP_PER_MINUTE = 600;

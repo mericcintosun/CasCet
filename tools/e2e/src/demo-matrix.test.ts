@@ -21,6 +21,7 @@ import {
   TESTNET_DEMO_ASSETS,
   type SupportedFetch,
 } from "./demo-matrix.js";
+import { NETWORKS, readFacilitatorEnv } from "./facilitator-env.js";
 import { SETTLEABLE_STYLES } from "./settlement.js";
 import { replayFetch, rpcError, rpcResult, type Replay } from "./test-helpers.js";
 
@@ -148,6 +149,36 @@ describe("demo-real: seller and self-hosted facilitator environment", () => {
     assert.equal(selfHostedEnv({ CASCET_ALLOWED_ASSETS: "x", CASCET_TOKEN_NAME: "y" }, wcspr)["CASCET_ALLOWED_ASSETS"], "x");
     assert.doesNotThrow(() => assertAssetAllowed(["3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e"], wcspr));
     assert.throws(() => assertAssetAllowed(["cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3"], wcspr), /does not list Wrapped CSPR/);
+  });
+
+  test("an operator's own allowlist is taken as given, without a name pin that several assets refuse", () => {
+    const legacyHash = NETWORKS["casper:casper-test"].token;
+    const wcsprHash = "3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e";
+    const facilitatorEnv = (env: Record<string, string>, asset = TESTNET_DEMO_ASSETS.wcspr) =>
+      readFacilitatorEnv(selfHostedEnv(env, asset), "/repo", "casper:casper-test");
+
+    // Both testnet tokens, as run-facilitator recommends: either demo runs, each name pinned by default.
+    for (const asset of [TESTNET_DEMO_ASSETS.legacy, TESTNET_DEMO_ASSETS.wcspr]) {
+      const both = { CASCET_ALLOWED_ASSETS: `hash-${legacyHash},hash-${wcsprHash}` };
+      assert.equal(selfHostedEnv(both, asset)["CASCET_TOKEN_NAME"], undefined);
+      const cfg = facilitatorEnv(both, asset);
+      assert.doesNotThrow(() => assertAssetAllowed(cfg.allowedAssets, asset));
+      assert.deepEqual(
+        cfg.assets.map(a => [a.packageHash, a.name]),
+        [
+          [legacyHash, "CasCet X402 Token"],
+          [wcsprHash, "Wrapped CSPR"],
+        ],
+      );
+    }
+    // A list without the demo token is refused with "add it"; adding it works.
+    const legacyOnly = facilitatorEnv({ CASCET_ALLOWED_ASSETS: legacyHash });
+    assert.throws(() => assertAssetAllowed(legacyOnly.allowedAssets, TESTNET_DEMO_ASSETS.wcspr), /add it or unset the variable/);
+    assert.doesNotThrow(() => facilitatorEnv({ CASCET_ALLOWED_ASSETS: `${legacyHash},${wcsprHash}` }));
+    // The operator's own pins stand; a blank allowlist counts as unset, as the facilitator reads it.
+    assert.equal(facilitatorEnv({ CASCET_ALLOWED_ASSETS: wcsprHash, CASCET_TOKEN_NAME: "Wrapped CSPR" }).tokenName, "Wrapped CSPR");
+    assert.equal(facilitatorEnv({ CASCET_TOKEN_NAME: "Wrapped CSPR" }).tokenName, "Wrapped CSPR");
+    assert.deepEqual(facilitatorEnv({ CASCET_ALLOWED_ASSETS: " " }).allowedAssets, [wcsprHash]);
   });
 
   test("funding hints name the scripts that fund the buyer", () => {

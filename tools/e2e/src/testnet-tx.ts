@@ -113,14 +113,19 @@ export function testnetRpcUrl(env: Env): string {
   return raw;
 }
 
+/** Read-only: the chain a node serves (`info_get_status` chainspec name), as the node answers it. */
+export async function nodeChainName(rpc: CasperRpc): Promise<unknown> {
+  const status = await rpc.call<{ chainspec_name?: unknown }>("info_get_status", []);
+  return status?.chainspec_name;
+}
+
 /**
  * Read-only: the node must serve the testnet (`info_get_status` chainspec name
  * "casper-test"). A transaction signed for "casper-test" is refused by mainnet
  * nodes anyway; this catches a misconfigured CASCET_RPC_URL before any signing.
  */
 export async function assertTestnetNode(rpc: CasperRpc): Promise<void> {
-  const status = await rpc.call<{ chainspec_name?: unknown }>("info_get_status", []);
-  const name = status?.chainspec_name;
+  const name = await nodeChainName(rpc);
   if (name !== TESTNET_CHAIN_NAME) {
     throw new Error(`${rpc.url} serves chain "${String(name).slice(0, 40)}", not ${TESTNET_CHAIN_NAME}: refusing (testnet only)`);
   }

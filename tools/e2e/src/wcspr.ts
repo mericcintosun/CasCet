@@ -1,4 +1,4 @@
-import { CSPR_DECIMALS, formatAmount, formatCspr } from "./amounts.js";
+import { CSPR_DECIMALS, formatAmount, formatCspr, formatCsprExact } from "./amounts.js";
 import { expectedNetMotes, expectedRefundMotes, suggestGasLimitMotes } from "./gas-report.js";
 import { buildProxySession, type ProxySessionOptions } from "./odra-proxy.js";
 
@@ -92,8 +92,9 @@ export function planWrap(depositMotes: bigint, gasLimitMotes: bigint, hasCargoPu
   const estimatedConsumedMotes = estimateWrapConsumedMotes(hasCargoPurse ?? false);
   const minimum = minWrapGasMotes(hasCargoPurse);
   if (gasLimitMotes < minimum) {
+    // Both limits exactly: --gas-cspr takes 9 decimals, and a refused 5.449 rounded to 0.01 would read "5.45 is below 5.45".
     throw new Error(
-      `a gas limit of ${formatCspr(gasLimitMotes, 2)} CSPR is below ${formatCspr(minimum, 2)} CSPR, 1.3 × the estimated consumption ` +
+      `a gas limit of ${formatCsprExact(gasLimitMotes)} CSPR is below ${formatCsprExact(minimum)} CSPR, 1.3 × the estimated consumption ` +
         `of ${formatCspr(estimatedConsumedMotes, 2)} CSPR; a wrap that runs out of gas reverts and burns its whole limit`,
     );
   }
@@ -131,6 +132,28 @@ export function formatWrapPlan(plan: WrapPlan): string[] {
     `  if it reverts:                   ${cspr(plan.worstCaseLossMotes)} of gas is burned, nothing is wrapped`,
     `  balance needed to submit:        ${cspr(plan.requiredBalanceMotes)} (deposit + gas limit)`,
   ];
+}
+
+/**
+ * What wrap-wcspr prints once the wrap executed successfully: the signer's new
+ * WCSPR balance and how to hand some to a buyer. A balance that cannot be read
+ * (`readBalance` rejects, e.g. the node answers 503 twice) is reported as
+ * unknown with a warning, never as a failure: the wrap already succeeded, and
+ * a re-run would wrap (and pay gas) again.
+ */
+export async function wrappedReport(readBalance: () => Promise<bigint>): Promise<{ lines: string[]; warning?: string }> {
+  const hint = `give some to a buyer: pnpm --filter @cascet/e2e fund-token ${TESTNET_WCSPR.packageHash} <buyer account hash> <amount> --send`;
+  try {
+    const after = await readBalance();
+    return { lines: [`\nwrapped: the signer now holds ${formatAmount(after, TESTNET_WCSPR.decimals)} ${TESTNET_WCSPR.symbol}`, hint] };
+  } catch (err) {
+    return {
+      lines: [`\nwrapped: the wrap executed; the signer's ${TESTNET_WCSPR.symbol} balance is unknown`, hint],
+      warning:
+        `could not read the new ${TESTNET_WCSPR.symbol} balance (${err instanceof Error ? err.message : String(err)}); ` +
+        "the wrap succeeded, so do not wrap again: check the balance on the explorer",
+    };
+  }
 }
 
 /** The (unsigned) wrap: Odra's proxy session calling WCSPR `deposit` with `depositMotes` attached. */
