@@ -58,7 +58,8 @@ POSIX) plus exactly `upstream.env`. Pass any secret the upstream needs there.
 (165 s with the defaults). In the default mode the gateway answers a paid call
 only after the tool ran and the payment settled; a buyer that gives up earlier
 may be charged without receiving the result. With several facilitators the
-gateway sizes this with the slowest one.
+gateway sizes this with the slowest one. x402's automatic second settle call
+for a settlement reported as pending stays within the same `settleMs`.
 
 ## Accepting several tokens
 
@@ -134,6 +135,14 @@ official Wrapped CSPR (cep3009-value, settled by the hosted facilitator):
      that carries a transaction hash): JSON-RPC `-32003`, receipt status
      `unknown`. Do not pay again for that call; reconcile the receipt
      on-chain.
+
+   x402 settles a second time when the facilitator reports the settlement as
+   pending (`settlement_pending` with a transaction hash: broadcast, not seen
+   executing yet), and keeps only the second answer. If that retry gets no
+   verdict naming a transaction (rate limited, shutting down, a proxy error,
+   a timeout), the gateway keeps the first answer's hash: the receipt is
+   `unknown` with that `txHash`, never `failed`. Both settle calls together
+   get one `settleMs` (the facilitator's `timeoutMs` when set).
 
 A priced tool without a matching payment route, or a verified payment whose
 amount, payee, asset or network differs from the configuration (or whose

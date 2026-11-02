@@ -278,6 +278,8 @@ export function assetRoutes(cfg: CascetConfig, network: Network, options: Paymen
       asset: asset.packageHash,
       facilitator: client,
       label: `facilitator "${asset.facilitator}" (${facilitatorOrigin(settler.url)})`,
+      // x402's retry of a pending settlement shares this budget with the first call.
+      settleTimeoutMs: facilitatorTimeouts(cfg, settler).settleMs,
     };
   });
 }

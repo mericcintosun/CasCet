@@ -1,12 +1,23 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { x402ResourceServer, type FacilitatorClient } from "@x402/core/server";
-import type { Network, PaymentPayload, PaymentRequirements, SettleResponse, SupportedResponse } from "@x402/core/types";
+import {
+  FacilitatorResponseError,
+  FacilitatorTimeoutError,
+  SettleError,
+  type Network,
+  type PaymentPayload,
+  type PaymentRequirements,
+  type SettleResponse,
+  type SupportedResponse,
+} from "@x402/core/types";
+import { SettlementIndeterminateError } from "./facilitator.js";
 import {
   AssetRoutingFacilitatorClient,
   ExtraStrippingFacilitatorClient,
   mergeSupported,
   UnroutedAssetError,
+  type AssetRoute,
 } from "./facilitator-router.js";
 import { CascetCasperServerScheme } from "./server-scheme.js";
 
@@ -27,10 +38,13 @@ interface Call {
   requirements?: PaymentRequirements;
 }
 
+/** One /settle answer of a {@link recorder}: returned, thrown, or produced by a function (delays, hangs). */
+type SettleAnswer = SettleResponse | Error | (() => Promise<SettleResponse>);
+
 /** An in-memory facilitator that records its calls and names itself in its answers. */
 function recorder(name: string, supported: SupportedResponse = supportedOn(NETWORK)) {
   const calls: Call[] = [];
-  let settleAnswers: SettleResponse[] = [];
+  let settleAnswers: SettleAnswer[] = [];
   const client: FacilitatorClient = {
     verify: async (payload, requirements) => {
       calls.push({ op: "verify", payload, requirements });
@@ -38,7 +52,10 @@ function recorder(name: string, supported: SupportedResponse = supportedOn(NETWO
     },
     settle: async (payload, requirements) => {
       calls.push({ op: "settle", payload, requirements });
-      return settleAnswers.shift() ?? { success: true, transaction: name, network: requirements.network };
+      const next = settleAnswers.shift();
+      if (next instanceof Error) throw next;
+      if (typeof next === "function") return next();
+      return next ?? { success: true, transaction: name, network: requirements.network };
     },
     getSupported: async () => {
       calls.push({ op: "supported" });
@@ -49,7 +66,7 @@ function recorder(name: string, supported: SupportedResponse = supportedOn(NETWO
     client,
     calls,
     ops: () => calls.map(call => call.op),
-    answerSettleWith: (answers: SettleResponse[]) => {
+    answerSettleWith: (answers: SettleAnswer[]) => {
       settleAnswers = answers;
     },
   };
@@ -283,5 +300,191 @@ describe("x402's resource server behind the router", () => {
     const stray = requirements("ab".repeat(32));
     await assert.rejects(resourceServer.verifyPayment(payload(stray), stray), UnroutedAssetError);
     assert.deepEqual([...legacy.ops(), ...cep.ops()], ["supported", "supported"]);
+  });
+});
+
+describe("x402's retry of a settlement the facilitator reported as pending", () => {
+  const PENDING_TX = "ef".repeat(32);
+  const PAYER_ADDRESS = `00${"aa".repeat(32)}`;
+
+  /** A payment with an authorization (the router remembers pending settlements per payer and nonce). */
+  const signedPayload = (accepted: PaymentRequirements, nonce = "12".repeat(32), validBefore = "4102444800"): PaymentPayload => ({
+    x402Version: 2,
+    accepted,
+    payload: { authorization: { from: PAYER_ADDRESS, to: PAY_TO, value: accepted.amount, validAfter: "0", validBefore, nonce } },
+  });
+  /** What the self-hosted facilitator answers when the transfer was broadcast but not seen executing in time. */
+  const pending = (transaction = PENDING_TX): SettleResponse => ({
+    success: false,
+    errorReason: "settlement_pending",
+    errorMessage: "transaction submitted; its execution was not observed yet",
+    transaction,
+    network: NETWORK,
+  });
+  /** A refusal that names no transaction (rate limits, shutdown). */
+  const refused = (errorReason: string, errorMessage?: string): SettleResponse => ({
+    success: false,
+    errorReason,
+    ...(errorMessage ? { errorMessage } : {}),
+    transaction: "",
+    network: NETWORK,
+  });
+  const after = (ms: number, answer: SettleResponse) => () => new Promise<SettleResponse>(resolve => setTimeout(() => resolve(answer), ms));
+  const never = () => new Promise<SettleResponse>(() => {});
+
+  async function serverWith(route: Partial<AssetRoute> = {}) {
+    const cep = recorder("cep");
+    const router = new AssetRoutingFacilitatorClient([{ network: NETWORK, asset: WCSPR, facilitator: cep.client, label: "cep", ...route }]);
+    const resourceServer = new x402ResourceServer(router).register(NETWORK, new CascetCasperServerScheme([{ network: NETWORK, asset: WCSPR, decimals: 9 }]));
+    await resourceServer.initialize();
+    return { cep, router, resourceServer, wcspr: requirements(WCSPR) };
+  }
+
+  it("answers a retry that was rate limited with settlement_pending and the transaction of the first answer", async () => {
+    const { cep, resourceServer, wcspr } = await serverWith();
+    cep.answerSettleWith([pending(), refused("rate_limited", "too many requests; retry after the window resets")]);
+    const settled = await resourceServer.settlePayment(signedPayload(wcspr), wcspr);
+    assert.deepEqual(cep.ops(), ["supported", "settle", "settle"], "x402 retried once, with the same facilitator");
+    assert.deepEqual(
+      [settled.success, settled.errorReason, settled.transaction, settled.network, settled.payer],
+      [false, "settlement_pending", PENDING_TX, NETWORK, PAYER_ADDRESS],
+    );
+    assert.equal(
+      settled.errorMessage,
+      `retry after pending transaction ${PENDING_TX} answered rate_limited: too many requests; retry after the window resets`,
+    );
+  });
+
+  it("does the same for a retry that throws without a transaction: 503 while shutting down, a broken connection", async () => {
+    const retries: Array<[Error, RegExp]> = [
+      [
+        new SettleError(503, refused("facilitator_shutting_down", "the facilitator is shutting down; retry later")),
+        /answered facilitator_shutting_down: the facilitator is shutting down; retry later$/,
+      ],
+      [new SettleError(404, refused("facilitator_http_404", "<html>Not Found</html>")), /answered facilitator_http_404: <html>Not Found<\/html>$/],
+      [new Error("socket hang up"), /answered socket hang up$/],
+    ];
+    for (const [retry, detail] of retries) {
+      const { cep, resourceServer, wcspr } = await serverWith();
+      cep.answerSettleWith([pending(), retry]);
+      const settled = await resourceServer.settlePayment(signedPayload(wcspr), wcspr);
+      assert.deepEqual([settled.success, settled.errorReason, settled.transaction], [false, "settlement_pending", PENDING_TX], retry.message);
+      assert.match(settled.errorMessage ?? "", detail);
+    }
+  });
+
+  it("remembers a pending settlement that the facilitator client threw as well", async () => {
+    const { cep, resourceServer, wcspr } = await serverWith();
+    cep.answerSettleWith([new SettleError(202, pending()), refused("rate_limited")]);
+    const settled = await resourceServer.settlePayment(signedPayload(wcspr), wcspr);
+    assert.deepEqual([settled.errorReason, settled.transaction], ["settlement_pending", PENDING_TX]);
+    assert.match(settled.errorMessage ?? "", /answered rate_limited$/);
+  });
+
+  it("keeps a retry that timed out indeterminate (a throw x402 passes on), naming the pending transaction", async () => {
+    const { cep, resourceServer, wcspr } = await serverWith();
+    cep.answerSettleWith([pending(), new FacilitatorTimeoutError("settle", 90_000)]);
+    await assert.rejects(resourceServer.settlePayment(signedPayload(wcspr), wcspr), (err: unknown) => {
+      assert.ok(err instanceof SettlementIndeterminateError);
+      assert.ok(err instanceof FacilitatorResponseError, "x402's processSettlement rethrows it");
+      assert.equal(err.transaction, PENDING_TX);
+      assert.equal(
+        err.message,
+        `Facilitator settle request timed out after 90000ms (retrying a settlement the facilitator had reported as pending with transaction ${PENDING_TX})`,
+      );
+      assert.ok(err.cause instanceof FacilitatorTimeoutError);
+      return true;
+    });
+  });
+
+  it("passes on a retry whose answer names a transaction, a retry that succeeds, and a pending answer without a hash", async () => {
+    const { cep, resourceServer, wcspr } = await serverWith();
+    const duplicate: SettleResponse = {
+      success: false,
+      errorReason: "duplicate_nonce",
+      errorMessage: `this authorization is already submitted at this facilitator (transaction ${PENDING_TX})`,
+      transaction: PENDING_TX,
+      network: NETWORK,
+    };
+    cep.answerSettleWith([pending(), duplicate]);
+    assert.equal(await resourceServer.settlePayment(signedPayload(wcspr, "13".repeat(32)), wcspr), duplicate);
+
+    cep.answerSettleWith([pending(), { success: true, transaction: PENDING_TX, network: NETWORK }]);
+    const settled = await resourceServer.settlePayment(signedPayload(wcspr, "14".repeat(32)), wcspr);
+    assert.deepEqual([settled.success, settled.transaction], [true, PENDING_TX]);
+
+    // Without a hash x402 does not retry, and there is nothing to remember.
+    const hashless = pending("");
+    cep.answerSettleWith([hashless]);
+    assert.equal(await resourceServer.settlePayment(signedPayload(wcspr, "15".repeat(32)), wcspr), hashless);
+  });
+
+  it("remembers per payment (network, asset, payer, nonce) and forgets a payment once it settled", async () => {
+    const { cep, router, wcspr } = await serverWith();
+    const first = signedPayload(wcspr, "21".repeat(32));
+    cep.answerSettleWith([
+      pending(),
+      refused("rate_limited"),
+      refused("rate_limited"),
+      { success: true, transaction: PENDING_TX, network: NETWORK },
+      refused("rate_limited"),
+    ]);
+    await router.settle(first, wcspr);
+    // Another nonce of the same payer is another payment.
+    assert.deepEqual(await router.settle(signedPayload(wcspr, "22".repeat(32)), wcspr), refused("rate_limited"));
+    // The same nonce, spelled differently, is the same payment.
+    const respelled = signedPayload(wcspr, `0x${"21".repeat(32).toUpperCase()}`);
+    assert.equal((await router.settle(respelled, wcspr)).transaction, PENDING_TX);
+    // Once that payment settled it is forgotten.
+    assert.equal((await router.settle(first, wcspr)).success, true);
+    assert.deepEqual(await router.settle(first, wcspr), refused("rate_limited"));
+  });
+
+  it("gives the retry only what the first call left of the route's settle timeout", async () => {
+    const { cep, resourceServer, wcspr } = await serverWith({ settleTimeoutMs: 300 });
+    cep.answerSettleWith([after(150, pending()), never]);
+    const started = Date.now();
+    const settled = await resourceServer.settlePayment(signedPayload(wcspr), wcspr);
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 250 && elapsed < 2_000, `both calls together took about 300 ms, not 450 ms or more (${elapsed} ms)`);
+    assert.deepEqual([settled.errorReason, settled.transaction], ["settlement_pending", PENDING_TX]);
+    assert.match(settled.errorMessage ?? "", /answered nothing within the 300 ms settle timeout$/);
+    assert.deepEqual(cep.ops(), ["supported", "settle", "settle"]);
+  });
+
+  it("does not call the facilitator again when the first call used up the settle timeout", async () => {
+    const { cep, resourceServer, wcspr } = await serverWith({ settleTimeoutMs: 100 });
+    cep.answerSettleWith([after(150, pending())]);
+    const settled = await resourceServer.settlePayment(signedPayload(wcspr), wcspr);
+    assert.deepEqual(cep.ops(), ["supported", "settle"]);
+    assert.deepEqual([settled.errorReason, settled.transaction], ["settlement_pending", PENDING_TX]);
+    assert.match(settled.errorMessage ?? "", /answered nothing: the first call used up the 100 ms settle timeout$/);
+  });
+
+  it("forgets pending settlements after validBefore plus a margin, and keeps at most maxPendingSettlements", async () => {
+    let now = 1_000_000;
+    const cep = recorder("cep");
+    const router = new AssetRoutingFacilitatorClient([{ network: NETWORK, asset: WCSPR, facilitator: cep.client, label: "cep" }], {
+      now: () => now,
+      maxPendingSettlements: 2,
+    });
+    const wcspr = requirements(WCSPR);
+    // validBefore 1 000 s, the clock's "now".
+    const [a, b, c] = ["31", "32", "33"].map(byte => signedPayload(wcspr, byte.repeat(32), "1000")) as [PaymentPayload, PaymentPayload, PaymentPayload];
+    cep.answerSettleWith([
+      pending("a1".repeat(32)),
+      pending("b1".repeat(32)),
+      pending("c1".repeat(32)),
+      refused("rate_limited"),
+      refused("rate_limited"),
+      refused("rate_limited"),
+    ]);
+    for (const payment of [a, b, c]) await router.settle(payment, wcspr);
+    // a, the oldest, made room for c.
+    assert.deepEqual(await router.settle(a, wcspr), refused("rate_limited"));
+    assert.equal((await router.settle(b, wcspr)).transaction, "b1".repeat(32));
+    // validBefore plus the 120 s margin has passed: c is forgotten as well.
+    now += 120_000;
+    assert.deepEqual(await router.settle(c, wcspr), refused("rate_limited"));
   });
 });

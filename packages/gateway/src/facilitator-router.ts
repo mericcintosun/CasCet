@@ -1,14 +1,17 @@
 import type { FacilitatorClient } from "@x402/core/server";
-import type {
-  PaymentPayload,
-  PaymentRequirements,
-  SettleResponse,
-  SupportedKind,
-  SupportedResponse,
-  VerifyResponse,
+import {
+  FacilitatorResponseError,
+  SettleError,
+  type PaymentPayload,
+  type PaymentRequirements,
+  type SettleResponse,
+  type SupportedKind,
+  type SupportedResponse,
+  type VerifyResponse,
 } from "@x402/core/types";
 import { deepEqual } from "@x402/core/utils";
 import { normalizePackageHash } from "@cascet/core";
+import { SettlementIndeterminateError } from "./facilitator.js";
 
 /** One accepted token and the facilitator that verifies and settles payments in it. */
 export interface AssetRoute {
@@ -20,6 +23,38 @@ export interface AssetRoute {
   facilitator: FacilitatorClient;
   /** How messages name the facilitator, e.g. `facilitator "default" (https://…)`. Never a credential. */
   label: string;
+  /**
+   * The facilitator's settle timeout, in milliseconds. x402 settles a second
+   * time when a facilitator reports a settlement as pending; with this set,
+   * both calls together get this long (see {@link AssetRoutingFacilitatorClient.settle}),
+   * so x402's retry never doubles how long a paid call can take.
+   */
+  settleTimeoutMs?: number;
+}
+
+export interface AssetRoutingOptions {
+  /** Clock in milliseconds (tests). Default Date.now. */
+  now?: () => number;
+  /** Most pending settlements remembered at once (default 10 000); the oldest is forgotten first. */
+  maxPendingSettlements?: number;
+}
+
+/** The `errorReason` of a settlement that was broadcast and whose outcome is not known yet. */
+export const SETTLEMENT_PENDING = "settlement_pending";
+
+/** How long after the authorization's validBefore a pending settlement is remembered. */
+const PENDING_MEMORY_MARGIN_MS = 120_000;
+const DEFAULT_MAX_PENDING_SETTLEMENTS = 10_000;
+
+/** A settlement a facilitator reported as pending: its transfer was broadcast, its outcome is unknown. */
+interface PendingSettlement {
+  /** Hash of the broadcast transfer. */
+  transaction: string;
+  payer?: string;
+  /** When the first settle call for this payment started (ms). */
+  startedAt: number;
+  /** When the entry may be forgotten (ms). */
+  expiresAt: number;
 }
 
 /**
@@ -49,6 +84,10 @@ const routeKey = (network: string, asset: string): string => `${network}|${norma
  * for the asset of the matched requirements, and a payment in any other asset
  * is refused (fail closed) instead of going to a facilitator that merely
  * supports the network.
+ *
+ * Being x402's only facilitator client, it also sees both calls of x402's
+ * automatic settle retry, and keeps the transaction hash of the first one
+ * (see {@link AssetRoutingFacilitatorClient.settle}).
  */
 export class AssetRoutingFacilitatorClient implements FacilitatorClient {
   private readonly routes = new Map<string, AssetRoute>();
@@ -56,8 +95,14 @@ export class AssetRoutingFacilitatorClient implements FacilitatorClient {
   private readonly facilitators = new Map<FacilitatorClient, string>();
   /** Answers of the last /supported round, per facilitator. */
   private supportedByFacilitator?: Map<FacilitatorClient, SupportedResponse>;
+  /** Settlements reported as pending, by payment (network, asset, payer, nonce); oldest first. */
+  private readonly pending = new Map<string, PendingSettlement>();
+  private readonly now: () => number;
+  private readonly maxPending: number;
 
-  constructor(routes: Iterable<AssetRoute>) {
+  constructor(routes: Iterable<AssetRoute>, options: AssetRoutingOptions = {}) {
+    this.now = options.now ?? Date.now;
+    this.maxPending = Math.max(1, options.maxPendingSettlements ?? DEFAULT_MAX_PENDING_SETTLEMENTS);
     for (const route of routes) {
       const key = routeKey(route.network, route.asset);
       if (this.routes.has(key)) {
@@ -79,9 +124,90 @@ export class AssetRoutingFacilitatorClient implements FacilitatorClient {
     return this.pick(paymentRequirements).facilitator.verify(paymentPayload, paymentRequirements);
   }
 
-  /** Settle with the facilitator of the requirements' asset; refuses unrouted assets. */
+  /**
+   * Settle with the facilitator of the requirements' asset; refuses unrouted
+   * assets.
+   *
+   * x402 2.29 settles a second time, with the same payment, when the first
+   * answer is a `settlement_pending` failure that names a transaction, and
+   * keeps only the second answer. A self-hosted facilitator answers
+   * `settlement_pending` when it broadcast the transfer but did not see it
+   * execute in time, so that transfer may still execute. If the retry then
+   * gets a failure that names no transaction (rate limited, shutting down, a
+   * proxy error), that answer alone would read as a determinate failure: the
+   * buyer would be invited to pay again while the first transfer can still
+   * charge them. So the router remembers the transaction of a pending
+   * settlement per payment (network, asset, payer, nonce) and answers such a
+   * retry with `settlement_pending` and that transaction instead; the gateway
+   * records the outcome as unknown, with the hash, and checks it on-chain. A
+   * retry that times out (FacilitatorResponseError) stays a throw and carries
+   * the transaction as well. A retry that succeeds, or whose failure names a
+   * transaction itself, is passed on unchanged.
+   *
+   * With the route's `settleTimeoutMs`, the retry gets only what the first
+   * call left of that timeout: when nothing is left, or the retry does not
+   * answer in time, the router answers `settlement_pending` with the
+   * remembered transaction without waiting any longer.
+   */
   async settle(paymentPayload: PaymentPayload, paymentRequirements: PaymentRequirements): Promise<SettleResponse> {
-    return this.pick(paymentRequirements).facilitator.settle(paymentPayload, paymentRequirements);
+    const route = this.pick(paymentRequirements);
+    const key = pendingKeyOf(paymentPayload, paymentRequirements);
+    const earlier = key === undefined ? undefined : this.pendingSettlement(key);
+    const started = this.now();
+    const remember = (transaction: string, payer: string | undefined): void => {
+      if (key === undefined) return;
+      this.rememberPending(key, {
+        transaction,
+        payer: payer ?? earlier?.payer ?? payerOf(paymentPayload),
+        startedAt: earlier?.startedAt ?? started,
+        expiresAt: Math.max(validBeforeMsOf(paymentPayload) ?? 0, this.now()) + PENDING_MEMORY_MARGIN_MS,
+      });
+    };
+
+    const budgetMs = earlier && route.settleTimeoutMs !== undefined ? earlier.startedAt + route.settleTimeoutMs - started : undefined;
+    if (earlier && budgetMs !== undefined && budgetMs <= 0) {
+      return pendingAnswer(earlier, paymentRequirements, `nothing: the first call used up the ${route.settleTimeoutMs} ms settle timeout`);
+    }
+
+    let result: SettleResponse;
+    try {
+      if (earlier && budgetMs !== undefined) {
+        const answer = await within(route.facilitator.settle(paymentPayload, paymentRequirements), budgetMs);
+        if (answer.kind === "late") {
+          return pendingAnswer(earlier, paymentRequirements, `nothing within the ${route.settleTimeoutMs} ms settle timeout`);
+        }
+        if (answer.kind === "threw") throw answer.error;
+        result = answer.value;
+      } else {
+        result = await route.facilitator.settle(paymentPayload, paymentRequirements);
+      }
+    } catch (err) {
+      if (err instanceof SettleError && isPendingWithTransaction(err.errorReason, err.transaction)) {
+        remember(err.transaction, err.payer);
+        throw err;
+      }
+      if (!earlier) throw err;
+      if (err instanceof FacilitatorResponseError) {
+        // Still indeterminate: keep the throw, and let it name the transfer that may execute.
+        throw new SettlementIndeterminateError(
+          `${err.message} (retrying a settlement the facilitator had reported as pending with transaction ${earlier.transaction})`,
+          { transaction: earlier.transaction, cause: err },
+        );
+      }
+      if (err instanceof SettleError && err.transaction) throw err;
+      return pendingAnswer(earlier, paymentRequirements, describeFailure(err));
+    }
+
+    if (result.success) {
+      if (key !== undefined) this.pending.delete(key);
+      return result;
+    }
+    if (isPendingWithTransaction(result.errorReason, result.transaction)) {
+      remember(result.transaction, result.payer);
+      return result;
+    }
+    if (earlier && !result.transaction) return pendingAnswer(earlier, paymentRequirements, describeFailure(result));
+    return result;
   }
 
   /**
@@ -124,6 +250,32 @@ export class AssetRoutingFacilitatorClient implements FacilitatorClient {
     return route;
   }
 
+  /** The pending settlement remembered for `key`, unless it expired. */
+  private pendingSettlement(key: string): PendingSettlement | undefined {
+    const entry = this.pending.get(key);
+    if (entry && entry.expiresAt <= this.now()) {
+      this.pending.delete(key);
+      return undefined;
+    }
+    return entry;
+  }
+
+  private rememberPending(key: string, entry: PendingSettlement): void {
+    // Re-inserting moves the payment to the end, so the oldest entries come first.
+    this.pending.delete(key);
+    if (this.pending.size >= this.maxPending) {
+      const now = this.now();
+      for (const [other, seen] of this.pending) {
+        if (seen.expiresAt <= now) this.pending.delete(other);
+      }
+      for (const other of this.pending.keys()) {
+        if (this.pending.size < this.maxPending) break;
+        this.pending.delete(other);
+      }
+    }
+    this.pending.set(key, entry);
+  }
+
   private async fetchSupported(): Promise<Map<FacilitatorClient, SupportedResponse>> {
     const answers = await Promise.all(
       [...this.facilitators].map(async ([facilitator, label]) => {
@@ -135,6 +287,88 @@ export class AssetRoutingFacilitatorClient implements FacilitatorClient {
       }),
     );
     return new Map(answers);
+  }
+}
+
+/** Whether a settle failure is x402's retryable `settlement_pending`: one that names a transaction. */
+function isPendingWithTransaction(errorReason: string | undefined, transaction: string | undefined): boolean {
+  return errorReason === SETTLEMENT_PENDING && typeof transaction === "string" && transaction.length > 0;
+}
+
+/** The authorization of an "exact" Casper payment payload, as far as the router needs it. */
+function authorizationOf(paymentPayload: PaymentPayload): Record<string, unknown> | undefined {
+  const authorization = (paymentPayload.payload as { authorization?: unknown } | undefined)?.authorization;
+  return typeof authorization === "object" && authorization !== null ? (authorization as Record<string, unknown>) : undefined;
+}
+
+/** One payment: network, asset, payer and nonce. Undefined when the payload names no payer or nonce. */
+function pendingKeyOf(paymentPayload: PaymentPayload, requirements: PaymentRequirements): string | undefined {
+  const authorization = authorizationOf(paymentPayload);
+  const from = authorization?.from;
+  const nonce = authorization?.nonce;
+  if (typeof from !== "string" || typeof nonce !== "string" || from.trim() === "" || nonce.trim() === "") return undefined;
+  const payer = from.trim().toLowerCase();
+  const bareNonce = nonce.trim().toLowerCase().replace(/^0x/, "");
+  return `${requirements.network}|${normalizePackageHash(requirements.asset)}|${payer}|${bareNonce}`;
+}
+
+function payerOf(paymentPayload: PaymentPayload): string | undefined {
+  const from = authorizationOf(paymentPayload)?.from;
+  return typeof from === "string" ? from : undefined;
+}
+
+/** The authorization's validBefore in milliseconds, when it is a whole number of seconds. */
+function validBeforeMsOf(paymentPayload: PaymentPayload): number | undefined {
+  const validBefore = authorizationOf(paymentPayload)?.validBefore;
+  const seconds = typeof validBefore === "string" && /^\d{1,12}$/.test(validBefore) ? Number(validBefore) : validBefore;
+  return typeof seconds === "number" && Number.isSafeInteger(seconds) && seconds >= 0 ? seconds * 1_000 : undefined;
+}
+
+/** The answer to a retry that got no verdict naming a transaction: the earlier settlement is still pending. */
+function pendingAnswer(earlier: PendingSettlement, requirements: PaymentRequirements, detail: string): SettleResponse {
+  return {
+    success: false,
+    errorReason: SETTLEMENT_PENDING,
+    errorMessage: `retry after pending transaction ${earlier.transaction} answered ${detail}`,
+    transaction: earlier.transaction,
+    network: requirements.network,
+    ...(earlier.payer !== undefined ? { payer: earlier.payer } : {}),
+  };
+}
+
+/** A short description of a settle failure (thrown or returned), for the message of a pending answer. */
+function describeFailure(failure: unknown): string {
+  let text: string;
+  if (failure instanceof SettleError) {
+    text = failure.errorReason && failure.errorMessage ? `${failure.errorReason}: ${failure.errorMessage}` : failure.message;
+  } else if (failure instanceof Error) {
+    text = failure.message;
+  } else if (typeof failure === "object" && failure !== null) {
+    const { errorReason, errorMessage } = failure as Partial<SettleResponse>;
+    const reason = errorReason || "an unsuccessful settle";
+    text = errorMessage && errorMessage !== errorReason ? `${reason}: ${errorMessage}` : reason;
+  } else {
+    text = String(failure);
+  }
+  return text.length > 300 ? `${text.slice(0, 299)}…` : text;
+}
+
+type Raced<T> = { kind: "answered"; value: T } | { kind: "threw"; error: unknown } | { kind: "late" };
+
+/** What `promise` settled with, or "late" when it did not settle within `ms` (a later rejection is then ignored). */
+async function within<T>(promise: Promise<T>, ms: number): Promise<Raced<T>> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<Raced<T>>(resolve => {
+    timer = setTimeout(() => resolve({ kind: "late" }), ms);
+  });
+  const answered = promise.then(
+    (value): Raced<T> => ({ kind: "answered", value }),
+    (error: unknown): Raced<T> => ({ kind: "threw", error }),
+  );
+  try {
+    return await Promise.race([answered, late]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

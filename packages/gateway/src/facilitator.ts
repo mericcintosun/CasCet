@@ -18,9 +18,14 @@ import {
  * rethrows it instead of turning it into an ordinary (determinate) failure.
  */
 export class SettlementIndeterminateError extends FacilitatorResponseError {
-  constructor(message: string) {
+  /** Hash of a transfer the facilitator reported as broadcast for this payment, when one is known. */
+  readonly transaction?: string;
+
+  constructor(message: string, options: { transaction?: string; cause?: unknown } = {}) {
     super(message);
     this.name = "SettlementIndeterminateError";
+    if (options.transaction) this.transaction = options.transaction;
+    if (options.cause !== undefined) this.cause = options.cause;
   }
 }
 

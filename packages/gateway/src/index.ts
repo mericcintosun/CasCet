@@ -25,8 +25,10 @@ export {
   AssetRoutingFacilitatorClient,
   ExtraStrippingFacilitatorClient,
   mergeSupported,
+  SETTLEMENT_PENDING,
   UnroutedAssetError,
   type AssetRoute,
+  type AssetRoutingOptions,
 } from "./facilitator-router.js";
 export { CASCET_PAYMENT_FLOWS, CascetCasperServerScheme, type ServerSchemeAsset } from "./server-scheme.js";
 export {

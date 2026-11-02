@@ -17,7 +17,7 @@ import { ExactCasperScheme } from "@x402/casper/exact/client";
 import { DEFAULT_FACILITATOR_URL, type CascetConfig } from "@cascet/core";
 import type { PreemptionQuery, SettlementPreemptionChecker } from "./preemption.js";
 import { startGateway } from "./server.js";
-import { startFakeFacilitator } from "./testing/fake-facilitator.js";
+import { startFakeFacilitator, type Reply } from "./testing/fake-facilitator.js";
 import { createFakeUpstream } from "./testing/fake-upstream.js";
 import {
   callPaid,
@@ -347,6 +347,133 @@ describe("settlement outcomes stay with the token of the payment", () => {
       assert.deepEqual(seen, [{ payer: PAYER, nonce, payTo: PAY_TO, amount: WCSPR_PRICE_RAW, asset: WCSPR_TOKEN }]);
       const [receipt] = await receipts(h);
       assert.deepEqual([receipt?.status, receipt?.asset], ["failed", WCSPR_TOKEN]);
+    });
+  });
+});
+
+describe("x402's automatic retry of a settlement the facilitator reported as pending", () => {
+  const PENDING_TX = "5e".repeat(32);
+  const NETWORK = "casper:casper-test";
+
+  /**
+   * The legacy token's self-hosted facilitator answers the first /settle with
+   * `settlement_pending` and a hash (broadcast, not seen executing in time), as
+   * the real one does; x402 then settles again and the second answer is `retry`.
+   */
+  function pendingThen(h: TwoAssetHarness, retry: Reply): void {
+    let settles = 0;
+    h.legacy.onSettle = call => {
+      settles++;
+      if (settles > 1) return retry;
+      return {
+        json: {
+          success: false,
+          errorReason: "settlement_pending",
+          errorMessage: "transaction submitted; its execution was not observed yet — reconcile by transaction hash",
+          transaction: PENDING_TX,
+          network: NETWORK,
+          payer: call.body?.paymentPayload?.payload?.authorization?.from,
+          extra: { settlementStatus: "pending" },
+        },
+      };
+    };
+  }
+
+  /** The self-hosted facilitator's answer to a /settle its middleware refused before the core ran. */
+  const refusal = (status: number, errorReason: string, errorMessage: string): Reply => ({
+    status,
+    json: { success: false, errorReason, errorMessage, transaction: "", network: NETWORK, extra: { settlementStatus: "not_submitted" } },
+  });
+
+  const retries: Array<[string, Reply]> = [
+    ["429 rate_limited", refusal(429, "rate_limited", "too many requests; retry after the window resets")],
+    ["503 facilitator_shutting_down", refusal(503, "facilitator_shutting_down", "the facilitator is shutting down; retry later")],
+    ["a proxy's 404 page", { status: 404, raw: "<html>Not Found</html>" }],
+  ];
+  for (const [name, retry] of retries) {
+    it(`records the payment as unknown with the pending transaction when the retry gets ${name}, and never invites a second payment`, async () => {
+      await withTwoAssets({}, async h => {
+        pendingThen(h, retry);
+        const { header, nonce } = await payInAsset(h, "paid_tool", LEGACY_TOKEN);
+        const res = await callPaid(h, "paid_tool", header);
+        assert.equal(h.legacy.count("settle"), 2, "x402 settled twice");
+        assert.equal(res.status, 200);
+        assert.equal(res.body.error?.code, -32003);
+        assert.match(res.body.error?.message ?? "", /do not pay again/);
+        assert.equal(res.headers.get("payment-required"), null, "no fresh challenge");
+        assert.equal((res.body.error?.data as { accepts?: unknown } | undefined)?.accepts, undefined);
+        assert.equal(res.body.result, undefined);
+        const [receipt] = await receipts(h);
+        assert.deepEqual(
+          [receipt?.status, receipt?.txHash, receipt?.asset, receipt?.nonce, receipt?.payer],
+          ["unknown", PENDING_TX, LEGACY_TOKEN, nonce, PAYER],
+        );
+        assert.match(String(receipt?.note), new RegExp(`retry after pending transaction ${PENDING_TX} answered`));
+        assert.equal(res.headers.get("x-cascet-payment-id"), receipt?.id);
+      });
+    });
+  }
+
+  it("keeps the pending transaction on an unknown receipt when the retry itself is indeterminate (502 without a verdict)", async () => {
+    await withTwoAssets({}, async h => {
+      pendingThen(h, { status: 502, raw: "<html>Bad Gateway</html>" });
+      const { header } = await payInAsset(h, "paid_tool", LEGACY_TOKEN);
+      const res = await callPaid(h, "paid_tool", header);
+      assert.equal(res.body.error?.code, -32003);
+      const [receipt] = await receipts(h);
+      assert.deepEqual([receipt?.status, receipt?.txHash], ["unknown", PENDING_TX]);
+      assert.match(
+        String(receipt?.note),
+        new RegExp(`HTTP 502 and no settle verdict .*\\(retrying a settlement the facilitator had reported as pending with transaction ${PENDING_TX}\\)`),
+      );
+    });
+  });
+
+  it("keeps the hash a retry answers with (409 duplicate_nonce)", async () => {
+    await withTwoAssets({}, async h => {
+      pendingThen(h, {
+        status: 409,
+        json: {
+          success: false,
+          errorReason: "duplicate_nonce",
+          errorMessage: `this authorization is already submitted at this facilitator (transaction ${PENDING_TX})`,
+          transaction: PENDING_TX,
+          network: NETWORK,
+          extra: { settlementStatus: "duplicate" },
+        },
+      });
+      const { header } = await payInAsset(h, "paid_tool", LEGACY_TOKEN);
+      const res = await callPaid(h, "paid_tool", header);
+      assert.equal(res.body.error?.code, -32003);
+      const [receipt] = await receipts(h);
+      assert.deepEqual([receipt?.status, receipt?.txHash], ["unknown", PENDING_TX]);
+    });
+  });
+
+  it("gives the retry only what is left of the facilitator's settle timeout, and keeps the hash when it does not answer", async () => {
+    const config = (urls: { legacy: string }) => ({
+      facilitators: { self: { url: urls.legacy, apiKey: "self-key", authScheme: "bearer", timeoutMs: 600 } },
+    });
+    await withTwoAssets({ config }, async h => {
+      let settles = 0;
+      h.legacy.onSettle = call => {
+        settles++;
+        if (settles > 1) return { hang: true };
+        return {
+          delayMs: 200,
+          json: { success: false, errorReason: "settlement_pending", transaction: PENDING_TX, network: NETWORK, payer: call.body?.paymentPayload?.payload?.authorization?.from },
+        };
+      };
+      const { header } = await payInAsset(h, "paid_tool", LEGACY_TOKEN);
+      const started = Date.now();
+      const res = await callPaid(h, "paid_tool", header);
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed < 1_100, `the settle phase stayed within one 600 ms settle timeout plus the call (${elapsed} ms)`);
+      assert.equal(res.body.error?.code, -32003);
+      assert.equal(h.legacy.count("settle"), 2);
+      const [receipt] = await receipts(h);
+      assert.deepEqual([receipt?.status, receipt?.txHash], ["unknown", PENDING_TX]);
+      assert.match(String(receipt?.note), /answered nothing within the 600 ms settle timeout/);
     });
   });
 });

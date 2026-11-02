@@ -515,9 +515,11 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     } catch (err) {
       // FacilitatorResponseError (including our SettlementIndeterminateError and x402's
       // FacilitatorTimeoutError) or anything unexpected: the transfer may still execute.
-      const reason =
-        err instanceof SettlementIndeterminateError ? err.message : `facilitator gave an unusable settle answer: ${errorMessage(err)}`;
-      return reconcile({ status: "unknown", reason }, call);
+      // The router names the transfer when an earlier answer reported it as pending.
+      if (err instanceof SettlementIndeterminateError) {
+        return reconcile({ status: "unknown", reason: err.message, txHash: err.transaction }, call);
+      }
+      return reconcile({ status: "unknown", reason: `facilitator gave an unusable settle answer: ${errorMessage(err)}` }, call);
     }
     if (result.success) {
       return {
