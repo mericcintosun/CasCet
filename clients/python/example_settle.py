@@ -54,7 +54,8 @@ Environment:
     CASCET_ASSET                 legacy or wcspr (testnet only)
     CASCET_KEY_PATH              payer PEM; testnet default: tools/e2e/keys/agent.pem
                                  in this repo; required on mainnet
-    FACILITATOR                  facilitator base URL, or self / hosted
+    FACILITATOR                  facilitator base URL (no query or fragment), or
+                                 self / hosted
     CSPR_CLOUD_TOKEN             CSPR.cloud access key, sent raw ("Authorization:
                                  <key>", never "Bearer") and only to the hosted
                                  facilitator, which requires it
@@ -66,7 +67,10 @@ Environment:
                                  account-hash-<hex>); testnet default: the demo
                                  seller; required on mainnet
 
-A key is never sent over plain http:// to a host other than this machine.
+A key is never sent over plain http:// to a host other than this machine. Each
+key must be one line of 1-256 printable ASCII characters without spaces
+(surrounding whitespace, such as the newline of a key read from a file, is
+dropped); an error about a key names its variable and never shows the value.
 
 Exit status:
     0  settled
@@ -143,6 +147,8 @@ EXIT_OUTCOME_UNKNOWN = 3
 UNKNOWN_OUTCOME_REASONS = frozenset({"settlement_pending", "settlement_unknown"})
 UNKNOWN_SETTLEMENT_STATUSES = frozenset({"pending", "unknown"})
 _TX_HASH_RE = re.compile(r"[0-9a-fA-F]{64}")
+#: A facilitator key: one line of printable ASCII without spaces (used with fullmatch).
+_FACILITATOR_KEY_RE = re.compile(r"[\x21-\x7e]{1,256}")
 
 
 @dataclass(frozen=True)
@@ -224,6 +230,11 @@ def facilitator_url(value: Optional[str]) -> str:
         raise ConfigError(f"the facilitator must be an http(s) URL, self or hosted; got {value!r}")
     if parts.username is not None or parts.password is not None:
         raise ConfigError("put the facilitator key in CSPR_CLOUD_TOKEN or CASCET_FACILITATOR_TOKEN, not in the URL")
+    if "?" in url or "#" in url:  # /settle is appended to the base URL; a key in a query would also be printed
+        raise ConfigError(
+            "the facilitator URL must not have a query or a fragment; put a key in CSPR_CLOUD_TOKEN or "
+            "CASCET_FACILITATOR_TOKEN"
+        )
     return url
 
 
@@ -257,6 +268,26 @@ def check_facilitator_settles(token: Token, url: str) -> None:
         )
 
 
+def facilitator_secret(env: Mapping[str, str], name: str) -> Optional[str]:
+    """
+    The facilitator key in the variable `name`, or None when it is unset or blank.
+
+    Surrounding whitespace is dropped (a key read from a file ends in a
+    newline). What is left must be one line of 1-256 printable ASCII
+    characters without spaces, as an access key or bearer token is: a CR or
+    LF would make requests refuse the header with an error that quotes the
+    key. The error names the variable and never shows the value.
+    """
+    value = (env.get(name) or "").strip()
+    if not value:
+        return None
+    if not _FACILITATOR_KEY_RE.fullmatch(value):
+        raise ConfigError(
+            f"{name} must be one line of 1-256 printable ASCII characters without spaces (the value is not shown)"
+        )
+    return value
+
+
 def facilitator_headers(url: str, env: Mapping[str, str]) -> Dict[str, str]:
     """
     The Authorization header for the facilitator at `url`.
@@ -264,16 +295,17 @@ def facilitator_headers(url: str, env: Mapping[str, str]) -> Dict[str, str]:
     The hosted facilitator takes the raw CSPR.cloud access key (CSPR_CLOUD_TOKEN),
     never "Bearer <key>"; any other facilitator gets CASCET_FACILITATOR_TOKEN as
     "Bearer <token>" when it is set. Each secret only ever goes to its own kind
-    of facilitator, and never over plain http:// to another machine.
+    of facilitator, and never over plain http:// to another machine. The key
+    in use must pass facilitator_secret's check.
     """
     if is_hosted_facilitator_url(url):
-        key = (env.get("CSPR_CLOUD_TOKEN") or "").strip()
-        if not key:
+        key = facilitator_secret(env, "CSPR_CLOUD_TOKEN")
+        if key is None:
             raise ConfigError("the hosted facilitator needs your CSPR.cloud access key: set CSPR_CLOUD_TOKEN")
         value = key  # raw: the hosted facilitator refuses "Bearer <key>"
     else:
-        token = (env.get("CASCET_FACILITATOR_TOKEN") or "").strip()
-        if not token:
+        token = facilitator_secret(env, "CASCET_FACILITATOR_TOKEN")
+        if token is None:
             return {}
         value = f"Bearer {token}"
     parts = urlsplit(url)

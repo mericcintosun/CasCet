@@ -244,14 +244,17 @@ Settings:
 | Option / variable | Meaning |
 |---|---|
 | `--asset`, `CASCET_ASSET` | `legacy` (default: the CasCet X402 Token) or `wcspr` (the official Wrapped CSPR, testnet only). |
-| `--facilitator`, `FACILITATOR` | Facilitator base URL, or `self` (`http://127.0.0.1:4501`, the default for `legacy`) or `hosted` (`https://x402-facilitator.cspr.cloud`, the default for `wcspr`). |
+| `--facilitator`, `FACILITATOR` | Facilitator base URL (without a query or a fragment), or `self` (`http://127.0.0.1:4501`, the default for `legacy`) or `hosted` (`https://x402-facilitator.cspr.cloud`, the default for `wcspr`). |
 | `CSPR_CLOUD_TOKEN` | CSPR.cloud access key for the hosted facilitator. Sent raw as `Authorization: <key>` (never `Bearer`), and to the hosted facilitator only. |
 | `CASCET_FACILITATOR_TOKEN` | Token of any other facilitator, sent as `Authorization: Bearer …`. The self-hosted facilitator requires it on mainnet. Never sent to the hosted facilitator. |
 | `CASCET_KEY_PATH` | Payer key. Testnet default: `tools/e2e/keys/agent.pem`. Required on mainnet. |
 | `CASCET_SELLER_ACCOUNT_HASH` | The payee. Testnet default: the demo seller. Required on mainnet. |
 
 The script never sends a key over plain `http://` to a host other than this
-machine, and never follows a redirect.
+machine, and never follows a redirect. Each key must be one line of 1–256
+printable ASCII characters without spaces (surrounding whitespace, such as the
+newline of a key read from a file, is dropped). An error about a key names its
+variable and never shows the value.
 
 | Exit status | Meaning |
 |---|---|

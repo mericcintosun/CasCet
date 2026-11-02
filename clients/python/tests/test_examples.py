@@ -105,9 +105,42 @@ class TestSettleFacilitator(unittest.TestCase):
                 with self.assertRaises(example_settle.ConfigError):
                     example_settle.facilitator_url(bad)
 
+    def test_url_without_query_or_fragment(self):
+        # /settle is appended to the base URL, and a key in a query string would end up in the output.
+        for bad in ("https://facilitator.example.test/x402?key=secret", "https://facilitator.example.test/x402?",
+                    "https://facilitator.example.test/#secret", "http://127.0.0.1:4501/?secret"):
+            with self.subTest(url=bad):
+                with self.assertRaises(example_settle.ConfigError) as ctx:
+                    example_settle.facilitator_url(bad)
+                self.assertIn("query or a fragment", str(ctx.exception))
+                self.assertNotIn("secret", str(ctx.exception))
+
     def test_hosted_facilitator_gets_the_raw_key(self):
         headers = example_settle.facilitator_headers(HOSTED, {"CSPR_CLOUD_TOKEN": " cspr-cloud-key "})
         self.assertEqual(headers, {"Authorization": "cspr-cloud-key"})  # never "Bearer ..."
+        # A key read from a file keeps its trailing newline; that is dropped, as are the surrounding blanks.
+        headers = example_settle.facilitator_headers(HOSTED, {"CSPR_CLOUD_TOKEN": "cspr-cloud-key\r\n"})
+        self.assertEqual(headers, {"Authorization": "cspr-cloud-key"})
+        longest = "k" * 256
+        self.assertEqual(example_settle.facilitator_headers(HOSTED, {"CSPR_CLOUD_TOKEN": longest}),
+                         {"Authorization": longest})
+
+    def test_a_key_must_be_one_line_of_printable_ascii(self):
+        # Every value carries the marker "zq", which must never show up in the error.
+        bad_values = ("zqfirst\nzqsecond", "zqkey\rzqinjected: header", "zqkey zqspaced", "zqkey\tzqtab",
+                      "zq" * 129, "zqkéy", "zqkey\x00", "zqkey\x7f")
+        for name, url in (("CSPR_CLOUD_TOKEN", HOSTED), ("CASCET_FACILITATOR_TOKEN", SELF_HOSTED),
+                          ("CASCET_FACILITATOR_TOKEN", "https://facilitator.example.test")):
+            for value in bad_values:
+                with self.subTest(variable=name, url=url, value=value[:20]):
+                    with self.assertRaises(example_settle.ConfigError) as ctx:
+                        example_settle.facilitator_headers(url, {name: value})
+                    message = str(ctx.exception)
+                    self.assertIn(name, message)
+                    self.assertNotIn("zq", message)
+        # Only the key in use is checked: the hosted facilitator never reads CASCET_FACILITATOR_TOKEN.
+        env = {"CSPR_CLOUD_TOKEN": "cspr-cloud-key", "CASCET_FACILITATOR_TOKEN": "bad\ntoken"}
+        self.assertEqual(example_settle.facilitator_headers(HOSTED, env), {"Authorization": "cspr-cloud-key"})
 
     def test_hosted_facilitator_needs_its_own_key(self):
         for env in ({}, {"CASCET_FACILITATOR_TOKEN": "self-hosted-secret"}, {"CSPR_CLOUD_TOKEN": " "}):
@@ -327,6 +360,23 @@ class TestSettleMain(unittest.TestCase):
                 self.assertEqual(code, 1)
                 post.assert_not_called()
                 sign.assert_not_called()
+
+    def test_a_multi_line_key_is_refused_without_showing_it(self):
+        # requests would refuse the header with an InvalidHeader that quotes the key, and main() printed it.
+        pem = write_test_pem(self)
+        for argv, env in (
+            (["--asset", "wcspr"], {"CASCET_KEY_PATH": pem, "CSPR_CLOUD_TOKEN": "cspr-cloud-key\nsecond-line"}),
+            ([], {"CASCET_KEY_PATH": pem, "CASCET_FACILITATOR_TOKEN": "self-hosted-secret\r\nX-Injected: 1"}),
+        ):
+            with self.subTest(variable=sorted(env)[-1]):
+                with mock.patch.object(example_settle, "build_payment_payload") as sign:
+                    code, post, out = self.run_main(argv, env)
+                self.assertEqual(code, 1)
+                post.assert_not_called()
+                sign.assert_not_called()
+                self.assertIn("configuration error", out)
+                for secret in ("cspr-cloud-key", "second-line", "self-hosted-secret", "X-Injected"):
+                    self.assertNotIn(secret, out)
 
     def test_failed_settle(self):
         env = {"CASCET_KEY_PATH": write_test_pem(self)}
