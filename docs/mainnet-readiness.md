@@ -327,8 +327,9 @@ contain, then rotate, then review what was signed. The ReceiptRegistry is
      the deployer account.
   4. The x402 token package is unlocked and upgradable by this key: announce the
      incident, remove the token from every allowlist (`CASCET_ALLOWED_ASSETS`, gateway
-     `asset`, client `CASCET_ALLOWED_ASSETS`) and migrate to a fresh token (the
-     CEP-3009 `value` migration / official Wrapped CSPR on the roadmap).
+     `asset`, client `CASCET_ALLOWED_ASSETS`) and migrate to a fresh token, for
+     example the official Wrapped CSPR (`cep3009-value`), which CasCet already
+     supports (no mainnet Wrapped CSPR settle has run yet).
   5. Move any CSPR and tokens held by the deployer account to a fresh account.
 
 ## 5. Dashboard / config (mainnet)
