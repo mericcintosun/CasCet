@@ -70,6 +70,13 @@ describe("WCSPR wrap: expected cost", () => {
     assert.doesNotThrow(() => planWrap(CSPR, 4n * CSPR, true));
   });
 
+  test("a refused limit just below the minimum is named exactly, never rounded up to it", () => {
+    // --gas-cspr takes 9 decimals: 5.445 to 5.449999999 CSPR all rounded to "5.45" at two digits.
+    assert.throws(() => planWrap(CSPR, 5_449_000_000n, false), /^Error: a gas limit of 5\.449 CSPR is below 5\.45 CSPR,/);
+    assert.throws(() => planWrap(CSPR, 5_445_000_000n, false), /a gas limit of 5\.445 CSPR is below 5\.45 CSPR/);
+    assert.throws(() => planWrap(CSPR, 5_449_999_999n, undefined), /a gas limit of 5\.449999999 CSPR is below 5\.45 CSPR/);
+  });
+
   test("the smallest limit is ceil(1.3 × estimate) to 0.01 CSPR; afterwards the 2.5 CSPR floor of --gas-cspr governs", () => {
     assert.equal(minWrapGasMotes(false), 5_450_000_000n);
     assert.equal(minWrapGasMotes(undefined), 5_450_000_000n);

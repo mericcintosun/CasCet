@@ -67,3 +67,18 @@ export function formatCspr(motes: bigint, fractionDigits = 4): string {
   if (fractionDigits === 0) return `${sign}${whole}`;
   return `${sign}${whole}.${(rounded % unit).toString().padStart(fractionDigits, "0")}`;
 }
+
+/**
+ * CSPR exactly, never rounded, with at least `minFractionDigits` decimals:
+ * 4000000000n → "4.00", 5449000000n → "5.449". For an amount the user gave,
+ * which rounding could show as a different one (a refused 5.449 CSPR limit
+ * read as "5.45 is below 5.45").
+ */
+export function formatCsprExact(motes: bigint, minFractionDigits = 2): string {
+  if (!Number.isInteger(minFractionDigits) || minFractionDigits < 0 || minFractionDigits > CSPR_DECIMALS) {
+    throw new RangeError(`minFractionDigits must be a whole number from 0 to ${CSPR_DECIMALS}`);
+  }
+  const [whole, fraction = ""] = formatAmount(motes, CSPR_DECIMALS).split(".");
+  const digits = fraction.padEnd(minFractionDigits, "0");
+  return digits ? `${whole}.${digits}` : whole!;
+}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { CSPR_DECIMALS, formatAmount, formatCspr, MOTES_PER_CSPR, parseAmount } from "./amounts.js";
+import { CSPR_DECIMALS, formatAmount, formatCspr, formatCsprExact, MOTES_PER_CSPR, parseAmount } from "./amounts.js";
 
 describe("decimal amounts", () => {
   test("parses whole and fractional amounts into raw units without floating point", () => {
@@ -47,5 +47,16 @@ describe("decimal amounts", () => {
     assert.equal(formatCspr(123n, 9), "0.000000123");
     assert.equal(formatCspr(-2_500_000_000n, 1), "-2.5");
     assert.throws(() => formatCspr(1n, 10), RangeError);
+  });
+
+  test("formats a CSPR amount the user gave exactly, with at least two decimals", () => {
+    assert.equal(formatCsprExact(4_000_000_000n), "4.00");
+    assert.equal(formatCsprExact(5_450_000_000n), "5.45");
+    assert.equal(formatCsprExact(5_449_000_000n), "5.449", "never rounded up to the next cent");
+    assert.equal(formatCsprExact(5_449_999_999n), "5.449999999");
+    assert.equal(formatCsprExact(2_500_000_000n, 0), "2.5");
+    assert.equal(formatCsprExact(3_000_000_000n, 0), "3");
+    assert.equal(formatCsprExact(-1_500_000_000n), "-1.50");
+    assert.throws(() => formatCsprExact(1n, 10), RangeError);
   });
 });
