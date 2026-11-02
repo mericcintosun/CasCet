@@ -51,9 +51,10 @@ pnpm test                        # unit tests of every package that has them
 
 To try the payment flow end to end with your own testnet keys, follow
 [`examples/wrap-third-party`](examples/wrap-third-party/README.md). The demo
-scripts in `tools/e2e` (`demo`, `demo-real`, `agent`, `connect-demo`,
-`fund-token`) sign with the maintainers' operator keys, which are not in the
-repository, so they only run on a maintainer's machine.
+scripts in `tools/e2e` (`demo`, `demo-real`, `demo-real-wcspr`, `agent`,
+`connect-demo`, `fund-token`, `wrap-wcspr`) sign with the maintainers' operator
+keys, which are not in the repository, so they only run on a maintainer's
+machine.
 [`docs/testing-playbook.md`](docs/testing-playbook.md) lists what each check
 proves.
 

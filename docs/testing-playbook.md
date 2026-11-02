@@ -182,7 +182,7 @@ The script prints the transaction link (e.g. testnet `0218ff4c…`, mainnet
 `2c66141c…`). The testnet demo then waits for the anchor (up to 150 s) and reads
 both transactions back with read-only RPC: it prints the gas limit, consumed
 gas, refund and net cost of the settle and of the anchor, and a limit suggested
-from the measurement (ceil(1.3 × consumed), at least 2.5 CSPR).
+from the measurement (ceil(1.3 × consumed)) next to the configured one.
 
 ### Two token styles on testnet: CasCet X402 Token and Wrapped CSPR
 
@@ -198,16 +198,19 @@ to the token's `transfer_with_authorization` entry point differs:
 A facilitator that sends the wrong argument makes the settle revert with
 `User error: 64658` and burns its gas limit, so the demos refuse those
 pairings before anyone signs. The gateway advertises the style in each
-`accepts` entry (`extra.authorizationStyle`); facilitators read the token's
-ABI on-chain instead of trusting it.
+`accepts` entry (`extra.authorizationStyle`); no facilitator trusts that field.
+The hosted facilitator sends `value`; the self-hosted one in this release sends
+`amount`, so its `CASCET_ALLOWED_ASSETS` must list only `legacy-amount` tokens
+(never Wrapped CSPR).
 
-The scripts below that sign are dry runs unless you add `--send`: a dry run reads
-the chain (read-only), checks the token, the accounts and the balances, prints
-what it would sign and what it costs, and exits non-zero when something would
-fail. They run on testnet only: they refuse `CASCET_NETWORK=casper:casper`,
-`CASCET_NET=mainnet`, and any node (`CASCET_RPC_URL`) that does not serve
-`casper-test`. They sign with `contracts/keys/deployer_secret_key.pem` unless
-you pass `--key /absolute/path.pem`.
+`wrap-wcspr` and `fund-token` are dry runs unless you add `--send`: a dry run
+reads the chain (read-only), checks the token, the accounts and the balances,
+prints what it would sign and what it costs, and exits non-zero when something
+would fail; with `--send` they refuse to sign while a check fails. They run on
+testnet only: they refuse `CASCET_NETWORK=casper:casper`, `CASCET_NET=mainnet`,
+and any node (`CASCET_RPC_URL`) that does not serve `casper-test`. They sign
+with `contracts/keys/deployer_secret_key.pem` unless you pass
+`--key /absolute/path.pem`.
 
 1. Wrap testnet CSPR into WCSPR (the signer receives it):
 
@@ -222,8 +225,10 @@ you pass `--key /absolute/path.pem`.
    is 10 CSPR, charged up front, with 75% of the unused part refunded on
    success: an account's first wrap also creates its cargo purse (2.5 CSPR of
    `create_purse`), so expect about 5.6 CSPR of gas for the first wrap and less
-   afterwards (`--gas-cspr` sets the limit). After `--send` it prints the
-   measured gas and the new WCSPR balance.
+   afterwards. `--gas-cspr` sets the limit; it refuses a limit below 1.3 × the
+   estimated consumption (5.45 CSPR for a first wrap) and below 2.5 CSPR, since
+   a wrap that runs out of gas burns its whole limit. After `--send` it prints
+   the measured gas and the new WCSPR balance.
 
 2. Give the buyer (`tools/e2e/keys/agent.pem`) some WCSPR:
 
@@ -233,7 +238,10 @@ you pass `--key /absolute/path.pem`.
 
    `fund-token <token> <recipient account hash> <amount>` works for any CEP-18
    token with `transfer(recipient, amount)`; the amount is in whole tokens at
-   the token's on-chain decimals (`--raw` for raw units).
+   the token's on-chain decimals (`--raw` for raw units). It refuses to send
+   when the signer's token balance is short or cannot be read (a short balance
+   reverts the transfer and burns its gas limit); for a token without an Odra
+   `balances` dictionary, `--skip-balance-check` sends without that check.
 
 3. Pay in WCSPR:
 
@@ -242,8 +250,11 @@ you pass `--key /absolute/path.pem`.
    pnpm --filter @cascet/e2e demo-real-wcspr
    ```
 
-   `demo-real` takes `CASCET_ASSET=legacy|wcspr` and
-   `CASCET_FACILITATOR=self|hosted` (`demo-real-wcspr` is `demo-real --asset wcspr`):
+   `demo-real` has no dry run: after its read-only checks (the token's ABI,
+   name and chain, the buyer's balance, and for the hosted facilitator its fee
+   payer) it signs the buyer's authorization and pays, always on testnet.
+   It takes `CASCET_ASSET=legacy|wcspr` and `CASCET_FACILITATOR=self|hosted`
+   (`demo-real-wcspr` is `demo-real --asset wcspr`):
 
    | | `self` (default) | `hosted` |
    | --- | --- | --- |
@@ -255,9 +266,12 @@ you pass `--key /absolute/path.pem`.
 
    **Known blocker:** the hosted facilitator's TESTNET fee payer
    (`account-hash-81d557c9…`) held 2.145 CSPR on 2026-11-01, less than the 2.5
-   CSPR a settle needs, so every hosted testnet settle fails until MAKE refills
-   it. `demo-real` checks that balance (read-only) before anyone signs and stops
-   with that message. The mainnet fee payer is funded.
+   CSPR a settle needs (Casper's minimum initiator balance, and the hosted
+   facilitator's gas limit per settle), so every hosted testnet settle fails
+   until MAKE refills it. `demo-real` reads the fee payer from the hosted
+   facilitator's `/supported` and its balance (read-only) before anyone signs,
+   and stops when the balance is short or when either cannot be read. The
+   mainnet fee payer is funded.
 
 4. Measure the settle gas. `demo-real` prints the measured gas of every run; to
    set the `cep3009-value` limit (`DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE`, 3.5
@@ -270,9 +284,11 @@ you pass `--key /absolute/path.pem`.
    It reads the transactions (read-only, `--network casper:casper` for mainnet
    ones), prints limit, consumed, refund and net cost per transaction, and per
    kind (settle per style, anchor, wrap, transfer) suggests ceil(1.3 × max
-   consumed), never below Casper's 2.5 CSPR baseline payment. Never use
-   `@x402/casper`'s 2.5 CSPR default for the legacy token: its settles consume
-   about 2.7 CSPR.
+   consumed). A suggestion below 2.5 CSPR is a valid limit: Casper's 2.5 CSPR
+   (`baseline_motes_amount`) is the minimum balance of the account that submits
+   a transaction, not a minimum gas limit, and the report says so next to such
+   a suggestion. Never use `@x402/casper`'s 2.5 CSPR default for the legacy
+   token: its settles consume about 2.7 CSPR.
 
 ### Python client
 

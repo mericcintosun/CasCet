@@ -142,6 +142,12 @@ needed: the hosted facilitator pays the gas.
   raw in the `Authorization` header (`"authScheme": "raw"`; the hosted
   facilitator does not take `Bearer `). Keep the filled-in copy out of git.
 - Fill in `payTo` as in step 1 above.
+- Skip step 2. The self-hosted facilitator in this release always sends
+  `amount`, so it cannot settle Wrapped CSPR: never put the WCSPR package hash
+  in its `CASCET_ALLOWED_ASSETS` (every settle would revert with
+  `User error: 64658` and burn its gas limit).
+- In step 3, start the gateway with this file:
+  `node packages/cli/dist/cli.js wrap examples/wrap-third-party/cascet.wcspr.config.json`.
 - Buyers pay in WCSPR, which is testnet CSPR wrapped 1:1. A buyer with testnet
   CSPR from the faucet can wrap it from a clone of this repository (a dry run
   first, then `--send`):
@@ -156,7 +162,7 @@ needed: the hosted facilitator pays the gas.
   limit up front; the dry run prints the expected cost. The script runs Odra's
   proxy session wasm from the local cargo registry: run `cargo fetch` in
   `contracts/` once (it needs Rust) to download it.
-- In step 5, allow the WCSPR token instead:
+- In step 5, allow the WCSPR token in the buyer's bridge instead:
   `CASCET_ALLOWED_ASSETS=hash-3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e`
   and connect to `http://127.0.0.1:4411/mcp`.
 
