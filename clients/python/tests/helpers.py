@@ -25,10 +25,15 @@ TESTNET = x402.NETWORK_CASPER_TESTNET
 MAINNET = x402.NETWORK_CASPER_MAINNET
 TOKEN = "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3"
 OTHER_TOKEN = "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41"
+#: The official Wrapped CSPR on testnet: a CEP-3009 ("cep3009-value") token.
+WCSPR = "3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e"
 SELLER = "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36"
 OTHER_SELLER = "00" + "ab" * 32
 NOW = 1767225600  # 2026-01-01T00:00:00Z
 DELETE = object()  # make_requirements(field=DELETE) drops the field
+#: `extra` of the two tokens as a CasCet gateway advertises them since the 2.29 migration.
+LEGACY_EXTRA = {"name": "CasCet X402 Token", "symbol": "WCSPR", "version": "1", "decimals": "9", "authorizationStyle": "legacy-amount"}
+WCSPR_EXTRA = {"name": "Wrapped CSPR", "symbol": "WCSPR", "version": "1", "decimals": "9", "authorizationStyle": "cep3009-value"}
 
 
 def make_requirements(**overrides: Any) -> Dict[str, Any]:
@@ -48,6 +53,19 @@ def make_requirements(**overrides: Any) -> Dict[str, Any]:
         else:
             req[name] = value
     return req
+
+
+def legacy_requirements(**overrides: Any) -> Dict[str, Any]:
+    """An `accepts` entry for the CasCet X402 Token that names its style (legacy-amount)."""
+    overrides.setdefault("extra", copy.deepcopy(LEGACY_EXTRA))
+    return make_requirements(**overrides)
+
+
+def wcspr_requirements(**overrides: Any) -> Dict[str, Any]:
+    """An `accepts` entry for the testnet Wrapped CSPR (cep3009-value)."""
+    overrides.setdefault("asset", WCSPR)
+    overrides.setdefault("extra", copy.deepcopy(WCSPR_EXTRA))
+    return make_requirements(**overrides)
 
 
 def make_payment_required(*accepts: Dict[str, Any], **extra: Any) -> Dict[str, Any]:

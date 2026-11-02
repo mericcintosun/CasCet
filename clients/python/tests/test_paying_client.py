@@ -112,13 +112,26 @@ class TestAllowlists(unittest.TestCase):
                     quiet_client(allowed_assets=[entry])
 
     def test_contract_package_payee(self):
+        # Refused everywhere, as in the TS client: no facilitator in use credits a "01" payee correctly.
         payee = "01" + "cd" * 32
         open_client = quiet_client(allowed_pay_to=None)
         with self.assertRaises(x402.PaymentAborted) as ctx:
             pay(open_client, make_requirements(payTo=payee))
         self.assertIn("01 tag", str(ctx.exception))
-        pinned = quiet_client(allowed_pay_to=["hash-" + "cd" * 32])
-        pay(pinned, make_requirements(payTo=payee))
+        self.assertIn(x402.CONTRACT_PAYEE_REASON, str(ctx.exception))
+        # Pinning it is a configuration error, not a way to pay it ...
+        # (A bare "01" + 64 hex entry is refused as a public key: test_public_key_in_allowlist_is_refused...)
+        for entry in ("hash-" + "cd" * 32, "package-hash-" + "cd" * 32, " HASH-" + "CD" * 32):
+            with self.subTest(entry=entry):
+                with self.assertRaises(ValueError) as ctx:
+                    quiet_client(allowed_pay_to=[entry])
+                self.assertIn("contract-package payee", str(ctx.exception))
+        # ... and an account hash with the same 32 bytes does not let the 01 key through either.
+        pinned = quiet_client(allowed_pay_to=["00" + "cd" * 32])
+        with self.assertRaises(x402.PaymentAborted) as ctx:
+            pay(pinned, make_requirements(payTo=payee))
+        self.assertIn("01 tag", str(ctx.exception))
+        self.assertEqual(pinned.spending(), {})
 
     def test_empty_allowlist_pays_nobody(self):
         with self.assertRaises(x402.PaymentAborted):
