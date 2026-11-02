@@ -119,8 +119,9 @@ jobs:
           node-version: 24
 
       # Reads pnpm-lock.yaml; no install needed. High and critical advisories
-      # fail the build. Advisories accepted on purpose are listed, each with its
-      # reason and exit condition, under auditConfig in pnpm-workspace.yaml.
+      # fail the build. To accept one on purpose, list it under
+      # auditConfig.ignoreGhsas in pnpm-workspace.yaml with its reason and the
+      # change that removes it; none is accepted today.
       - name: pnpm audit --prod --audit-level=high
         run: pnpm audit --prod --audit-level=high
 

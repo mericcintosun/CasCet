@@ -31,7 +31,6 @@
   },
   "dependencies": {
     "@cascet/core": "workspace:*",
-    "@make-software/casper-x402": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@x402/casper": "2.29.0",
     "@x402/core": "2.29.0",
@@ -41,6 +40,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@make-software/casper-x402": "^1.0.0",
     "@types/express": "^5.0.0"
   }
 }

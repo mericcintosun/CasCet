@@ -157,9 +157,6 @@ importers:
       '@cascet/core':
         specifier: workspace:*
         version: link:../core
-      '@make-software/casper-x402':
-        specifier: ^1.0.0
-        version: 1.0.0
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.2
         version: 1.32.2(zod@4.6.7)
@@ -182,6 +179,9 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
+      '@make-software/casper-x402':
+        specifier: ^1.0.0
+        version: 1.0.0
       '@types/express':
         specifier: ^5.0.0
         version: 5.0.6
@@ -238,9 +238,6 @@ importers:
       '@cascet/gateway':
         specifier: workspace:*
         version: link:../../packages/gateway
-      '@make-software/casper-x402':
-        specifier: ^1.0.0
-        version: 1.0.0
       '@x402/casper':
         specifier: 2.29.0
         version: 2.29.0
@@ -257,6 +254,9 @@ importers:
         specifier: ^8.7.2
         version: 8.7.2(express@5.3.0)
     devDependencies:
+      '@make-software/casper-x402':
+        specifier: ^1.0.0
+        version: 1.0.0
       '@types/express':
         specifier: ^5.0.0
         version: 5.0.6

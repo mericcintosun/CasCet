@@ -25,7 +25,6 @@
     "@cascet/client": "workspace:*",
     "@cascet/core": "workspace:*",
     "@cascet/gateway": "workspace:*",
-    "@make-software/casper-x402": "^1.0.0",
     "@x402/casper": "2.29.0",
     "@x402/core": "2.29.0",
     "casper-js-sdk": "^5.0.12",
@@ -33,6 +32,7 @@
     "express-rate-limit": "^8.7.2"
   },
   "devDependencies": {
+    "@make-software/casper-x402": "^1.0.0",
     "@types/express": "^5.0.0",
     "tsx": "^4.21.0"
   }
