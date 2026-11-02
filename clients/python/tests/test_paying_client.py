@@ -325,7 +325,9 @@ class TestAmountsAndBudgets(unittest.TestCase):
         seen = []
         client = quiet_client(on_payment=seen.append)
         pay(client)
-        self.assertEqual(seen, [{"amount_raw": "500000000", "pay_to": SELLER, "asset": TOKEN, "network": TESTNET}])
+        # TOKEN is CasCet's testnet x402 token: reported with the style the client knows for it.
+        self.assertEqual(seen, [{"amount_raw": "500000000", "pay_to": SELLER, "asset": TOKEN, "network": TESTNET,
+                                 "authorization_style": "legacy-amount"}])
 
 
 class TestWarnings(unittest.TestCase):

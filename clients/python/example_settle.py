@@ -13,11 +13,9 @@ argument the facilitator passes to the token's transfer_with_authorization:
             facilitator. The hosted CSPR.cloud facilitator sends `value`,
             which this token reverts on, so that pairing is refused here.
     wcspr   Wrapped CSPR on testnet ("cep3009-value": `value`), the official
-            CEP-3009 token. The hosted facilitator settles it and is its
-            default facilitator. CasCet's self-hosted facilitator sends
-            `amount` for now (SELF_HOSTED_SETTLE_STYLES), which this token
-            reverts on, so that pairing is refused too. The payer needs a
-            WCSPR balance: wrap some testnet CSPR first.
+            CEP-3009 token. CasCet's self-hosted facilitator (its default
+            facilitator) and the hosted facilitator both settle it. The payer
+            needs a WCSPR balance: wrap some testnet CSPR first.
 
 Both carry the symbol WCSPR; only the second is the official Wrapped CSPR.
 Any facilitator other than the hosted one is taken for CasCet's self-hosted
@@ -124,14 +122,11 @@ EXPLORERS = {
     NETWORK_CASPER_MAINNET: "https://cspr.live/transaction/",
 }
 AMOUNT = "500000000"  # 0.5 token: both tokens have 9 decimals
-#: Authorization styles CasCet's self-hosted facilitator settles. It passes the
-#: `amount` argument to transfer_with_authorization (tools/e2e/src/settlement.ts),
-#: so a cep3009-value token such as Wrapped CSPR would revert with User error
-#: 64658 and burn the settle's whole gas limit; its preflight (balance, nonce,
-#: token name) passes on such a token and does not catch this. Add
-#: "cep3009-value" once the self-hosted facilitator settles by the token's
-#: on-chain style.
-SELF_HOSTED_SETTLE_STYLES: Tuple[str, ...] = ("legacy-amount",)
+#: Authorization styles CasCet's self-hosted facilitator settles. It builds its
+#: own settlement in each token's style (tools/e2e/src/settlement.ts): `amount`
+#: for legacy-amount tokens, `value` for cep3009-value tokens such as Wrapped
+#: CSPR, and refuses a token whose on-chain ABI contradicts its style.
+SELF_HOSTED_SETTLE_STYLES: Tuple[str, ...] = ("legacy-amount", "cep3009-value")
 #: Authorization styles the hosted CSPR.cloud facilitator settles: it passes `value`.
 HOSTED_SETTLE_STYLES: Tuple[str, ...] = ("cep3009-value",)
 #: (connect, read) timeouts of the /settle POST in seconds. The facilitator answers once the transaction has
@@ -266,8 +261,8 @@ def check_facilitator_settles(token: Token, url: str) -> None:
     elif token.style not in SELF_HOSTED_SETTLE_STYLES:
         raise ConfigError(
             "any facilitator other than the hosted one is taken for CasCet's self-hosted facilitator, which settles "
-            f"only {', '.join(SELF_HOSTED_SETTLE_STYLES)} tokens for now: it passes `amount`, and the {token.name} is "
-            f"{token.style} (it takes `value`), so its settle would revert (User error 64658) and burn the gas limit. "
+            f"only {', '.join(SELF_HOSTED_SETTLE_STYLES)} tokens, and the {token.name} is {token.style}, so its "
+            "settle would revert (User error 64658) and burn the gas limit. "
             "Use --facilitator hosted (with CSPR_CLOUD_TOKEN)."
         )
 
@@ -371,7 +366,7 @@ def load_settings(argv: Optional[Sequence[str]], env: Mapping[str, str]) -> Sett
             raise
         raise ConfigError(
             f"{exc}. The hosted facilitator is the default for the {token.name}: CasCet's self-hosted facilitator "
-            f"does not settle {token.style} tokens yet"
+            f"does not settle {token.style} tokens"
         ) from None
     seller = seller_pay_to(env.get("CASCET_SELLER_ACCOUNT_HASH"), network)
     key_path = (env.get("CASCET_KEY_PATH") or "").strip()

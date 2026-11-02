@@ -337,19 +337,42 @@ class TestPayingClientStyles(unittest.TestCase):
         )
         self.assertEqual(self.client().prefer_styles, ())
 
-    def test_on_payment_reports_the_advertised_style(self):
+    def test_on_payment_reports_the_known_or_advertised_style(self):
         seen = []
-        client = self.client(on_payment=seen.append)
+        unknown = "ee" * 32
+        client = self.client(on_payment=seen.append, allowed_assets=[TOKEN, WCSPR, unknown])
         client.create_payment_payload(make_payment_required(wcspr_requirements()))
         client.create_payment_payload(make_payment_required(legacy_requirements()))
-        client.create_payment_payload(make_payment_required(make_requirements()))  # names no style
+        client.create_payment_payload(make_payment_required(make_requirements()))  # names no style, known token
+        # A known token is reported with its own style, whatever the gateway labels it.
+        client.create_payment_payload(make_payment_required(make_requirements(extra={
+            "name": "CasCet X402 Token", "version": "1", x402.AUTHORIZATION_STYLE_EXTRA_KEY: "cep3009-value"})))
+        # An unknown token: the advertised style, or none.
+        client.create_payment_payload(make_payment_required(make_requirements(asset=unknown)))
         self.assertEqual(seen, [
             {"amount_raw": "500000000", "pay_to": SELLER, "asset": WCSPR, "network": TESTNET,
              "authorization_style": "cep3009-value"},
             {"amount_raw": "500000000", "pay_to": SELLER, "asset": TOKEN, "network": TESTNET,
              "authorization_style": "legacy-amount"},
-            {"amount_raw": "500000000", "pay_to": SELLER, "asset": TOKEN, "network": TESTNET},
+            {"amount_raw": "500000000", "pay_to": SELLER, "asset": TOKEN, "network": TESTNET,
+             "authorization_style": "legacy-amount"},
+            {"amount_raw": "500000000", "pay_to": SELLER, "asset": TOKEN, "network": TESTNET,
+             "authorization_style": "legacy-amount"},
+            {"amount_raw": "500000000", "pay_to": SELLER, "asset": unknown, "network": TESTNET},
         ])
+
+    def test_a_mislabeled_known_token_cannot_steer_the_preference(self):
+        # The gateway labels CasCet's legacy token cep3009-value and lists it first; a buyer preferring
+        # cep3009-value still gets Wrapped CSPR, because the client knows the legacy token's style.
+        mislabeled = make_requirements(extra={"name": "CasCet X402 Token", "version": "1",
+                                              x402.AUTHORIZATION_STYLE_EXTRA_KEY: "cep3009-value"})
+        chosen = x402.select_requirement([mislabeled, wcspr_requirements()], [TOKEN, WCSPR], [SELLER],
+                                         prefer_styles=["cep3009-value"])
+        self.assertEqual(chosen["asset"], WCSPR)
+        self.assertEqual(x402.known_authorization_style(TOKEN, TESTNET), "legacy-amount")
+        self.assertEqual(x402.known_authorization_style(WCSPR, TESTNET), "cep3009-value")
+        self.assertIsNone(x402.known_authorization_style(WCSPR, "casper:casper"))  # testnet WCSPR on mainnet
+        self.assertIsNone(x402.known_authorization_style("not-a-hash", TESTNET))
 
 
 class TestFromEnvPreferStyles(unittest.TestCase):

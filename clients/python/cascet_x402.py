@@ -88,6 +88,7 @@ __all__ = [
     "AUTHORIZATION_STYLES",
     "AUTHORIZATION_STYLE_EXTRA_KEY",
     "LEGACY_AMOUNT_TOKENS",
+    "KNOWN_CEP3009_ASSETS",
     "CONTRACT_PAYEE_REASON",
     "HOSTED_FACILITATOR_HOST",
     "X402Error",
@@ -160,11 +161,18 @@ LEGACY_AMOUNT_TOKENS: Mapping[str, str] = MappingProxyType({
     "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3": NETWORK_CASPER_TESTNET,
     "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41": NETWORK_CASPER_MAINNET,
 })
+#: Known tokens whose `transfer_with_authorization` takes `value` (CEP-3009):
+#: CAIP-2 network -> bare package hashes, the official Wrapped CSPR on each
+#: network, as in @cascet/core's KNOWN_CEP3009_ASSETS.
+KNOWN_CEP3009_ASSETS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
+    NETWORK_CASPER_MAINNET: ("8df5d26790e18cf0404502c62ce5dc9025800ad6975c97466e20506c39c505b6",),
+    NETWORK_CASPER_TESTNET: ("3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e",),
+})
 #: Why a "01" payTo (a contract package, or a public key passed off as one) is
 #: never paid, worded as in @cascet/client's CONTRACT_PAYEE_REASON.
 CONTRACT_PAYEE_REASON = (
-    "contract-package payees cannot be settled by @make-software/casper-x402 1.0.0 facilitators; "
-    "the payment would be credited to an account nobody controls"
+    "contract-package payees are not paid: @make-software/casper-x402 1.0.0 facilitators credit the payment "
+    "to an account nobody controls, and CasCet's self-hosted facilitator refuses them"
 )
 #: Host of the hosted CSPR.cloud x402 facilitator. It takes the raw CSPR.cloud
 #: access key in the Authorization header (never "Bearer <key>") and settles
@@ -447,6 +455,40 @@ def default_authorization_style(package_hash: str) -> str:
     return "legacy-amount" if normalize_asset(package_hash) in LEGACY_AMOUNT_TOKENS else "cep3009-value"
 
 
+def known_authorization_style(package_hash: Any, network: Any) -> Optional[str]:
+    """The style this client knows for a token on `network`, or None.
+
+    CasCet's x402 tokens (LEGACY_AMOUNT_TOKENS) are "legacy-amount" and the
+    official Wrapped CSPR (KNOWN_CEP3009_ASSETS) is "cep3009-value", each on
+    its own network only. Anything unparsable is None.
+    """
+    if not isinstance(package_hash, str) or not isinstance(network, str):
+        return None
+    try:
+        asset = normalize_asset(package_hash)
+    except ValueError:
+        return None
+    if LEGACY_AMOUNT_TOKENS.get(asset) == network:
+        return "legacy-amount"
+    if asset in KNOWN_CEP3009_ASSETS.get(network, ()):
+        return "cep3009-value"
+    return None
+
+
+def _effective_style(requirements: Mapping[str, Any]) -> str:
+    """
+    The style an `accepts` entry ranks under: the style this client knows for
+    CasCet's x402 tokens and Wrapped CSPR, whatever the gateway labels them (so
+    a gateway cannot steer `prefer_styles` by mislabeling them), else the
+    advertised style, else default_authorization_style(asset).
+    """
+    return (
+        known_authorization_style(requirements.get("asset"), requirements.get("network"))
+        or authorization_style(requirements)
+        or default_authorization_style(requirements["asset"])
+    )
+
+
 def _show(value: Any) -> str:
     """repr() of a value from a server, shortened for error messages."""
     text = repr(value)
@@ -623,14 +665,15 @@ def _policy_reject_reason(
 def _by_style_preference(candidates: List[Any], prefer_styles: Tuple[str, ...]) -> List[Any]:
     """
     `candidates` (valid `accepts` entries) ordered by `prefer_styles`; entries
-    of the same rank keep the server's order. An entry that advertises no
-    style ranks as default_authorization_style(asset) says.
+    of the same rank keep the server's order. Each entry ranks under
+    _effective_style: a known token's own style, else the advertised one, else
+    default_authorization_style(asset).
     """
     if not prefer_styles:
         return list(candidates)
 
     def rank(requirements: Any) -> int:
-        style = authorization_style(requirements) or default_authorization_style(requirements["asset"])
+        style = _effective_style(requirements)
         return prefer_styles.index(style) if style in prefer_styles else len(prefer_styles)
 
     return sorted(candidates, key=rank)  # stable
@@ -661,8 +704,11 @@ def select_requirement(
     * `prefer_styles`: authorization styles in order of preference, for
       example ["cep3009-value"]. Qualifying entries are sorted by it, entries
       of the same rank keep the server's order, and the first one is returned.
-      An entry without `extra.authorizationStyle` ranks as its asset's
-      default_authorization_style. A preference never makes an entry qualify.
+      CasCet's x402 tokens and Wrapped CSPR rank under the style this client
+      knows for them (known_authorization_style), whatever the gateway
+      advertises; an entry without `extra.authorizationStyle` ranks as its
+      asset's default_authorization_style. A preference never makes an entry
+      qualify.
 
     Returns the chosen entry itself (pass it unchanged to build_payment_payload,
     which echoes it as `accepted`). Raises PaymentAborted, listing why each
@@ -1395,7 +1441,10 @@ class PayingClient:
         """Reserve the budget, sign, and encode the PAYMENT-SIGNATURE header: (payload, header)."""
         with self._lock:
             requirements = self.select_requirements(payment_required)
-            style = authorization_style(requirements)  # known: select_requirements refuses any other value
+            # Reported as the TS client does: a known token's own style, else the advertised one (or none).
+            style = known_authorization_style(requirements.get("asset"), requirements.get("network")) or (
+                authorization_style(requirements)  # known: select_requirements refuses any other value
+            )
             asset = requirements["asset"].lower()
             amount = int(requirements["amount"])
             self._spent[asset] = self._spent.get(asset, 0) + amount

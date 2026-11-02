@@ -54,9 +54,10 @@ refuses an entry whose style it does not know (`build_payment_payload` raises
 `ProtocolError`, a `ValueError`), and can prefer one style over the other
 (`prefer_styles`). An entry without the field (a gateway from before it
 existed) is still paid. Facilitators do not rely on the field. The hosted
-facilitator always passes `value`, and CasCet's self-hosted facilitator passes
-`amount` for now. A token sent to the facilitator of the other style reverts
-(User error 64658) and still burns the whole gas limit of the settle.
+facilitator always passes `value`; CasCet's self-hosted facilitator passes the
+argument each token's on-chain ABI takes. A token sent to a facilitator that
+passes the wrong one reverts (User error 64658) and still burns the whole gas
+limit of the settle.
 
 ## Pay a CasCet gateway
 
@@ -97,7 +98,7 @@ Every refusal raises `PaymentAborted` before anything is signed.
 | Network | `networks` (default `["casper:casper-test"]`) | Only pays on the listed networks. Each entry must be a CAIP-2 id such as `casper:casper`; wildcards like `casper:*` are refused. |
 | Seller and token | `allowed_pay_to`, `allowed_assets` | Only pays these payees in these tokens. If either list is missing, the client logs an `InsecurePaymentConfigWarning`. |
 | payTo format | — | Payees are accounts: allowlist entries are account hashes (`00…` or `account-hash-…`). A `01`-tagged payTo (a contract package, or a public key) is always refused, as in the TypeScript client, because no facilitator in use credits it correctly (`CONTRACT_PAYEE_REASON`). A public key or a contract package (`hash-…`) in the allowlist is a `ValueError`; for a public key the error gives the payTo to use instead. |
-| Token style | `prefer_styles` (optional) | An `extra.authorizationStyle` other than `legacy-amount` or `cep3009-value` is refused. `prefer_styles` orders the acceptable entries; it never makes an entry acceptable. |
+| Token style | `prefer_styles` (optional) | An `extra.authorizationStyle` other than `legacy-amount` or `cep3009-value` is refused. `prefer_styles` orders the acceptable entries; it never makes an entry acceptable. CasCet's x402 tokens and Wrapped CSPR rank under the style the client knows for them, whatever the gateway labels them. |
 | Amount | — | A string of 1–40 ASCII digits, greater than 0. `-5`, `0x10`, `1e5` and ` 5` are all refused. |
 | Budget | `max_per_call_raw`, `max_session_raw` | Per call, and per asset over the session, in raw units greater than 0. Spend is counted when an authorization is signed and is never refunded. A preferred entry over budget gives way to the next acceptable one. |
 | Validity | `max_authorization_seconds` (default 900) | `validBefore = now + maxTimeoutSeconds`. An entry without a positive whole `maxTimeoutSeconds`, or with one above the limit, is refused, as in the TS client. |
@@ -227,7 +228,7 @@ and still burn the whole gas limit:
 | Token | Settled by | Refused |
 |---|---|---|
 | `legacy` (CasCet X402 Token, `legacy-amount`) | CasCet's self-hosted facilitator (the default) | the hosted facilitator, which passes `value` |
-| `wcspr` (Wrapped CSPR, `cep3009-value`) | the hosted facilitator (the default) | CasCet's self-hosted facilitator, which passes `amount` for now (`SELF_HOSTED_SETTLE_STYLES`) |
+| `wcspr` (Wrapped CSPR, `cep3009-value`) | CasCet's self-hosted facilitator (the default), or the hosted facilitator | none: both pass `value` to it |
 
 Any facilitator URL other than the hosted one is taken for CasCet's
 self-hosted facilitator. A Wrapped CSPR payment needs a WCSPR balance on the
