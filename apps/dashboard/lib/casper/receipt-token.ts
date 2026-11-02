@@ -27,12 +27,12 @@ const SYMBOLS: Readonly<Record<string, string>> = {
  * that cannot be read.
  */
 export function testnetReceiptToken(
-  readSettleToken: (txHash: string) => Promise<string | undefined>,
-): (record: AnchoredRecord) => Promise<ReceiptToken | undefined> {
+  readSettleToken: (txHash: string, opts?: { offline?: boolean }) => Promise<string | undefined>,
+): (record: AnchoredRecord, opts?: { offline?: boolean }) => Promise<ReceiptToken | undefined> {
   const before = Date.parse(CEP18X402_ONLY_BEFORE);
-  return async ({ txHash, anchoredAt }) => {
+  return async ({ txHash, anchoredAt }, opts) => {
     if (Date.parse(anchoredAt) < before) return { packageHash: X402_TOKEN_PACKAGE, symbol: TOKEN_SYMBOL };
-    const packageHash = await readSettleToken(txHash);
+    const packageHash = await readSettleToken(txHash, opts);
     if (packageHash === undefined) return undefined;
     return { packageHash, symbol: Object.hasOwn(SYMBOLS, packageHash) ? SYMBOLS[packageHash]! : "" };
   };

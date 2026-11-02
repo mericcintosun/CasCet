@@ -219,7 +219,8 @@ test("the session cap is per token: several allowlisted tokens, or any token, mu
     ["warning:budget"],
   );
   assert.match(two[0]!.message, /applies to each token on its own/);
-  assert.match(two[0]!.message, /2 tokens allowlisted, one running bridge can pay up to 2 × the session cap \(10000000000 raw units\)/);
+  assert.match(two[0]!.message, /as 5000000000 raw units: with 2 tokens allowlisted, one running bridge can pay up to that in every one of them/);
+  assert.match(two[0]!.message, /fewer decimals it is more whole tokens/);
   // Any token (explicit opt-out): the cap bounds no total at all.
   const any = connectWarnings({ ...base, allowedAssets: [], allowAnySeller: true });
   assert.ok(any.some((w) => w.field === "budget" && /bounds no total/.test(w.message)));

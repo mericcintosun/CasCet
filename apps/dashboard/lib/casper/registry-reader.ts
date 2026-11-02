@@ -56,12 +56,13 @@ export interface RegistryReadOptions {
    * registry can hold receipts in several tokens, so the caller tells it (for
    * example from the settlement transaction). Undefined when it cannot be
    * told: the receipt then names no token (`asset` and `assetSymbol` empty)
-   * rather than a wrong one. A call that throws counts as undefined.
+   * rather than a wrong one. A call that throws counts as undefined. With
+   * `offline` it must answer from what it already knows, without the network.
    */
-  tokenOf: (record: AnchoredRecord) => Promise<ReceiptToken | undefined>;
+  tokenOf: (record: AnchoredRecord, opts: { offline: boolean }) => Promise<ReceiptToken | undefined>;
   /** How many `tokenOf` calls run at once. Default 6. */
   tokenConcurrency?: number;
-  /** No `tokenOf` call starts later than this after the records were read; the rest name no token this time. Default 4000 ms. */
+  /** After this long `tokenOf` calls are `offline`: what still needs the node names no token this time. Default 4000 ms. */
   tokenBudgetMs?: number;
   /** Payment ids hidden from the view (records whose settle tx never reached the chain). */
   excludedIds?: ReadonlySet<string>;
@@ -176,19 +177,20 @@ export async function readRegistryReceipts(o: RegistryReadOptions): Promise<Regi
 
 /**
  * Give each receipt the token `o.tokenOf` tells, newest first, with at most
- * `tokenConcurrency` calls at once; once `tokenBudgetMs` has passed no call
- * starts, and the receipts not reached keep naming no token.
+ * `tokenConcurrency` calls at once. Once `tokenBudgetMs` has passed the calls
+ * are offline, so a slow node costs only the receipts that still need it: an
+ * old or already-known receipt keeps its token, however slow the newer ones were.
  */
 async function tellTokens(receipts: PaymentReceipt[], o: RegistryReadOptions): Promise<void> {
   const now = o.now ?? Date.now;
   const deadline = now() + (o.tokenBudgetMs ?? 4_000);
   let next = 0;
   const worker = async (): Promise<void> => {
-    while (next < receipts.length && now() < deadline) {
+    while (next < receipts.length) {
       const receipt = receipts[next++]!;
       let token: ReceiptToken | undefined;
       try {
-        token = await o.tokenOf({ txHash: receipt.txHash ?? "", anchoredAt: receipt.createdAt });
+        token = await o.tokenOf({ txHash: receipt.txHash ?? "", anchoredAt: receipt.createdAt }, { offline: now() >= deadline });
       } catch {
         token = undefined;
       }

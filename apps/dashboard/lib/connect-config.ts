@@ -284,8 +284,9 @@ export function connectWarnings(s: ConnectSettings, gatewayIsLocal = false): Con
       level: "warning",
       field: "budget",
       message:
-        `The session cap applies to each token on its own: with ${n} tokens allowlisted, one running bridge can pay up to ` +
-        `${n} × the session cap (${BigInt(s.maxSessionRaw) * BigInt(n)} raw units) in a session. Allowlist one token to keep the total within the cap.`,
+        `The session cap applies to each token on its own, as ${s.maxSessionRaw} raw units: with ${n} tokens allowlisted, one running ` +
+        "bridge can pay up to that in every one of them in a session, and for a token with fewer decimals it is more whole tokens. " +
+        "Allowlist one token to keep the total within the cap.",
     });
   } else if (s.maxSessionRaw && s.allowedAssets.length === 0 && s.allowAnySeller) {
     out.push({

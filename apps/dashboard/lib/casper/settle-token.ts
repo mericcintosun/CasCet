@@ -52,21 +52,38 @@ export interface SettleTokenReaderOptions {
   timeoutMs?: number;
   /** How many answers to keep; the oldest go first. Default 2000. */
   cacheSize?: number;
+  /** How long a hash the node could not answer for is not asked about again. Default 30000 ms. */
+  retryAfterMs?: number;
+  now?: () => number;
 }
 
 /**
  * Reads the token a settle transaction (64-hex hash) paid in, or undefined when
  * that cannot be told. A transaction's target never changes, so every definite
- * answer, "names no token" included, is kept and the node is asked once; a
- * transaction the node does not know (yet) and every failure are asked again
- * next time.
+ * answer, "names no token" included, is kept and the node is asked once. A
+ * transaction the node does not know (yet) and every failure are asked again,
+ * but not before `retryAfterMs`: the public route that reads this polls, and
+ * how often the node is asked must not follow how often pages are open. With
+ * `offline` only what is already known is answered, without the network.
  */
-export function createSettleTokenReader(o: SettleTokenReaderOptions): (txHash: string) => Promise<string | undefined> {
+export function createSettleTokenReader(
+  o: SettleTokenReaderOptions,
+): (txHash: string, opts?: { offline?: boolean }) => Promise<string | undefined> {
   const fetchImpl = o.fetchImpl ?? fetch;
   const timeoutMs = o.timeoutMs ?? 3_000;
   const cacheSize = o.cacheSize ?? 2_000;
+  const retryAfterMs = o.retryAfterMs ?? 30_000;
+  const now = o.now ?? Date.now;
   /** null: the transaction names no token, for good. */
   const known = new Map<string, string | null>();
+  /** Hashes the node could not answer for, and when they may be asked about again. */
+  const retryAt = new Map<string, number>();
+  const failed = (hash: string): undefined => {
+    if (retryAt.size >= cacheSize) retryAt.delete(retryAt.keys().next().value as string);
+    retryAt.delete(hash); // re-inserted last, so the oldest failure goes first
+    retryAt.set(hash, now() + retryAfterMs);
+    return undefined;
+  };
 
   /** The node's `result`, null when it does not know the hash as `variant`, undefined on any failure. */
   const lookup = async (variant: "Version1" | "Deploy", hash: string): Promise<unknown> => {
@@ -91,20 +108,22 @@ export function createSettleTokenReader(o: SettleTokenReaderOptions): (txHash: s
     }
   };
 
-  return async (txHash) => {
+  return async (txHash, opts) => {
     const hash = txHash.toLowerCase();
     if (!HASH.test(hash)) return undefined;
     const kept = known.get(hash);
     if (kept !== undefined) return kept ?? undefined;
+    if (opts?.offline || now() < (retryAt.get(hash) ?? 0)) return undefined;
     for (const variant of ["Version1", "Deploy"] as const) {
       const result = await lookup(variant, hash);
       if (result === null) continue;
-      if (result === undefined) return undefined;
+      if (result === undefined) return failed(hash);
       const token = settledTokenOf((result as Record<string, unknown>).transaction);
       if (known.size >= cacheSize) known.delete(known.keys().next().value as string);
       known.set(hash, token ?? null);
+      retryAt.delete(hash);
       return token;
     }
-    return undefined;
+    return failed(hash);
   };
 }

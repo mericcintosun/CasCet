@@ -82,21 +82,49 @@ test("a transaction that is no settle is remembered as naming no token", async (
   assert.equal(fake.calls.length, 1);
 });
 
-test("an answer that may change later (unknown to the node, failures) is not kept", async () => {
+test("an answer that may change later (unknown to the node, failures) is not kept, but not asked again right away", async () => {
   const fake = node({
     [`Version1:${OTHER}`]: new Response("busy", { status: 503 }),
     [`Version1:${"cd".repeat(32)}`]: { error: { code: -32001, message: "internal" } },
     [`Version1:${"ef".repeat(32)}`]: Object.assign(new Error("timed out"), { name: "TimeoutError" }),
     [`Version1:${"12".repeat(32)}`]: new Response("not json", { status: 200 }),
   });
-  const read = createSettleTokenReader({ nodeUrl: "http://node.test/rpc", fetchImpl: fake.fetchImpl });
-  for (const hash of [SETTLE, OTHER, "cd".repeat(32), "ef".repeat(32), "12".repeat(32)]) {
-    assert.equal(await read(hash), undefined, hash);
-    assert.equal(await read(hash), undefined, hash);
-  }
-  // Each one is asked again; a hash unknown to the node is asked in both forms each time.
+  let clock = 1_000_000;
+  const read = createSettleTokenReader({ nodeUrl: "http://node.test/rpc", fetchImpl: fake.fetchImpl, now: () => clock });
+  const hashes = [SETTLE, OTHER, "cd".repeat(32), "ef".repeat(32), "12".repeat(32)];
+  for (const hash of hashes) assert.equal(await read(hash), undefined, hash);
+  const firstRound = fake.calls.length;
+  // A page polling meanwhile does not reach the node.
+  clock += 29_999;
+  for (const hash of hashes) assert.equal(await read(hash), undefined, hash);
+  assert.equal(fake.calls.length, firstRound);
+  // Then each one is asked again; a hash unknown to the node is asked in both forms each time.
+  clock += 1;
+  for (const hash of hashes) assert.equal(await read(hash), undefined, hash);
   assert.equal(fake.calls.filter(c => c.endsWith(SETTLE)).length, 4);
   assert.equal(fake.calls.filter(c => c.endsWith(OTHER)).length, 2);
+});
+
+test("offline answers only what is known, without the node", async () => {
+  const fake = node({ [`Version1:${SETTLE}`]: { result: { transaction: v1(WCSPR, "transfer_with_authorization") } } });
+  const read = createSettleTokenReader({ nodeUrl: "http://node.test/rpc", fetchImpl: fake.fetchImpl });
+  assert.equal(await read(SETTLE, { offline: true }), undefined);
+  assert.equal(fake.calls.length, 0);
+  assert.equal(await read(SETTLE), WCSPR);
+  assert.equal(await read(SETTLE, { offline: true }), WCSPR);
+  assert.equal(fake.calls.length, 1);
+});
+
+test("the remembered failures stay bounded", async () => {
+  const fake = node({});
+  const read = createSettleTokenReader({ nodeUrl: "http://node.test/rpc", fetchImpl: fake.fetchImpl, cacheSize: 2 });
+  const hashes = [0, 1, 2].map(i => String(i).repeat(64));
+  for (const hash of hashes) await read(hash);
+  const asked = fake.calls.length;
+  await read(hashes[2]!); // still remembered
+  assert.equal(fake.calls.length, asked);
+  await read(hashes[0]!); // dropped to keep two: asked again
+  assert.ok(fake.calls.length > asked);
 });
 
 test("a malformed hash never reaches the node, and the kept answers stay bounded", async () => {

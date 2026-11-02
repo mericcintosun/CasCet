@@ -247,14 +247,15 @@ test("records anchored before Wrapped CSPR was ever settled are Cep18X402 withou
   assert.equal(await other({ txHash: "ff".repeat(32), anchoredAt: "2026-11-02T00:00:00Z" }), undefined);
 });
 
-test("telling the tokens is bounded: a few lookups at once, none started after the budget, a failure names no token", async () => {
+test("telling the tokens is bounded: a few lookups at once, none reaches the node after the budget, a failure names no token", async () => {
   const data = Array.from({ length: 10 }, (_, i) => settledIn(`r${i}`, `2026-11-02T10:00:0${i}Z`, String(i).repeat(64)));
   const fetchImpl = (async () => jsonResponse({ page_count: 1, data })) as typeof fetch;
   let clock = 0;
   let inFlight = 0;
   let peak = 0;
   const started: string[] = [];
-  const tokenOf = async ({ txHash }: { txHash: string }) => {
+  const tokenOf = async ({ txHash }: { txHash: string }, { offline }: { offline: boolean }) => {
+    if (offline) return undefined;
     started.push(txHash);
     inFlight += 1;
     peak = Math.max(peak, inFlight);
@@ -274,4 +275,33 @@ test("telling the tokens is bounded: a few lookups at once, none started after t
   assert.equal(receipts[0]!.id, "r9");
   assert.equal(receipts[0]!.asset, "");
   for (const r of receipts.slice(started.length)) assert.equal(r.asset, "", `${r.id} was never looked up`);
+});
+
+test("a slow node costs only the receipts that need it: older and already-known ones keep their token", async () => {
+  // Three records from before the cutoff (known without the node) and a known hash, behind new ones that are slow.
+  const data = [
+    settledIn("old0", "2026-07-01T10:00:00Z", "a".repeat(64)),
+    settledIn("old1", "2026-07-01T10:00:01Z", "b".repeat(64)),
+    settledIn("known", "2026-11-02T09:00:00Z", "c".repeat(64)),
+    ...Array.from({ length: 6 }, (_, i) => settledIn(`new${i}`, `2026-11-02T10:00:0${i}Z`, String(i).repeat(64))),
+  ];
+  const fetchImpl = (async () => jsonResponse({ page_count: 1, data })) as typeof fetch;
+  let clock = 0;
+  const asked: string[] = [];
+  const tokenOf = testnetReceiptToken(async (txHash, opts) => {
+    if (txHash === "c".repeat(64)) return WCSPR_TOKEN_PACKAGE;
+    if (opts?.offline) return undefined;
+    asked.push(txHash);
+    await new Promise((resolve) => setImmediate(resolve));
+    clock += 100; // past the budget after the first lookup
+    return WCSPR_TOKEN_PACKAGE;
+  });
+  const { receipts } = await readRegistryReceipts(options(fetchImpl, { tokenOf, tokenConcurrency: 1, tokenBudgetMs: 50, now: () => clock }));
+  assert.equal(asked.length, 1, "the budget stops the node lookups");
+  const byId = new Map(receipts.map((r) => [r.id, r]));
+  assert.equal(byId.get("new5")!.asset, WCSPR_TOKEN_PACKAGE);
+  assert.equal(byId.get("new0")!.asset, "", "needs the node, so it names no token this time");
+  assert.equal(byId.get("known")!.asset, WCSPR_TOKEN_PACKAGE, "already known");
+  assert.equal(byId.get("old0")!.asset, X402_TOKEN_PACKAGE, "from before the cutoff");
+  assert.equal(byId.get("old1")!.asset, X402_TOKEN_PACKAGE);
 });
