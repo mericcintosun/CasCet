@@ -70,7 +70,7 @@ official Wrapped CSPR (cep3009-value, settled by the hosted facilitator):
 ```json
 {
   "assets": [
-    { "id": "cascet", "packageHash": "hash-cb65a928…35c3", "name": "CasCet X402 Token", "symbol": "WCSPR", "facilitator": "self" },
+    { "id": "cascet", "packageHash": "hash-cb65a928…35c3", "name": "CasCet X402 Token", "symbol": "CASCET", "facilitator": "self" },
     { "id": "wcspr", "packageHash": "hash-3d80df21…7c1e", "name": "Wrapped CSPR", "symbol": "WCSPR", "decimals": 9, "tokensPerUsd": 20 }
   ],
   "facilitator": { "url": "https://x402-facilitator.cspr.cloud", "apiKey": "<CSPR.cloud access key>" },
@@ -96,8 +96,12 @@ official Wrapped CSPR (cep3009-value, settled by the hosted facilitator):
 - Receipts, `_meta.cascet` (`asset`, `assetSymbol`, `amountRaw`) and the
   on-chain settlement check use the token and amount of each payment's matched
   requirements; `GET /pricing` and the discovery document list every token of
-  every tool. Receipts of two tokens with the same symbol differ in `asset`
-  (the package hash).
+  every tool.
+- Give every asset its own `symbol`: receipts, `_meta.cascet` and the payment
+  graph label amounts by `assetSymbol`, so two tokens with one symbol (CasCet's
+  token and the official Wrapped CSPR both called "WCSPR", say) would be told
+  apart only by the package hash in `asset`. The gateway warns at startup when
+  two assets share a symbol.
 
 ## Payment flow
 
@@ -198,9 +202,12 @@ Wrapped CSPR).
   signal exits at once.
 - Browser requests carrying an `Origin` that is not allowlisted get HTTP 403.
 - `GET /receipts`, `GET /pricing` (`assets`, and per tool its `accepts`:
-  token id, symbol, package hash, raw amount, authorization style; `asset` and
-  `amountRaw` keep naming the preferred token), `GET /.well-known/x402.json`
-  (one `accepts` entry per token, with its `extra`).
+  token id, symbol, package hash, raw amount, authorization style). As on
+  single-token gateways, the top-level `asset` is the preferred (first) token
+  and each tool's `amountRaw` is in that token; a tool that does not accept
+  it has no `amountRaw` (its amounts are in `accepts`).
+  `GET /.well-known/x402.json` (one `accepts` entry per token, with its
+  `extra`).
 - Receipts are appended to `.cascet/<name>.receipts.jsonl`; status is
   `settled`, `failed` or `unknown`, with the verified payer and the
   authorization nonce. The same log holds the write-ahead authorization

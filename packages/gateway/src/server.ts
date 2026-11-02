@@ -47,6 +47,7 @@ import {
 } from "./jsonrpc.js";
 import { errorMessage, log, logSafe } from "./log.js";
 import {
+  assetsSharingASymbol,
   buildToolTable,
   createPaymentRail,
   facilitatorOrigin,
@@ -1050,13 +1051,14 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       tools: [...snapshot.pricedToolNames, ...snapshot.freeToolNames].map(name => {
         const policy = snapshot.policyOf(name);
         if (policy?.kind !== "paid") return { name };
-        const [first] = policy.accepts;
+        // `amountRaw` stays in the preferred token, the top-level `asset`, as for single-token gateways:
+        // left out when the tool does not accept that token. Every token's amount is in `accepts`.
+        const inPreferred = preferred ? priceIn(policy, preferred.packageHash) : undefined;
         return {
           name,
           priceUsd: policy.price.price,
-          // In the tool's first accepted token (`asset`); every token's amount is in `accepts`.
-          amountRaw: first?.amount,
-          asset: first?.asset.id,
+          amountRaw: inPreferred?.amount,
+          asset: inPreferred?.asset.id,
           settleBeforeExecute: policy.settleBeforeExecute,
           accepts: policy.accepts.map(({ asset, amount }) => ({
             asset: asset.id,
@@ -1143,6 +1145,12 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     log.info(
       `    accepts ${logSafe(asset.symbol, 40)} (${logSafe(asset.id, 64)}, ${asset.authorization}) hash-${asset.packageHash}` +
         ` via facilitator "${logSafe(asset.facilitator, 64)}" ${logSafe(facilitatorOrigin(settler.url), 120)}`,
+    );
+  }
+  for (const group of assetsSharingASymbol(rail.assets)) {
+    log.warn(
+      `    assets ${logSafe(group.map(asset => `"${asset.id}"`).join(", "), 200)} share the symbol ${logSafe(group[0]?.symbol, 40)}: ` +
+        "receipts and the payment graph label amounts by symbol, so give each asset its own",
     );
   }
   log.info(`    on-chain settlement check: ${preemption ? "on" : "off (set settlement.nodeUrl to enable)"}`);

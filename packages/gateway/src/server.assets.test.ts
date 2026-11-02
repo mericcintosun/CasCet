@@ -634,8 +634,14 @@ describe("pricing and discovery documents list every token", () => {
           ["wcspr", WCSPR_PRICE_RAW, "cep3009-value"],
         ],
       );
+      // amountRaw is in the preferred token (the top-level asset), as before; a tool that does not
+      // accept that token has none, and its WCSPR amount is only in accepts.
       assert.deepEqual([byName.get("paid_tool")?.amountRaw, byName.get("paid_tool")?.asset], [LEGACY_PRICE_RAW, "cascet"]);
-      assert.deepEqual([byName.get("wcspr_tool")?.amountRaw, byName.get("wcspr_tool")?.asset], [WCSPR_PRICE_RAW, "wcspr"]);
+      assert.deepEqual([byName.get("wcspr_tool")?.amountRaw, byName.get("wcspr_tool")?.asset], [undefined, undefined]);
+      assert.deepEqual(
+        byName.get("wcspr_tool")?.accepts?.map(entry => [entry.asset, entry.amountRaw]),
+        [["wcspr", WCSPR_PRICE_RAW]],
+      );
       assert.deepEqual(byName.get("free_tool"), { name: "free_tool" });
 
       const discovery = (await (await fetch(`${h.base}/.well-known/x402.json`)).json()) as {

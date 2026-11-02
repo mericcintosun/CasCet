@@ -4,9 +4,10 @@ import { x402Client } from "@x402/core/client";
 import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from "@x402/core/http";
 import { ExactCasperScheme } from "@x402/casper/exact/client";
 import casperSdk from "casper-js-sdk";
-import { DEFAULT_FACILITATOR_URL, type CascetConfig } from "@cascet/core";
+import { DEFAULT_FACILITATOR_URL, type CascetConfig, type ResolvedAsset } from "@cascet/core";
 import {
   assetAmountFor,
+  assetsSharingASymbol,
   buildToolTable,
   createPaymentRail,
   gatewayAssets,
@@ -240,6 +241,16 @@ describe("startup refuses what could never settle, even in a config built in cod
     const cfg = valid();
     const orphan = { ...cfg, pricing: { ...cfg.pricing, tools: { paid_tool: { price: "$0.01", settleBeforeExecute: false, assets: ["gone"] } } } };
     await assert.rejects(createPaymentRail(orphan, { fetch: noFetch }), /pricing\.tools\.paid_tool: price \$0\.01 accepts none of the configured assets/);
+  });
+
+  it("finds assets that share a symbol (receipts label amounts by symbol), ignoring case", () => {
+    const [legacy, wcspr] = valid().assets as [ResolvedAsset, ResolvedAsset];
+    assert.deepEqual(assetsSharingASymbol([legacy, wcspr]), []);
+    const lookalike = { ...legacy, symbol: "wcspr " };
+    assert.deepEqual(
+      assetsSharingASymbol([lookalike, wcspr]).map(group => group.map(asset => asset.id)),
+      [["cascet", "wcspr"]],
+    );
   });
 });
 

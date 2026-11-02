@@ -153,6 +153,20 @@ export function gatewayAssets(cfg: CascetConfig): CascetConfig["assets"] {
   return assets as CascetConfig["assets"];
 }
 
+/**
+ * Groups of assets that share a symbol (ignoring case), in config order.
+ * Receipts, `_meta.cascet` and the payment graph label amounts by symbol, so
+ * such assets are told apart only by their package hash; the gateway warns.
+ */
+export function assetsSharingASymbol(assets: readonly ResolvedAsset[]): ResolvedAsset[][] {
+  const bySymbol = new Map<string, ResolvedAsset[]>();
+  for (const asset of assets) {
+    const key = asset.symbol.trim().toLowerCase();
+    bySymbol.set(key, [...(bySymbol.get(key) ?? []), asset]);
+  }
+  return [...bySymbol.values()].filter(group => group.length > 1);
+}
+
 /** What a priced tool costs in one token. */
 export interface AssetPrice {
   asset: ResolvedAsset;

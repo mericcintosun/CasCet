@@ -4,6 +4,7 @@ export {
   assetAmountFor,
   assetPricesFor,
   assetRoutes,
+  assetsSharingASymbol,
   buildToolTable,
   checkPricing,
   createPaymentRail,
