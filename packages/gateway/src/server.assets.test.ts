@@ -1031,18 +1031,24 @@ describe("the hosted facilitator", () => {
     };
 
     it("lets exactly one of two concurrent payments through, and refuses the other naming the payment in flight", async () => {
-      // The payment that passes the preflight first waits at the hosted /verify until the other one is
-      // answered, 2 s at most: without in-flight counting both would pass and the test would fail, not hang.
+      // Neither payment counts before the hosted facilitator verified it, so both pass the checks before verify;
+      // both wait at /verify until both are there (2 s at most). Once verified, exactly one is reserved: without
+      // in-flight counting both would run and the test would fail, not hang.
+      let arrived = 0;
       let open = (): void => {};
       const gate = new Promise<void>(resolve => {
         open = resolve;
         setTimeout(resolve, 2_000).unref();
       });
-      const g = await fundsOne(() => ({ answer: async path => (path === "/verify" ? gate.then(() => undefined) : undefined) }));
+      const g = await fundsOne(() => ({
+        answer: async path => {
+          if (path !== "/verify") return undefined;
+          if (++arrived === 2) open();
+          return gate.then(() => undefined);
+        },
+      }));
       try {
-        const calls = [g.pay(), g.pay()];
-        for (const call of calls) void call.then(open, open);
-        const results = await Promise.all(calls);
+        const results = await Promise.all([g.pay(), g.pay()]);
         assert.deepEqual(results.map(res => res.status).sort(), [200, 402]);
         const refused = results.find(res => res.status === 402);
         assert.ok(refused);
@@ -1050,13 +1056,37 @@ describe("the hosted facilitator", () => {
         assert.equal(challengeOf(refused).error, IN_FLIGHT_REASON, "the 402 challenge names it too");
         assert.deepEqual(
           g.hosted.filter(call => call.path !== "/supported").map(call => call.path),
-          ["/verify", "/settle"],
-          "only one payment reached the hosted facilitator",
+          ["/verify", "/verify", "/settle"],
+          "both were verified, only one settled",
         );
         assert.equal(g.upstream.calls.length, 1, "and only one tool ran");
         assert.deepEqual((await receipts(g.h)).map(receipt => receipt.status), ["settled"]);
       } finally {
         await g.close();
+      }
+    });
+
+    it("never counts a payment the hosted facilitator does not verify (a forged signature, a failed /verify): the payer's other payments pass meanwhile", async () => {
+      const refusals: Array<[HostedReply, string]> = [
+        [{ json: { isValid: false, invalidReason: "invalid_exact_casper_payload_signature" } }, "payment rejected: invalid_exact_casper_payload_signature"],
+        [{ status: 500, raw: "verify exploded" }, "payment rejected: facilitator verify failed with HTTP 500: verify exploded"],
+      ];
+      for (const [reply, message] of refusals) {
+        const g = await fundsOne(whileInFlight => ({
+          answer: onFirst("/verify", async () => {
+            await whileInFlight();
+            return reply;
+          }),
+        }));
+        try {
+          const first = await g.pay();
+          assert.deepEqual([first.status, first.body.error?.message], [402, message]);
+          assert.equal(g.during.length, 1, "a payment was presented while the first one waited at /verify");
+          assert.equal(g.during[0]!.status, 200, `the unverified payment held nothing back: ${JSON.stringify(g.during[0]!.body)}`);
+          assert.equal((await g.pay()).status, 200);
+        } finally {
+          await g.close();
+        }
       }
     });
 
@@ -1069,26 +1099,6 @@ describe("the hosted facilitator", () => {
       /** What the payment presented during that call gets: refused as in flight unless said otherwise. */
       during?: (res: RpcResponse) => void;
     }> = [
-      {
-        name: "the hosted facilitator refuses it at /verify",
-        script: whileInFlight => ({
-          answer: onFirst("/verify", async () => {
-            await whileInFlight();
-            return { json: { isValid: false, invalidReason: "invalid_exact_casper_payload_signature" } };
-          }),
-        }),
-        first: res => assert.deepEqual([res.status, res.body.error?.message], [402, "payment rejected: invalid_exact_casper_payload_signature"]),
-      },
-      {
-        name: "the hosted /verify fails",
-        script: whileInFlight => ({
-          answer: onFirst("/verify", async () => {
-            await whileInFlight();
-            return { status: 500, raw: "verify exploded" };
-          }),
-        }),
-        first: res => assert.deepEqual([res.status, res.body.error?.message], [402, "payment rejected: facilitator verify failed with HTTP 500: verify exploded"]),
-      },
       {
         name: "its tool throws (not charged)",
         script: whileInFlight => ({
@@ -1214,28 +1224,49 @@ describe("the hosted facilitator", () => {
     });
 
     it("releases the payment when its authorization cannot be recorded (write-ahead failure)", async () => {
+      const original = x402HTTPResourceServer.prototype.processHTTPRequest;
       const append = ReceiptStore.prototype.appendAuthorization;
-      let fail = true;
-      const patched = mock.method(ReceiptStore.prototype, "appendAuthorization", function (this: ReceiptStore, ...args: Parameters<typeof append>) {
+      let whileInFlight = async (): Promise<void> => {};
+      let verifiedOnce = false;
+      let fail = false;
+      const verified = mock.method(
+        x402HTTPResourceServer.prototype,
+        "processHTTPRequest",
+        async function (this: x402HTTPResourceServer, ...args: Parameters<typeof original>) {
+          const result = await original.apply(this, args);
+          if (verifiedOnce || result.type !== "payment-verified") return result;
+          verifiedOnce = true;
+          // Verified, so reserved: present one more payment now, then fail this one's write-ahead record.
+          await whileInFlight();
+          fail = true;
+          return result;
+        },
+      );
+      const recorded = mock.method(ReceiptStore.prototype, "appendAuthorization", function (this: ReceiptStore, ...args: Parameters<typeof append>) {
         if (!fail) return append.apply(this, args);
         fail = false;
         throw new Error("disk full");
       });
       try {
-        const g = await fundsOne(whileInFlight => ({ answer: onFirst("/verify", async () => (await whileInFlight(), undefined)) }));
+        const g = await fundsOne(probe => {
+          whileInFlight = probe;
+          return {};
+        });
         try {
           const first = await g.pay();
           assert.deepEqual(
             [first.status, first.body.error?.message],
             [503, "gateway cannot record payments right now; the tool was not run and nothing was charged"],
           );
+          assert.equal(g.during.length, 1);
           refusedInFlight(g.during[0]!);
           assert.equal((await g.pay()).status, 200);
         } finally {
           await g.close();
         }
       } finally {
-        patched.mock.restore();
+        verified.mock.restore();
+        recorded.mock.restore();
       }
     });
   });

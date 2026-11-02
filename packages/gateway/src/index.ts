@@ -44,9 +44,10 @@ export {
 } from "./server-scheme.js";
 export {
   HOSTED_PREFLIGHT_DEADLINE_MS,
-  hostedPreflightHook,
+  hostedPreflightHooks,
   insufficientFundsInFlight,
   PreflightReason,
+  type HostedPreflightHooks,
   type HostedPreflightOptions,
 } from "./hosted-preflight.js";
 export {

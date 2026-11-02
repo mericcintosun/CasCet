@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
+import type { PaymentPayload, PaymentRequirements, VerifyResponse } from "@x402/core/types";
 import type { ResolvedAsset } from "@cascet/core";
 import { createCasperRpc, type RpcFetch } from "./casper-rpc.js";
-import { HOSTED_PREFLIGHT_DEADLINE_MS, hostedPreflightHook, insufficientFundsInFlight, PreflightReason } from "./hosted-preflight.js";
+import { HOSTED_PREFLIGHT_DEADLINE_MS, hostedPreflightHooks, insufficientFundsInFlight, PreflightReason } from "./hosted-preflight.js";
 import { IN_FLIGHT_MARGIN_MS, InFlightPayments, withPaymentHold, type PaymentHold } from "./in-flight.js";
 import { WCSPR_TESTNET, wcsprNodeRoutes, wcsprNonceCall, wcsprRequirements } from "./testing/fake-node.js";
 import * as fx from "./testing/rpc-fixtures.js";
@@ -39,31 +39,46 @@ const payment = (requirements: PaymentRequirements, authorization: Record<string
   },
 });
 
-/** The hook over a probe whose node answers `routes` (recorded testnet Wrapped CSPR state by default). */
+type Refusal = { abort: true; reason: string; message?: string };
+
+/** The hooks over a probe whose node answers `routes` (recorded testnet Wrapped CSPR state by default). */
 function preflight(
   opts: { routes?: Record<string, Replay>; fetchImpl?: RpcFetch; asset?: Partial<ResolvedAsset>; deadlineMs?: number; inFlight?: InFlightPayments } = {},
 ) {
   const calls: string[] = [];
   const routes = opts.routes ?? wcsprNodeRoutes({ balances: { [PAYER]: 1_000_000_000n } });
   const probe = new TokenProbe(createCasperRpc("http://node.invalid/rpc", { fetchImpl: opts.fetchImpl ?? replayFetch(routes, calls) }));
-  const hook = hostedPreflightHook({
+  const hooks = hostedPreflightHooks({
     probe,
     network: NETWORK,
     assets: [{ ...WCSPR_ASSET, ...opts.asset }],
     deadlineMs: opts.deadlineMs,
     inFlight: opts.inFlight,
   });
+  /** The payment as x402 hands it to the hooks; with `hold`, as for a gateway call: with the call's hold in its request context. */
+  const contextOf = (requirements: PaymentRequirements, paymentPayload: PaymentPayload, hold?: PaymentHold) => ({
+    paymentPayload,
+    requirements,
+    declaredExtensions: {},
+    transportContext: hold ? { request: withPaymentHold({ path: "/tools/0", method: "POST" }, hold) } : undefined,
+  });
   return {
     calls,
-    // The hook only ever passes (undefined) or aborts; it never skips verification. With `hold`, the payment
-    // comes as x402 hands it over for a gateway call: with the call's hold in its request context.
-    run: async (requirements: PaymentRequirements = wcsprRequirements(PRICE, PAY_TO), paymentPayload = payment(requirements), hold?: PaymentHold) =>
-      (await hook({
-        paymentPayload,
-        requirements,
-        declaredExtensions: {},
-        transportContext: hold ? { request: withPaymentHold({ path: "/tools/0", method: "POST" }, hold) } : undefined,
-      })) as { abort: true; reason: string; message?: string } | undefined,
+    hooks,
+    contextOf,
+    // As x402 runs them: the hook before verify, then, unless it refused the payment, the one after the facilitator's
+    // answer `verified` (valid by default). They only ever pass (undefined) or abort; they never skip verification.
+    run: async (
+      requirements: PaymentRequirements = wcsprRequirements(PRICE, PAY_TO),
+      paymentPayload = payment(requirements),
+      hold?: PaymentHold,
+      verified: VerifyResponse = { isValid: true },
+    ): Promise<Refusal | undefined> => {
+      const context = contextOf(requirements, paymentPayload, hold);
+      const before = await hooks.beforeVerify(context);
+      if (before) return before as Refusal;
+      return (await hooks.afterVerify({ ...context, result: verified })) as Refusal | undefined;
+    },
   };
 }
 
@@ -183,6 +198,45 @@ describe("payments in flight in the hosted preflight", () => {
     );
     assert.equal(insufficientFundsInFlight(1), "insufficient_funds: insufficient balance once 1 in-flight payment is counted");
     assert.deepEqual(inFlight.total(NETWORK, WCSPR_TESTNET, PAYER), { count: 1, amount: BigInt(PRICE) }, "only the payment that passed is reserved");
+  });
+
+  it("reserves a payment only once the facilitator verified it: a forged one never holds back the payer's real payments", async () => {
+    const { inFlight, run } = tracked(1);
+    // The hosted facilitator finds the signature invalid: x402 refuses the payment with its reason, and nothing is reserved.
+    const forged = await run(requirements, payment(requirements, { nonce: nonce("01") }), inFlight.open(), {
+      isValid: false,
+      invalidReason: "invalid_exact_casper_payload_signature",
+    });
+    assert.equal(forged, undefined, "the facilitator's own refusal stands");
+    assert.equal(inFlight.size, 0);
+    assert.equal(await run(requirements, payment(requirements, { nonce: nonce("02") }), inFlight.open()), undefined, "the payer's real payment passes");
+    assert.deepEqual(inFlight.total(NETWORK, WCSPR_TESTNET, PAYER), { count: 1, amount: BigInt(PRICE) });
+  });
+
+  it("does not count a payment while the facilitator verifies it, and checks the funds again once it is verified", async () => {
+    const { inFlight, hooks, contextOf, run } = tracked(1);
+    // A payment (forged or not) passes the checks before verify and waits for the facilitator.
+    const waiting = contextOf(requirements, payment(requirements, { nonce: nonce("01") }), inFlight.open());
+    assert.equal(await hooks.beforeVerify(waiting), undefined);
+    assert.deepEqual(inFlight.total(NETWORK, WCSPR_TESTNET, PAYER), { count: 0, amount: 0n }, "it holds nothing back yet");
+    // Meanwhile another payment of the payer is verified, and reserved.
+    assert.equal(await run(requirements, payment(requirements, { nonce: nonce("02") }), inFlight.open()), undefined);
+    // The first one is verified too, but the balance funds only one of them.
+    assert.deepEqual(await hooks.afterVerify({ ...waiting, result: { isValid: true } }), {
+      abort: true,
+      reason: insufficientFundsInFlight(1),
+      message: `payer balance ${PRICE} does not cover ${PRICE} plus ${PRICE} already in flight`,
+    });
+    assert.equal(inFlight.size, 1);
+  });
+
+  it("refuses a verified payment that did not pass its checks before verify", async () => {
+    const { inFlight, hooks, contextOf } = tracked(1);
+    const untracked = { abort: true, reason: PreflightReason.preflightUnavailable, message: "the gateway cannot track this payment while it is in flight" };
+    const unchecked = contextOf(requirements, payment(requirements), inFlight.open());
+    assert.deepEqual(await hooks.afterVerify({ ...unchecked, result: { isValid: true } }), untracked);
+    assert.deepEqual(await hooks.afterVerify({ ...contextOf(requirements, payment(requirements)), result: { isValid: true } }), untracked, "no hold");
+    assert.equal(inFlight.size, 0);
   });
 
   it("frees the balance again once the call of the payment in flight ends", async () => {

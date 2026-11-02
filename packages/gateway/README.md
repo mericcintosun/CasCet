@@ -139,20 +139,25 @@ warns at startup that this preflight is off.
 
 Payments in flight count against the balance, because the balance a payment
 is checked against does not show the payer's payments that have not settled
-yet. A payment that passes the preflight reserves its amount for its payer
-and token until its call ends: when its settlement finishes (settled, failed
-or unknown; with `settleBeforeExecute`, before the tool runs), or when the
-call ends without one (the facilitator or the gateway refused it, the tool
-failed or timed out, anything threw). Of two concurrent payments that one
-balance funds, only one passes; the other gets `insufficient_funds:
-insufficient balance once 1 in-flight payment is counted` and nothing runs
-for it. A reservation that is somehow never released stops counting 2
-minutes after its authorization's `validBefore`, when the authorization can
-no longer execute. The gateway tracks at most 10 000 payments in flight and
-refuses new ones beyond that (`preflight_unavailable: too many payments in
-flight; retry later`) rather than forget one. Like the replay guard, this is
-per gateway process: gateways that share a payer and a token do not see each
-other's payments.
+yet. A payment that passes the preflight and that the hosted facilitator
+then verifies reserves its amount for its payer and token; the balance must
+cover it on top of the payer's reservations, before verify and again once it
+is verified. Only verified payments count: the gateway's own checks do not
+verify the signature, so a payment forged from a payer's public key, which
+the facilitator refuses, never holds back the payer's real payments. A
+reservation lasts until its call ends: when its settlement finishes
+(settled, failed or unknown; with `settleBeforeExecute`, before the tool
+runs), or when the call ends without one (the gateway refused the verified
+payment, the tool failed or timed out, anything threw). Of two concurrent
+payments that one balance funds, only one passes; the other gets
+`insufficient_funds: insufficient balance once 1 in-flight payment is
+counted` and nothing runs for it. A reservation that is somehow never
+released stops counting 2 minutes after its authorization's `validBefore`,
+when the authorization can no longer execute. The gateway tracks at most
+10 000 payments in flight and refuses new ones beyond that
+(`preflight_unavailable: too many payments in flight; retry later`) rather
+than forget one. Like the replay guard, this is per gateway process:
+gateways that share a payer and a token do not see each other's payments.
 
 ## Payment flow
 

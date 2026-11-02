@@ -10,30 +10,34 @@ import { normalizeAccountAddress } from "./authorization.js";
  * taken out of that balance, so concurrent payments could each pass while the
  * balance funds only one of them: the others fail at settlement, and in the
  * default run-then-settle mode their tools have run for free. So a payment
- * that passes the preflight reserves its amount here, per (network, asset,
- * payer), and the preflight requires the balance to cover everything reserved
- * plus the new amount. The check and the reservation run with no await in
- * between (Node runs them on one thread), so two concurrent payments can
- * never both pass on one balance.
+ * that passes the preflight and that the facilitator verified reserves its
+ * amount here, per (network, asset, payer), and the preflight requires the
+ * balance to cover everything reserved plus the new amount, before verify
+ * and again, with the reservation, after it. That check and the reservation
+ * run with no await in between (Node runs them on one thread), so two
+ * concurrent payments can never both be reserved on one balance. Only
+ * verified payments are reserved (the facilitator checked their signature):
+ * a payment forged from a payer's public key never holds back the payer's
+ * real ones.
  *
  * Every reservation belongs to one paid call's {@link PaymentHold}. The
  * gateway opens a hold for each paid call, hands it to x402 with the call's
  * request context ({@link withPaymentHold}; x402 passes that context on to the
- * preflight), and releases it when the call's settlement finishes (settled,
- * failed or unknown) or the call ends without one (refused, canceled, an
- * upstream error, a timeout, a throw). A reservation that is never released
- * expires {@link IN_FLIGHT_MARGIN_MS} after its authorization's validBefore:
- * by then the authorization can no longer execute, so it cannot spend the
- * balance any more. At most `maxPayments` reservations are live; beyond that
- * new payments are refused, never live reservations forgotten (that would let
- * an unfunded payment through).
+ * preflight's verify hooks), and releases it when the call's settlement
+ * finishes (settled, failed or unknown) or the call ends without one
+ * (refused, canceled, an upstream error, a timeout, a throw). A reservation
+ * that is never released expires {@link IN_FLIGHT_MARGIN_MS} after its
+ * authorization's validBefore: by then the authorization can no longer
+ * execute, so it cannot spend the balance any more. At most `maxPayments`
+ * reservations are live; beyond that new payments are refused, never live
+ * reservations forgotten (that would let an unfunded payment through).
  */
 
 /** How long after its authorization's validBefore a reservation counts at most (clock skew, inclusion). */
 export const IN_FLIGHT_MARGIN_MS = 120_000;
 const DEFAULT_MAX_PAYMENTS = 10_000;
 
-/** A payment that passed the preflight and whose call has not ended. */
+/** A payment that passed the preflight, that its facilitator verified and whose call has not ended. */
 export interface InFlightPayment {
   /** CAIP-2 network. */
   network: string;
@@ -181,8 +185,8 @@ const HOLD = Symbol("cascet.paymentHold");
 /**
  * `context` (the x402 HTTP request context of a paid call) carrying the
  * call's `hold`. x402 copies the request context with its own properties
- * (symbols included) into the `transportContext.request` it gives its hooks,
- * which is where the preflight finds the hold ({@link paymentHoldOf}).
+ * (symbols included) into the `transportContext.request` it gives its verify
+ * hooks, which is where the preflight finds the hold ({@link paymentHoldOf}).
  */
 export function withPaymentHold<T extends object>(context: T, hold: PaymentHold): T {
   return { ...context, [HOLD]: hold };

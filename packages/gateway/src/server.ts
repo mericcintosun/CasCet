@@ -188,7 +188,7 @@ interface PaidRequest {
   policy: PaidToolPolicy;
   table: ToolTable;
   started: number;
-  /** Where the preflight reserves the call's payment while it is in flight; released when the call ends. */
+  /** Where the preflight reserves the call's payment, once verified, while it is in flight; released when the call ends. */
   hold: PaymentHold;
 }
 
@@ -846,8 +846,9 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
 
   /**
    * A paid tool call: the gateway's local checks, x402's verification (with the
-   * hosted preflight, which reserves the payment on the call's hold), the
-   * write-ahead record, then the tool and the settlement in the configured order.
+   * hosted preflight, which reserves the payment on the call's hold once the
+   * facilitator verified it), the write-ahead record, then the tool and the
+   * settlement in the configured order.
    */
   async function handlePaidCall(req: Request, res: Response, paid: PaidRequest): Promise<void> {
     const { id, name, args, policy, table: snapshot, started, hold } = paid;
@@ -901,7 +902,8 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     }
 
     // 2. x402: match the payment to one of this tool's requirements and verify it with the
-    //    facilitator of that token (its balance and nonce preflight runs here, right before execution).
+    //    facilitator of that token (its balance and nonce preflight runs here, right before execution,
+    //    and reserves the verified payment).
     let processed: HTTPProcessResult;
     try {
       processed = await snapshot.http.processHTTPRequest(context);

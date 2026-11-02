@@ -92,7 +92,7 @@ describe("InFlightPayments", () => {
   });
 });
 
-describe("the hold of a paid call reaches x402's beforeVerify hooks", () => {
+describe("the hold of a paid call reaches x402's verify hooks", () => {
   const PAY_TO = `00${"11".repeat(32)}`;
   const adapter = (paymentHeader?: string): HTTPAdapter => ({
     getHeader: name => (/^payment-signature$/i.test(name) ? paymentHeader : undefined),
@@ -103,7 +103,7 @@ describe("the hold of a paid call reaches x402's beforeVerify hooks", () => {
     getUserAgent: () => "test",
   });
 
-  it("through the request context, which x402 2.29 copies into the hooks' transportContext", async () => {
+  it("through the request context, which x402 2.29 copies into the hooks' transportContext, before and after verify", async () => {
     const facilitator: FacilitatorClient = {
       verify: async () => ({ isValid: true }),
       settle: () => Promise.reject(new Error("unused")),
@@ -114,8 +114,12 @@ describe("the hold of a paid call reaches x402's beforeVerify hooks", () => {
       new CascetCasperServerScheme([{ network: NETWORK, asset: ASSET, decimals: 9 }]),
     );
     const seen: Array<PaymentHold | undefined> = [];
+    const seenAfter: Array<PaymentHold | undefined> = [];
     resourceServer.onBeforeVerify(async ({ transportContext }) => {
       seen.push(paymentHoldOf(transportContext));
+    });
+    resourceServer.onAfterVerify(async ({ transportContext }) => {
+      seenAfter.push(paymentHoldOf(transportContext));
     });
     await resourceServer.initialize();
     const http = new x402HTTPResourceServer(resourceServer, {
@@ -134,6 +138,7 @@ describe("the hold of a paid call reaches x402's beforeVerify hooks", () => {
     assert.equal(verified.type, "payment-verified");
     await http.processHTTPRequest({ adapter: adapter(header), path: "/tools/0", method: "POST", paymentHeader: header });
     assert.deepEqual(seen, [hold, undefined], "a context without a hold carries none");
+    assert.deepEqual(seenAfter, [hold, undefined], "the hook after verify gets the same context");
   });
 
   it("and is found only where a hold was put", () => {
