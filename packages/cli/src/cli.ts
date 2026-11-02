@@ -152,7 +152,7 @@ connect env vars:
   CASCET_PREFER_STYLES            comma-separated authorization styles in order of preference
                                   (cep3009-value, legacy-amount) when a gateway offers several tokens;
                                   only orders the options the allowlists and budgets accept
-  CASCET_TIMEOUT_MS               deadline per call in ms (default 180000: a paid call settles on-chain)
+  CASCET_TIMEOUT_MS               deadline per call in ms (default 200000: a paid call settles on-chain)
   CASCET_TOOL_PINS                tool pin file (default ~/.cascet/tool-pins.json)
   CASCET_ALLOW_ANY_SELLER=1       same as --allow-any-seller
   CASCET_ALLOW_UNLIMITED_BUDGET=1 same as --allow-unlimited-budget

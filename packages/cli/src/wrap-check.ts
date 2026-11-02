@@ -23,18 +23,19 @@ export function wrapWarnings(
 
 /**
  * Startup warning about a contract-package payTo (the schema stores one as
- * "01" + hex; a public key never gets this far). Every facilitator that exists
- * today runs @make-software/casper-x402 1.0.0, which settles any payTo as an
- * account hash, and CasCet buyers refuse such a payee.
+ * "01" + hex; a public key never gets this far). CasCet's self-hosted
+ * facilitator refuses such a payee, facilitators built on
+ * @make-software/casper-x402 1.0.0 settle any payTo as an account hash, and
+ * CasCet buyers refuse to pay it.
  */
 export function payToWarnings(cfg: Pick<CascetConfig, "payTo">): string[] {
   if (!cfg.payTo.startsWith("01")) return [];
   return [
-    `WARNING: payTo ${cfg.payTo} is a contract package (e.g. a RevenueSplit), not an account hash. Facilitators ` +
-      "built on @make-software/casper-x402 1.0.0 (the hosted one and CasCet's self-hosted one) settle every payTo as " +
-      "an account hash, so this revenue would be credited to an account nobody controls, and CasCet buyers refuse to " +
-      'pay a contract-package payee. Use your account hash ("npx @cascet/cli account-hash <public-key>") until a ' +
-      "facilitator supports contract payees.",
+    `WARNING: payTo ${cfg.payTo} is a contract package (e.g. a RevenueSplit), not an account hash. CasCet's ` +
+      "self-hosted facilitator refuses contract-package payees; facilitators built on @make-software/casper-x402 " +
+      "1.0.0 settle every payTo as an account hash, so this revenue would be credited to an account nobody controls; " +
+      'and CasCet buyers refuse to pay a contract-package payee. Use your account hash ("npx @cascet/cli account-hash ' +
+      '<public-key>") until a facilitator supports contract payees.',
   ];
 }
 

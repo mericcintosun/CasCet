@@ -25,13 +25,14 @@ const PACKAGE_HASH = /^[0-9a-f]{64}$/;
 
 /**
  * Why a "01" payee (a contract package such as a RevenueSplit, or a public key
- * passed off as one) is never paid: @make-software/casper-x402 1.0.0, which
- * every facilitator that exists today runs, settles any payTo as
- * `Key.newKey("account-hash-" + payTo.slice(2))`.
+ * passed off as one) is never paid: facilitators built on
+ * @make-software/casper-x402 1.0.0 settle any payTo as
+ * `Key.newKey("account-hash-" + payTo.slice(2))`, and CasCet's self-hosted
+ * facilitator refuses contract payees.
  */
 export const CONTRACT_PAYEE_REASON =
-  "contract-package payees cannot be settled by @make-software/casper-x402 1.0.0 facilitators; " +
-  "the payment would be credited to an account nobody controls";
+  "contract-package payees are not paid: @make-software/casper-x402 1.0.0 facilitators credit the payment " +
+  "to an account nobody controls, and CasCet's self-hosted facilitator refuses them";
 
 /**
  * Parse a raw token amount strictly: a string of 1-40 decimal digits, greater

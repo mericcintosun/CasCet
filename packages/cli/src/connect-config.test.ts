@@ -53,7 +53,7 @@ describe("resolveConnectConfig", () => {
   it("defaults to testnet, a 180 s deadline (paid calls settle on-chain) and ~/.cascet/tool-pins.json", () => {
     const cfg = resolveConnectConfig(inputs());
     assert.deepEqual(cfg.paying.networks, ["casper:casper-test"]);
-    assert.equal(DEFAULT_CONNECT_TIMEOUT_MS, 180_000);
+    assert.equal(DEFAULT_CONNECT_TIMEOUT_MS, 200_000);
     assert.equal(cfg.paying.timeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
     assert.equal(cfg.bridge.timeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
     assert.equal(cfg.bridge.toolPins.path, "/home/agent/.cascet/tool-pins.json");
@@ -110,7 +110,7 @@ describe("resolveConnectConfig", () => {
       [{ CASCET_ALLOWED_PAYTO: "01" + "ab".repeat(32) }, /CASCET_ALLOWED_PAYTO: .*public key.*account-hash/],
       [
         { CASCET_ALLOWED_PAYTO: `${SELLER},hash-${"c3".repeat(32)}` },
-        /CASCET_ALLOWED_PAYTO: .*contract-package payee: contract-package payees cannot be settled by @make-software\/casper-x402 1\.0\.0 facilitators/,
+        /CASCET_ALLOWED_PAYTO: .*contract-package payee: contract-package payees are not paid: @make-software\/casper-x402 1\.0\.0 facilitators credit the payment to an account nobody controls/,
       ],
       [{ CASCET_ALLOWED_ASSETS: "hash-123" }, /CASCET_ALLOWED_ASSETS: invalid asset/],
       [{ CASCET_NETWORK: "casper:*" }, /CASCET_NETWORK: invalid network/],

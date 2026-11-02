@@ -42,12 +42,13 @@ export const CONNECT_USAGE =
 /**
  * Default deadline of `cascet connect` per forwarded call (CASCET_TIMEOUT_MS).
  * Longer than the library's 30 s on purpose: a paid tools/call includes the
- * on-chain settlement (the facilitator may wait up to 60 s for the transfer,
- * and a gateway may spend 60 s on the tool plus 90 s on settling), and a
- * deadline that fires after the payment was sent leaves the call paid but
- * unanswered.
+ * on-chain settlement, and a deadline that fires after the payment was sent
+ * leaves the call paid but unanswered. With its default timeouts a gateway
+ * answers a paid call within 185 s (longestPaidCallMs: 5 s hosted preflight,
+ * 15 s verify, 60 s tool, 90 s settle, 15 s on-chain check); this leaves 15 s
+ * for the network.
  */
-export const DEFAULT_CONNECT_TIMEOUT_MS = 180_000;
+export const DEFAULT_CONNECT_TIMEOUT_MS = 200_000;
 
 /**
  * Resolve `cascet connect` settings. Spending controls are mandatory: the payee
@@ -227,7 +228,7 @@ function parseTimeout(raw: string | undefined): number {
   if (text === undefined) return DEFAULT_CONNECT_TIMEOUT_MS;
   const ms = /^[0-9]{1,10}$/.test(text) ? Number(text) : Number.NaN;
   if (!Number.isSafeInteger(ms) || ms <= 0 || ms > 2_147_483_647) {
-    throw new CliError(`CASCET_TIMEOUT_MS must be a whole number of milliseconds (e.g. 180000); got "${text}"`);
+    throw new CliError(`CASCET_TIMEOUT_MS must be a whole number of milliseconds (e.g. 200000); got "${text}"`);
   }
   return ms;
 }

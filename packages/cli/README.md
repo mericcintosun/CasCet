@@ -114,7 +114,7 @@ The same in an MCP host config:
 | `CASCET_MAX_PER_CALL` | Largest single payment, in raw token units. Required unless `--allow-unlimited-budget`. |
 | `CASCET_MAX_SESSION` | Total per token for this bridge session, in raw token units. Required unless `--allow-unlimited-budget`. |
 | `CASCET_PREFER_STYLES` | Optional. Comma-separated authorization styles in order of preference, used when a gateway offers several tokens: `cep3009-value` (CEP-3009 tokens such as Wrapped CSPR) and `legacy-amount` (CasCet's own x402 token). It only orders the options your allowlists and budgets accept, never makes another one payable. Without it the gateway's order decides. CasCet's x402 tokens and Wrapped CSPR rank by the style they are known to have, whatever the gateway labels them. |
-| `CASCET_TIMEOUT_MS` | Deadline per call in ms, default `180000`. A paid call includes the on-chain settlement, which can take a minute or more, and a call that times out after its payment was sent may still settle, so keep this above the gateway's own tool and settlement timeouts. |
+| `CASCET_TIMEOUT_MS` | Deadline per call in ms, default `200000`. A paid call includes the on-chain settlement, which can take a minute or more, and a call that times out after its payment was sent may still settle, so keep this above the gateway's own tool and settlement timeouts. |
 | `CASCET_TOOL_PINS` | Tool pin file, default `~/.cascet/tool-pins.json`. |
 | `CASCET_ALLOW_ANY_SELLER=1` | Same as `--allow-any-seller`. |
 | `CASCET_ALLOW_UNLIMITED_BUDGET=1` | Same as `--allow-unlimited-budget`. |
