@@ -81,6 +81,19 @@ const FACILITATOR_NAME_RULE = 'facilitator names are 1-64 letters, digits, ".", 
 const MAX_TIMER_MS = 2_147_483_647;
 
 /**
+ * How long CasCet buyers let a payment authorization stay valid, by default:
+ * @cascet/client's `maxAuthorizationSeconds` and the Python client's limit.
+ * They refuse every payment option of a 402 that asks for a longer window.
+ */
+export const DEFAULT_MAX_AUTHORIZATION_SECONDS = 900;
+/** Seconds the payment window keeps for the settle transaction itself (@cascet/gateway's SETTLE_HEADROOM_SECONDS). */
+const SETTLE_HEADROOM_SECONDS = 30;
+/** The gateway's on-chain preflight of a payment the hosted facilitator settles (@cascet/gateway's HOSTED_PREFLIGHT_DEADLINE_MS). */
+const HOSTED_PREFLIGHT_MS = 5_000;
+/** x402's customary payment window; the gateway never asks for less. */
+const MIN_PAYMENT_WINDOW_SECONDS = 300;
+
+/**
  * A field of the token's EIP-712 domain, bounded as CasCet buyers bound it:
  * they refuse every payment option whose name or version is longer, or holds
  * a lone surrogate, so a gateway configured with one could sell nothing.
@@ -143,7 +156,11 @@ export const facilitatorSchema = z.object({
   /**
    * Per-request timeout of this facilitator's /supported, /verify and /settle
    * calls. Omit to use `timeouts.facilitatorMs` (/supported, /verify) and
-   * `timeouts.settleMs` (/settle).
+   * `timeouts.settleMs` (/settle). Set, it stands for both of them in how long
+   * a paid call in its assets can take, and counts twice in the authorization
+   * window buyers are asked to sign, which must stay within the 900 s CasCet
+   * buyers accept ({@link paymentWindowSeconds}): at most about 400 s with the
+   * default `timeouts.upstreamMs`.
    */
   timeoutMs: z.number().int().positive().max(MAX_TIMER_MS).optional(),
 });
@@ -460,6 +477,29 @@ function resolveConfig(raw: RawConfig, issues: Issues) {
   checkAssetRefs(rest.pricing.default, ["pricing", "default"]);
   for (const [tool, price] of Object.entries(rest.pricing.tools)) checkAssetRefs(price, ["pricing", "tools", tool]);
 
+  // A window longer than CasCet buyers sign makes each of them refuse every payment. Bounding it also
+  // keeps the timeouts' sum, which the gateway's drain timer waits, far below setTimeout's limit.
+  if (issues.length === 0) {
+    const window = paymentWindow({ ...rest, assets, facilitators });
+    if (window.seconds > DEFAULT_MAX_AUTHORIZATION_SECONDS) {
+      const seconds = (ms: number) => `${ms / 1_000} s`;
+      const terms = [
+        ...(window.preflightMs > 0 ? [`preflight ${seconds(window.preflightMs)}`] : []),
+        `verify ${seconds(window.verifyMs)}`,
+        `tool ${seconds(window.upstreamMs)}`,
+        `settle ${seconds(window.settleMs)}`,
+        `${SETTLE_HEADROOM_SECONDS} s for the settle transaction`,
+      ];
+      issues.push({
+        path: ["timeouts"],
+        message:
+          `buyers would be asked to sign a ${window.seconds} s authorization window (${terms.join(" + ")}), above the ` +
+          `${DEFAULT_MAX_AUTHORIZATION_SECONDS} s CasCet buyers accept, so they would refuse every payment: lower ` +
+          "timeouts.upstreamMs, timeouts.facilitatorMs, timeouts.settleMs or a facilitator's timeoutMs",
+      });
+    }
+  }
+
   return {
     ...rest,
     /** Every accepted token, in config order (the order of a 402's `accepts`). */
@@ -523,6 +563,41 @@ export function facilitatorTimeouts(
     verifyMs: facilitator.timeoutMs ?? cfg.timeouts.facilitatorMs,
     settleMs: facilitator.timeoutMs ?? cfg.timeouts.settleMs,
   };
+}
+
+/** What {@link paymentWindowSeconds} reads of a config. */
+type PaymentWindowConfig = Pick<CascetConfig, "facilitators" | "timeouts" | "settlement" | "anchoring"> & {
+  assets: ReadonlyArray<Pick<ResolvedAsset, "id" | "facilitator">>;
+};
+
+/** The payment window in seconds, and what it is made of in milliseconds (see {@link paymentWindowSeconds}). */
+function paymentWindow(cfg: PaymentWindowConfig) {
+  const nodeUrl = cfg.settlement.nodeUrl ?? cfg.anchoring?.nodeUrl;
+  let preflightMs = 0;
+  let verifyMs = 0;
+  let settleMs = 0;
+  for (const asset of cfg.assets) {
+    const facilitator = facilitatorFor(cfg, asset);
+    const timeouts = facilitatorTimeouts(cfg, facilitator);
+    verifyMs = Math.max(verifyMs, timeouts.verifyMs);
+    settleMs = Math.max(settleMs, timeouts.settleMs);
+    if (nodeUrl && isHostedFacilitatorUrl(facilitator.url)) preflightMs = HOSTED_PREFLIGHT_MS;
+  }
+  const upstreamMs = cfg.timeouts.upstreamMs;
+  const seconds = Math.max(MIN_PAYMENT_WINDOW_SECONDS, Math.ceil((preflightMs + verifyMs + upstreamMs + settleMs) / 1_000) + SETTLE_HEADROOM_SECONDS);
+  return { seconds, preflightMs, verifyMs, upstreamMs, settleMs };
+}
+
+/**
+ * The validity window, in seconds, the gateway asks buyers to sign (x402
+ * `maxTimeoutSeconds`), sized as @cascet/gateway sizes it: its on-chain
+ * preflight (when the hosted facilitator settles some asset and a node is
+ * configured), the slowest facilitator's verify, the tool, the slowest
+ * settle and 30 s for the settle transaction; never below 300 s. The config
+ * schema refuses a window above {@link DEFAULT_MAX_AUTHORIZATION_SECONDS}.
+ */
+export function paymentWindowSeconds(cfg: PaymentWindowConfig): number {
+  return paymentWindow(cfg).seconds;
 }
 
 /** The assets a price accepts, in config order: those it lists in `assets`, or all of them. */
