@@ -136,12 +136,15 @@ importers:
       '@make-software/casper-x402':
         specifier: ^1.0.0
         version: 1.0.0
+      '@x402/casper':
+        specifier: 2.29.0
+        version: 2.29.0
       '@x402/core':
-        specifier: ~2.17.0
-        version: 2.17.0
+        specifier: 2.29.0
+        version: 2.29.0
       '@x402/fetch':
-        specifier: ~2.17.0
-        version: 2.17.0
+        specifier: 2.29.0
+        version: 2.29.0
       casper-js-sdk:
         specifier: ^5.0.12
         version: 5.3.0
@@ -163,9 +166,12 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.2
         version: 1.32.2(zod@4.6.7)
+      '@x402/casper':
+        specifier: 2.29.0
+        version: 2.29.0
       '@x402/core':
-        specifier: ~2.17.0
-        version: 2.17.0
+        specifier: 2.29.0
+        version: 2.29.0
       casper-js-sdk:
         specifier: ^5.0.12
         version: 5.3.0
@@ -238,9 +244,12 @@ importers:
       '@make-software/casper-x402':
         specifier: ^1.0.0
         version: 1.0.0
+      '@x402/casper':
+        specifier: 2.29.0
+        version: 2.29.0
       '@x402/core':
-        specifier: 2.15.0
-        version: 2.15.0
+        specifier: 2.29.0
+        version: 2.29.0
       casper-js-sdk:
         specifier: ^5.0.12
         version: 5.3.0
@@ -1164,14 +1173,17 @@ packages:
     resolution: {integrity: sha512-Xfe6rpCTxSxfbswi/W/Pz7zp1WWSNn4A0eW4mLkQUewCrXXtMj31lCg+iQyTkh/CkusZSq9eDflu7tjEDXUY6g==}
     engines: {node: '>=v14.0.0', npm: '>=7.0.0'}
 
+  '@x402/casper@2.29.0':
+    resolution: {integrity: sha512-KvmEJlVdyWcKHoimhvF6mpcW7HAdJFkrQ9+V/8XGkO5Aa19vynceaT1TI4NfW8DmuHORb97m49Al5M+EDMSJ5A==}
+
   '@x402/core@2.15.0':
     resolution: {integrity: sha512-Hwop1cu80sf3H4dpNdiMJt7ay30Jf7JUjgx7dXHxQm/nYqOjTcm71FC/ZhpnIpeg6RSAUt7EI/rFTXx/lafHhw==}
 
-  '@x402/core@2.17.0':
-    resolution: {integrity: sha512-BBooe9Kewl5KLaKadElFwhZzZ+n/X/m2djzGtc7OY51D8fk2vHTVvDZtBFEJYdJxtQoUZMKX73hew0ss81FENQ==}
+  '@x402/core@2.29.0':
+    resolution: {integrity: sha512-fkS0JqVwHgczteDlwItLRipOlIzm28U9HWLvYnYpnNbfmepoBT/4ux7LjrR0xGD51JHoC8/r+Qo7uCfoAQYeuw==}
 
-  '@x402/fetch@2.17.0':
-    resolution: {integrity: sha512-iy6ar1JTgs4gzdlc2q2Z7nuL5keBkQhoD4v5niVlTwLoivVvHnAA0p/wK5WTWRrJ1b+el8pthkjFS0Jc3nMIIg==}
+  '@x402/fetch@2.29.0':
+    resolution: {integrity: sha512-ym/+6Cg7uUqScrE/pCV0sfmKecX46KTk5B/VKyJo579Xn1Z6dq2KiLd04rTvvO2xldLKKluU/3SqpDIgkp6T9Q==}
 
   accepts@2.0.0:
     resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
@@ -1272,6 +1284,10 @@ packages:
 
   casper-js-sdk@5.0.12:
     resolution: {integrity: sha512-2jzJ2joQRESSeQ1I7Za5w2fBfBSncTRl24roLtgX4zK1kzJj7YYJZEpVugtZaNa5ZgV3sJOp2qSSl6WYTkwniQ==}
+    engines: {node: '>=18'}
+
+  casper-js-sdk@5.1.1:
+    resolution: {integrity: sha512-KeKaBzvi+nK/1etL4D1nCPT8L7h+oBa3KXlB3ImifGlkDJwgBphva7Ep7e7fnhr9b2gFCWgDnJ0suTDl6ymbYQ==}
     engines: {node: '>=18'}
 
   casper-js-sdk@5.3.0:
@@ -2946,17 +2962,26 @@ snapshots:
 
   '@vladfrangu/async_event_emitter@2.4.7': {}
 
+  '@x402/casper@2.29.0':
+    dependencies:
+      '@casper-ecosystem/casper-eip-712': 1.2.1
+      '@x402/core': 2.29.0
+      casper-js-sdk: 5.1.1
+    transitivePeerDependencies:
+      - debug
+      - supports-color
+
   '@x402/core@2.15.0':
     dependencies:
       zod: 3.25.76
 
-  '@x402/core@2.17.0':
+  '@x402/core@2.29.0':
     dependencies:
-      zod: 3.25.76
+      zod: 4.6.7
 
-  '@x402/fetch@2.17.0':
+  '@x402/fetch@2.29.0':
     dependencies:
-      '@x402/core': 2.17.0
+      '@x402/core': 2.29.0
 
   accepts@2.0.0:
     dependencies:
@@ -3104,6 +3129,26 @@ snapshots:
     transitivePeerDependencies:
       - debug
       - encoding
+      - supports-color
+
+  casper-js-sdk@5.1.1:
+    dependencies:
+      '@ethersproject/bignumber': 5.8.0
+      '@ethersproject/bytes': 5.8.0
+      '@ethersproject/constants': 5.8.0
+      '@noble/curves': 1.9.7
+      '@noble/ed25519': 1.7.5
+      '@noble/hashes': 1.8.0
+      '@noble/secp256k1': 1.7.2
+      asn1.js: 5.4.1
+      axios: 1.21.0
+      bn.js: 5.2.5
+      eventsource: 2.0.2
+      humanize-duration: 3.35.0
+      ts-results: '@casperlabs/ts-results@3.3.5'
+      typedjson: 1.8.0
+    transitivePeerDependencies:
+      - debug
       - supports-color
 
   casper-js-sdk@5.3.0:

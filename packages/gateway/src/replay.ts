@@ -82,7 +82,16 @@ export class ReplayGuard {
   }
 }
 
-/** Replay key of an authorization: on-chain nonces are scoped per payer (and per token). */
+/**
+ * Replay key of an authorization: (payer, nonce), deliberately without the
+ * token. On-chain a nonce is scoped per payer and per token, so one key per
+ * (payer, nonce) across every token a gateway sells is stricter than the
+ * chain: a buyer who reuses a nonce in a second token is refused, which no
+ * x402 client does (nonces are 32 random bytes). In exchange the guard cannot
+ * be confused by how a token is spelled or by write-ahead records and receipts
+ * that predate several tokens, and a restart refuses every recorded
+ * authorization whatever token it paid in.
+ */
 export function replayKey(payer: string, nonce: string): string {
   return `${payer.toLowerCase()}:${nonce.toLowerCase().replace(/^0x/, "")}`;
 }

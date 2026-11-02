@@ -5,8 +5,8 @@ import express, { type NextFunction, type Request, type Response } from "express
 import rateLimit from "express-rate-limit";
 import type { Network } from "@x402/core/types";
 import { ExactCasperScheme } from "@make-software/casper-x402/exact/facilitator";
+import { createCasperRpc, TokenProbe } from "@cascet/gateway";
 import { AuthorizationLedger } from "./authorization-ledger.js";
-import { createCasperRpc } from "./casper-rpc.js";
 import { assertUsableToken, authorizationMatches, MIN_MAINNET_TOKEN_LENGTH } from "./facilitator-auth.js";
 import {
   createFacilitatorCore,
@@ -36,7 +36,6 @@ import { accountsSignableBy } from "./account-keys.js";
 import { DailyGasBudget } from "./gas-budget.js";
 import { loadSecretKeyFile } from "./key-file.js";
 import { createCasperSettlementChain } from "./settlement.js";
-import { TokenStateReader } from "./token-state.js";
 
 /**
  * Self-hosted REAL x402 facilitator for Casper.
@@ -590,7 +589,7 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     },
     {
       verifySignature: (payload, requirements) => scheme.verify(payload, requirements),
-      ...(preflight ? { tokenState: new TokenStateReader(rpc) } : {}),
+      ...(preflight ? { tokenState: new TokenProbe(rpc) } : {}),
       chain,
       ledger,
       gas,

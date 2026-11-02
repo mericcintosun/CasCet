@@ -125,6 +125,121 @@ export async function startHarness(
   };
 }
 
+/** CasCet's x402 token on testnet: its transfer_with_authorization takes `amount` (legacy-amount). */
+export const LEGACY_TOKEN = "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
+/** The official Wrapped CSPR on testnet: CEP-3009, takes `value` (cep3009-value). */
+export const WCSPR_TOKEN = "3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e";
+/** $0.01 of the legacy token at 50 tokens/USD, 9 decimals. */
+export const LEGACY_PRICE_RAW = "500000000";
+/** $0.01 of Wrapped CSPR at 20 tokens/USD, 9 decimals. */
+export const WCSPR_PRICE_RAW = "200000000";
+/** Settlement transaction hashes of the two fake facilitators. */
+export const LEGACY_SETTLE_TX = "1e".repeat(32);
+export const WCSPR_SETTLE_TX = "3c".repeat(32);
+
+/**
+ * A gateway config that sells in two tokens, one per authorization style, each
+ * settled by its own facilitator: the legacy token (first, so preferred) by a
+ * self-hosted facilitator named "self" (bearer key), Wrapped CSPR by the
+ * default facilitator (raw key).
+ */
+export function twoAssetConfig(legacyUrl: string, cepUrl: string, input: Record<string, unknown> = {}): CascetConfig {
+  return testConfig({
+    asset: undefined,
+    assets: [
+      {
+        id: "cascet",
+        packageHash: `hash-${LEGACY_TOKEN}`,
+        name: "CasCet X402 Token",
+        symbol: "CASCET",
+        decimals: 9,
+        version: "1",
+        tokensPerUsd: 50,
+        facilitator: "self",
+      },
+      { id: "wcspr", packageHash: `hash-${WCSPR_TOKEN}`, name: "Wrapped CSPR", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 20 },
+    ],
+    facilitator: { url: cepUrl, apiKey: "cep-key" },
+    facilitators: { self: { url: legacyUrl, apiKey: "self-key", authScheme: "bearer" } },
+    ...input,
+  });
+}
+
+export interface TwoAssetHarness extends Omit<Harness, "facilitator"> {
+  /** Facilitator of the legacy-amount token. Its events are "legacy:verify" / "legacy:settle". */
+  legacy: FakeFacilitator;
+  /** Facilitator of the cep3009-value token. Its events are "cep:verify" / "cep:settle". */
+  cep: FakeFacilitator;
+}
+
+/** A gateway built from {@link twoAssetConfig}, with one fake facilitator per token. */
+export async function startTwoAssetHarness(
+  opts: {
+    /** Config overrides; a function receives the URLs of the two fake facilitators. */
+    config?: Record<string, unknown> | ((urls: { legacy: string; cep: string }) => Record<string, unknown>);
+    tools?: FakeTool[];
+    gateway?: GatewayOptions;
+    /** Adjust the fake facilitators before the gateway starts (e.g. what /supported answers). */
+    onFacilitators?: (facilitators: { legacy: FakeFacilitator; cep: FakeFacilitator }) => void;
+  } = {},
+): Promise<TwoAssetHarness> {
+  const events: string[] = [];
+  const legacy = await startFakeFacilitator({ events, label: "legacy", settleTx: LEGACY_SETTLE_TX });
+  const cep = await startFakeFacilitator({ events, label: "cep", settleTx: WCSPR_SETTLE_TX });
+  opts.onFacilitators?.({ legacy, cep });
+  const upstream = createFakeUpstream({
+    tools: opts.tools ?? [{ name: "paid_tool" }, { name: "free_tool" }, { name: "secret_tool" }],
+    events,
+  });
+  const dir = mkdtempSync(join(tmpdir(), "cascet-gateway-test-"));
+  const receiptsPath = join(dir, "receipts.jsonl");
+  const input = typeof opts.config === "function" ? opts.config({ legacy: legacy.url, cep: cep.url }) : opts.config;
+  let gateway: RunningGateway;
+  try {
+    gateway = await startGateway(twoAssetConfig(legacy.url, cep.url, input), {
+      createUpstreamTransport: () => upstream.createTransport(),
+      receiptsPath,
+      preemptionChecker: null,
+      ...opts.gateway,
+    });
+  } catch (err) {
+    await legacy.close();
+    await cep.close();
+    rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
+  return {
+    gateway,
+    legacy,
+    cep,
+    upstream,
+    events,
+    base: gateway.url.replace(/\/mcp$/, ""),
+    receiptsPath,
+    rpc: (method, params, headers) => rpcCall(gateway.url, method, params, headers),
+    close: async () => {
+      await gateway.close();
+      await legacy.close();
+      await cep.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+/** Ask for the tool unpaid, then build a payment for its accepts entry in `asset`. */
+export async function payInAsset(
+  h: Pick<Harness, "rpc">,
+  tool: string,
+  asset: string,
+  overrides: PaymentOverrides = {},
+): Promise<{ header: string; nonce: string; accepted: PaymentRequirements }> {
+  const unpaid = await h.rpc("tools/call", { name: tool, arguments: {} });
+  if (unpaid.status !== 402) throw new Error(`expected a 402 challenge for ${tool}, got HTTP ${unpaid.status}`);
+  const accepted = challengeOf(unpaid).accepts.find(entry => entry.asset === asset);
+  if (!accepted) throw new Error(`the challenge for ${tool} has no entry in ${asset}`);
+  return { ...paymentHeader(accepted, overrides), accepted };
+}
+
 /** Decode the PAYMENT-REQUIRED header of a 402 answer. */
 export function challengeOf(response: RpcResponse): PaymentRequired {
   const header = response.headers.get("payment-required");
@@ -172,7 +287,7 @@ export function paymentHeader(accepted: PaymentRequirements, overrides: PaymentO
 
 /** Ask for the tool unpaid, then build a payment for its first accepted requirement. */
 export async function payFor(
-  h: Harness,
+  h: Pick<Harness, "rpc">,
   tool: string,
   overrides: PaymentOverrides = {},
 ): Promise<{ header: string; nonce: string; accepted: PaymentRequirements }> {
@@ -183,11 +298,16 @@ export async function payFor(
   return { ...paymentHeader(accepted, overrides), accepted };
 }
 
-export function callPaid(h: Harness, tool: string, header: string, extraHeaders: Record<string, string> = {}): Promise<RpcResponse> {
+export function callPaid(
+  h: Pick<Harness, "rpc">,
+  tool: string,
+  header: string,
+  extraHeaders: Record<string, string> = {},
+): Promise<RpcResponse> {
   return h.rpc("tools/call", { name: tool, arguments: {} }, { "payment-signature": header, ...extraHeaders });
 }
 
-export async function receipts(h: Harness): Promise<Array<Record<string, unknown>>> {
+export async function receipts(h: Pick<Harness, "base">): Promise<Array<Record<string, unknown>>> {
   const response = await fetch(`${h.base}/receipts`);
   return ((await response.json()) as { receipts: Array<Record<string, unknown>> }).receipts;
 }

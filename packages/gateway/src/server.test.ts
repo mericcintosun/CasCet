@@ -570,7 +570,7 @@ describe("settlement preemption", () => {
         const res = await callPaid(h, "paid_tool", header);
         assert.equal(res.status, 200);
         assert.equal(res.body.result?.content?.[0]?.text, "ok:paid_tool");
-        assert.deepEqual(seen, [{ payer: PAYER, nonce, payTo: PAY_TO, amount: PRICE_RAW }]);
+        assert.deepEqual(seen, [{ payer: PAYER, nonce, payTo: PAY_TO, amount: PRICE_RAW, asset: ASSET }]);
         const [receipt] = await receipts(h);
         assert.equal(receipt?.status, "settled");
         assert.equal(receipt?.settledBy, "third-party");

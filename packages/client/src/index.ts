@@ -1,11 +1,14 @@
 export {
+  CASCET_SPEND_CONTROLS,
   createPayingFetch,
   PaymentRefusedError,
+  spendPolicyFilter,
   type FetchLike,
   type PayingFetch,
   type PayingFetchOptions,
   type PaymentInfo,
 } from "./paying-fetch.js";
+export { clientSignerFromPem, createCasperClientScheme, loadClientSigner, type CasperKeyAlgorithm } from "./casper-scheme.js";
 export {
   PaidMcpHttpClient,
   type McpCallOptions,

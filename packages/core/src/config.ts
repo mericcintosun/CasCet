@@ -1,5 +1,13 @@
 import { z } from "zod";
-import { DEFAULT_FACILITATOR_URL, DEFAULT_GATEWAY_PORT, NETWORK_CASPER_TESTNET } from "./constants.js";
+import {
+  AUTHORIZATION_STYLES,
+  defaultAuthorizationStyle,
+  isLegacyAmountToken,
+  isPackageHash,
+  normalizePackageHash,
+  type AuthorizationStyle,
+} from "./assets.js";
+import { DEFAULT_FACILITATOR_URL, DEFAULT_GATEWAY_PORT, isHostedFacilitatorUrl, NETWORK_CASPER_TESTNET } from "./constants.js";
 import { payToSchema } from "./payto.js";
 
 /** Upstream MCP server the gateway wraps: a local stdio process or a remote HTTP endpoint. */
@@ -24,7 +32,7 @@ export const upstreamSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-/** Price of a single tool. `price` is a USD money string ("$0.001") converted via `asset.usdRate`. */
+/** Price of a single tool. `price` is a USD money string ("$0.001") converted with each asset's `tokensPerUsd`. */
 export const toolPriceSchema = z.object({
   price: z.string().regex(/^\$\d+(\.\d+)?$/, 'price must look like "$0.001"'),
   description: z.string().optional(),
@@ -38,18 +46,93 @@ export const toolPriceSchema = z.object({
    * refunded.
    */
   settleBeforeExecute: z.boolean().default(false),
+  /**
+   * Ids of the assets this tool can be paid in (one x402 `accepts` entry each,
+   * in config order). Omit to accept every configured asset.
+   */
+  assets: z.array(z.string().min(1)).min(1).optional(),
 });
 
-/** CEP-18 token the gateway accepts, plus the fixed USD conversion rate used on testnet. */
+/** A contract package hash in any common spelling, stored as bare lower-case hex. */
+const packageHashSchema = z
+  .string()
+  .describe("CEP-18 contract package hash (with or without hash- prefix)")
+  .transform((value, ctx) => {
+    const bare = normalizePackageHash(value);
+    if (isPackageHash(bare)) return bare;
+    ctx.addIssue({
+      code: "custom",
+      message:
+        'packageHash must be a contract package hash: 64 hex characters, optionally prefixed with "hash-"; ' +
+        `got ${JSON.stringify(value.slice(0, 80))}`,
+    });
+    return z.NEVER;
+  });
+
+/** Ids name assets in `pricing.*.assets`: lower-case letters, digits, ".", "_" and "-". */
+const ASSET_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+/** Names of the entries of `facilitators`. */
+const FACILITATOR_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** The longest delay setTimeout accepts. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * A CEP-18 token the gateway accepts, plus the fixed USD conversion rate used
+ * on testnet. `packageHash` is stored as bare lower-case hex.
+ */
 export const assetSchema = z.object({
-  packageHash: z.string().describe("CEP-18 contract package hash (with or without hash- prefix)"),
-  name: z.string(),
-  symbol: z.string(),
+  /**
+   * Short handle used by `pricing.*.assets`. Defaults to the lower-cased
+   * symbol, so two assets with the same symbol need explicit ids.
+   */
+  id: z.string().regex(ASSET_ID, 'asset id must be 1-64 lower-case letters, digits, ".", "_" or "-"').optional(),
+  packageHash: packageHashSchema,
+  /** EIP-712 domain name: must equal the token's on-chain `name`. */
+  name: z.string().min(1),
+  symbol: z.string().min(1),
   decimals: z.number().int().min(0).max(18).default(9),
-  version: z.string().default("1"),
+  /** EIP-712 domain version ("1" for every Casper x402 token seen so far). */
+  version: z.string().min(1).default("1"),
   /** How many whole tokens equal 1 USD (testnet demo rate). */
   tokensPerUsd: z.number().positive().default(50),
+  /**
+   * The token's `transfer_with_authorization` ABI. Omit to resolve it from the
+   * package hash: CasCet's own x402 tokens are "legacy-amount", every other
+   * token "cep3009-value".
+   */
+  authorization: z.enum(AUTHORIZATION_STYLES).optional(),
+  /**
+   * Name of the facilitator that settles this asset: a key of `facilitators`,
+   * or "default" (the top-level `facilitator`, used when omitted).
+   */
+  facilitator: z.string().min(1).optional(),
 });
+
+/**
+ * An x402 facilitator the gateway verifies and settles through.
+ *
+ * The hosted facilitator (x402-facilitator.cspr.cloud) expects the raw
+ * CSPR.cloud access key in the Authorization header: `authScheme` defaults to
+ * "raw", and "bearer" is refused for it.
+ */
+export const facilitatorSchema = z.object({
+  url: z.string().url(),
+  /** Credential sent in the Authorization header of every request. */
+  apiKey: z.string().optional(),
+  /** "raw": `Authorization: <apiKey>`; "bearer": `Authorization: Bearer <apiKey>`. */
+  authScheme: z.enum(["raw", "bearer"]).default("raw"),
+  /**
+   * Per-request timeout of this facilitator's /supported, /verify and /settle
+   * calls. Omit to use `timeouts.facilitatorMs` (/supported, /verify) and
+   * `timeouts.settleMs` (/settle).
+   */
+  timeoutMs: z.number().int().positive().max(MAX_TIMER_MS).optional(),
+});
+
+/** The top-level `facilitator` ("default"): an entry of `facilitators` whose URL defaults to the hosted facilitator. */
+const defaultFacilitatorSchema = facilitatorSchema
+  .extend({ url: z.string().url().default(DEFAULT_FACILITATOR_URL) })
+  .prefault({});
 
 /**
  * Canonical form of a web origin ("scheme://host[:port]", lowercase host, no
@@ -95,8 +178,11 @@ export const corsSchema = z
  *
  * A paid call in the default run-then-settle mode can take up to
  * facilitatorMs + upstreamMs + settleMs (165 s with the defaults) before the
- * gateway answers, so buyers must wait longer than that: a buyer that gives up
- * earlier may still be charged without receiving the result.
+ * gateway answers, plus its read-only chain checks when `settlement.nodeUrl`
+ * is set (up to 15 s after a settlement that did not succeed, 5 s before the
+ * hosted facilitator verifies a payment), so buyers must wait longer than
+ * that: a buyer that gives up earlier may still be charged without receiving
+ * the result.
  */
 export const timeoutsSchema = z
   .object({
@@ -106,7 +192,9 @@ export const timeoutsSchema = z
      * Facilitator /settle call. Longer than `facilitatorMs` because a Casper
      * facilitator only answers once the transfer has executed on-chain
      * (casper-x402 polls for up to 60 s); when it expires the outcome is
-     * recorded as "unknown", never as failed.
+     * recorded as "unknown", never as failed. x402 settles once more when the
+     * facilitator reports the settlement as pending; the gateway keeps both
+     * calls within this timeout.
      */
     settleMs: z.number().int().positive().default(90_000),
     /** One upstream MCP request (tools/list page, tools/call). */
@@ -114,12 +202,14 @@ export const timeoutsSchema = z
   })
   .prefault({});
 
-/** Read-only on-chain checks used when a settlement does not succeed. */
+/** Read-only on-chain checks of the gateway: when a settlement does not succeed, and before the hosted facilitator verifies. */
 export const settlementSchema = z
   .object({
     /**
      * Casper node JSON-RPC used to look up the token's events when a settle
-     * fails (falls back to `anchoring.nodeUrl`; without either the check is off).
+     * fails, and to check payments the hosted facilitator settles (unused
+     * nonce, balance, token ABI and name) before it verifies them. Falls back
+     * to `anchoring.nodeUrl`; without either both checks are off.
      */
     nodeUrl: z.string().url().optional(),
     /** How many of the token's most recent events a check scans. */
@@ -135,7 +225,7 @@ export const settlementSchema = z
   })
   .prefault({});
 
-export const cascetConfigSchema = z.object({
+const rawConfigSchema = z.object({
   /** Display name of this paid server (shows up in receipts + dashboard). */
   name: z.string(),
   upstream: upstreamSchema,
@@ -151,11 +241,22 @@ export const cascetConfigSchema = z.object({
    * payee. `cascet wrap` warns about it.
    */
   payTo: payToSchema,
-  asset: assetSchema,
-  facilitator: z.object({
-    url: z.string().url().default(DEFAULT_FACILITATOR_URL),
-    apiKey: z.string().optional(),
-  }),
+  /** The token buyers pay in. Set exactly one of `asset` and `assets`. */
+  asset: assetSchema.optional(),
+  /**
+   * Several tokens buyers can pay in, in order of preference (a 402 lists them
+   * in this order). Set exactly one of `asset` and `assets`.
+   */
+  assets: z.array(assetSchema).min(1).optional(),
+  /** The "default" facilitator: settles every asset that names no other one. */
+  facilitator: defaultFacilitatorSchema,
+  /** More facilitators, by name, for assets that set `facilitator: "<name>"`. */
+  facilitators: z
+    .record(
+      z.string().regex(FACILITATOR_NAME, 'facilitator names are 1-64 letters, digits, ".", "_" or "-"'),
+      facilitatorSchema,
+    )
+    .default({}),
   pricing: z.object({
     /**
      * Fallback price for upstream tools that are neither listed in `tools` nor
@@ -216,13 +317,200 @@ export const cascetConfigSchema = z.object({
   });
 });
 
+/** Name of the top-level `facilitator` in {@link CascetConfig.facilitators}. */
+export const DEFAULT_FACILITATOR_NAME = "default";
+
+export type FacilitatorConfig = z.output<typeof facilitatorSchema>;
+
+/** A configured asset with every default resolved. */
+export interface ResolvedAsset {
+  /** Handle used by `pricing.*.assets`; unique within the config. */
+  id: string;
+  /** Contract package hash, bare lower-case hex; unique within the config. */
+  packageHash: string;
+  /** EIP-712 domain name. */
+  name: string;
+  symbol: string;
+  decimals: number;
+  /** EIP-712 domain version. */
+  version: string;
+  tokensPerUsd: number;
+  authorization: AuthorizationStyle;
+  /** Key of the facilitator that settles this asset in {@link CascetConfig.facilitators}. */
+  facilitator: string;
+}
+
+type RawConfig = z.output<typeof rawConfigSchema>;
+type Issues = Array<{ path: PropertyKey[]; message: string }>;
+
+/**
+ * Resolve the asset and facilitator sections: `asset` or `assets` become
+ * `assets` (plus the `asset` alias of the first one), the top-level
+ * `facilitator` joins `facilitators` as "default", and every reference between
+ * them is checked.
+ */
+function resolveConfig(raw: RawConfig, issues: Issues) {
+  const { asset: single, assets: list, facilitator, facilitators: named, ...rest } = raw;
+  if ((single === undefined) === (list === undefined)) {
+    issues.push({
+      path: single === undefined ? ["asset"] : ["assets"],
+      message: "set exactly one of `asset` (one token) and `assets` (several tokens)",
+    });
+    return undefined;
+  }
+  const assetsPath: PropertyKey[] = list ? ["assets"] : ["asset"];
+  const at = (index: number, field: string): PropertyKey[] => (list ? [...assetsPath, index, field] : [...assetsPath, field]);
+
+  if (Object.hasOwn(named, DEFAULT_FACILITATOR_NAME)) {
+    issues.push({
+      path: ["facilitators", DEFAULT_FACILITATOR_NAME],
+      message: `"${DEFAULT_FACILITATOR_NAME}" is the top-level \`facilitator\`; configure it there or pick another name`,
+    });
+  }
+  const facilitators: Record<string, FacilitatorConfig> = { ...named, [DEFAULT_FACILITATOR_NAME]: facilitator };
+  for (const [name, entry] of Object.entries(facilitators)) {
+    if (entry.authScheme === "bearer" && isHostedFacilitatorUrl(entry.url)) {
+      issues.push({
+        path: name === DEFAULT_FACILITATOR_NAME ? ["facilitator", "authScheme"] : ["facilitators", name, "authScheme"],
+        message: 'the hosted facilitator takes the raw CSPR.cloud access key in the Authorization header: use authScheme "raw"',
+      });
+    }
+  }
+
+  const ids = new Map<string, number>();
+  const hashes = new Map<string, number>();
+  const assets: ResolvedAsset[] = (list ?? [single!]).map((entry, index) => {
+    const resolved: ResolvedAsset = {
+      id: entry.id ?? entry.symbol.toLowerCase(),
+      packageHash: entry.packageHash,
+      name: entry.name,
+      symbol: entry.symbol,
+      decimals: entry.decimals,
+      version: entry.version,
+      tokensPerUsd: entry.tokensPerUsd,
+      authorization: entry.authorization ?? defaultAuthorizationStyle(entry.packageHash),
+      facilitator: entry.facilitator ?? DEFAULT_FACILITATOR_NAME,
+    };
+    if (ids.has(resolved.id)) {
+      issues.push({
+        path: at(index, "id"),
+        message: `asset id "${resolved.id}" is used twice (ids default to the lower-cased symbol); give each asset its own "id"`,
+      });
+    } else {
+      ids.set(resolved.id, index);
+    }
+    if (hashes.has(resolved.packageHash)) {
+      issues.push({ path: at(index, "packageHash"), message: `token ${resolved.packageHash} is listed twice` });
+    } else {
+      hashes.set(resolved.packageHash, index);
+    }
+    if (resolved.authorization !== "legacy-amount" && isLegacyAmountToken(resolved.packageHash)) {
+      issues.push({
+        path: at(index, "authorization"),
+        message: `token ${resolved.packageHash} is CasCet's x402 token, whose transfer_with_authorization takes \`amount\`: its authorization style is "legacy-amount"`,
+      });
+    }
+    const settler = Object.hasOwn(facilitators, resolved.facilitator) ? facilitators[resolved.facilitator] : undefined;
+    if (!settler) {
+      issues.push({
+        path: at(index, "facilitator"),
+        message: `unknown facilitator "${resolved.facilitator}": name a key of \`facilitators\`, or "${DEFAULT_FACILITATOR_NAME}"`,
+      });
+    } else if (resolved.authorization === "legacy-amount" && isHostedFacilitatorUrl(settler.url)) {
+      issues.push({
+        path: at(index, "facilitator"),
+        message:
+          `asset "${resolved.id}" is a legacy-amount token, but its facilitator is the hosted one, which sends the CEP-3009 ` +
+          "`value` argument: every settlement would revert (User error: 64658). Settle it through a self-hosted facilitator",
+      });
+    }
+    return resolved;
+  });
+
+  const checkAssetRefs = (price: ToolPrice | undefined, path: PropertyKey[]): void => {
+    const seen = new Set<string>();
+    price?.assets?.forEach((id, index) => {
+      if (!ids.has(id)) {
+        issues.push({ path: [...path, "assets", index], message: `unknown asset "${id}": use the id of a configured asset` });
+      } else if (seen.has(id)) {
+        issues.push({ path: [...path, "assets", index], message: `asset "${id}" is listed twice` });
+      }
+      seen.add(id);
+    });
+  };
+  checkAssetRefs(rest.pricing.default, ["pricing", "default"]);
+  for (const [tool, price] of Object.entries(rest.pricing.tools)) checkAssetRefs(price, ["pricing", "tools", tool]);
+
+  return {
+    ...rest,
+    /** Every accepted token, in config order (the order of a 402's `accepts`). */
+    assets: assets as [ResolvedAsset, ...ResolvedAsset[]],
+    /** The first entry of `assets` (the only one for a config written with `asset`). */
+    asset: assets[0]!,
+    /** The top-level `facilitator`, which is also `facilitators.default`. */
+    facilitator,
+    /** Every facilitator by name, the top-level one as "default". */
+    facilitators,
+  };
+}
+
+/**
+ * The gateway config (`cascet.config.json`).
+ *
+ * The parsed config lists its tokens in `assets` (the `asset` form becomes a
+ * one-entry list, also kept as `asset`), each with its authorization style and
+ * facilitator resolved, and every facilitator in `facilitators`, the top-level
+ * `facilitator` as "default". Configs written for earlier versions parse
+ * unchanged.
+ */
+export const cascetConfigSchema = rawConfigSchema.transform((raw, ctx) => {
+  const issues: Issues = [];
+  const resolved = resolveConfig(raw, issues);
+  for (const issue of issues) ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+  if (!resolved || issues.length > 0) return z.NEVER;
+  return resolved;
+});
+
 export type Upstream = z.infer<typeof upstreamSchema>;
 export type ToolPrice = z.infer<typeof toolPriceSchema>;
+/** One entry of `asset` / `assets` as written, with field defaults applied. */
 export type AssetConfig = z.infer<typeof assetSchema>;
-export type CascetConfig = z.infer<typeof cascetConfigSchema>;
+export type CascetConfig = z.output<typeof cascetConfigSchema>;
+/** What a config file may contain (before defaults and resolution). */
+export type CascetConfigInput = z.input<typeof cascetConfigSchema>;
 export type TimeoutsConfig = z.infer<typeof timeoutsSchema>;
 export type SettlementConfig = z.infer<typeof settlementSchema>;
 export type AnchoringConfig = NonNullable<CascetConfig["anchoring"]>;
+
+/** The facilitator that settles `asset`. */
+export function facilitatorFor(cfg: Pick<CascetConfig, "facilitators">, asset: Pick<ResolvedAsset, "facilitator" | "id">): FacilitatorConfig {
+  const entry = Object.hasOwn(cfg.facilitators, asset.facilitator) ? cfg.facilitators[asset.facilitator] : undefined;
+  if (!entry) throw new Error(`asset "${asset.id}" names unknown facilitator "${asset.facilitator}"`);
+  return entry;
+}
+
+/** The Authorization header value for `facilitator`, or undefined without an apiKey. */
+export function facilitatorAuthorization(facilitator: Pick<FacilitatorConfig, "apiKey" | "authScheme">): string | undefined {
+  if (!facilitator.apiKey) return undefined;
+  return facilitator.authScheme === "bearer" ? `Bearer ${facilitator.apiKey}` : facilitator.apiKey;
+}
+
+/** Effective request timeouts of `facilitator`: its own `timeoutMs`, else the gateway's `timeouts`. */
+export function facilitatorTimeouts(
+  cfg: Pick<CascetConfig, "timeouts">,
+  facilitator: Pick<FacilitatorConfig, "timeoutMs">,
+): { verifyMs: number; settleMs: number } {
+  return {
+    verifyMs: facilitator.timeoutMs ?? cfg.timeouts.facilitatorMs,
+    settleMs: facilitator.timeoutMs ?? cfg.timeouts.settleMs,
+  };
+}
+
+/** The assets a price accepts, in config order: those it lists in `assets`, or all of them. */
+export function assetsForPrice(cfg: Pick<CascetConfig, "assets">, price: Pick<ToolPrice, "assets">): ResolvedAsset[] {
+  const wanted = price.assets;
+  return wanted ? cfg.assets.filter(asset => wanted.includes(asset.id)) : [...cfg.assets];
+}
 
 /**
  * Convert a "$0.001" money string into raw CEP-18 token units per the asset
@@ -230,7 +518,7 @@ export type AnchoringConfig = NonNullable<CascetConfig["anchoring"]>;
  * treated as exact decimal fractions) — IEEE-754 float math would silently lose
  * precision for high-decimal tokens and could round a small price to 0.
  */
-export function usdPriceToTokenUnits(price: string, asset: AssetConfig): bigint {
+export function usdPriceToTokenUnits(price: string, asset: Pick<AssetConfig, "tokensPerUsd" | "decimals">): bigint {
   const cleaned = price.replace(/^\$/, "").trim();
   if (!/^\d+(\.\d+)?$/.test(cleaned)) throw new Error(`invalid price: ${price}`);
   const rateStr = asset.tokensPerUsd.toString();

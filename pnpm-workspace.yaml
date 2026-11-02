@@ -29,10 +29,11 @@ autoInstallPeers: false
 # Advisories accepted on purpose. `pnpm audit` and the CI audit gate skip only
 # these; every entry names its reason and the change that removes it.
 #  - GHSA-mrhx-c7xc-m3w5 / CVE-2023-54404 (zod <4.6.6: memory exhaustion on very
-#    large arrays). Our own packages use zod 4.6.7; the vulnerable zod 3.25.76
-#    comes only through @x402/core 2.15/2.17, which stays on ~2.17.0 until the
-#    planned @x402 2.29 migration, and zod 3.x has no patched release. Remove
-#    this entry with that migration.
+#    large arrays). Our own packages and our @x402/core 2.29.0 use zod 4.6.7; the
+#    vulnerable zod 3.25.76 now comes only through @make-software/casper-x402
+#    1.0.0, which pins its own nested @x402/core 2.15.0, and zod 3.x has no
+#    patched release. Remove this entry once casper-x402 1.0.0 leaves the
+#    dependency tree (the self-hosted facilitator's legacy path still uses it).
 auditConfig:
   ignoreGhsas:
     - GHSA-mrhx-c7xc-m3w5

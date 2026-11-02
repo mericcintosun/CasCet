@@ -1,35 +1,122 @@
-import { x402HTTPResourceServer, x402ResourceServer, type RoutesConfig } from "@x402/core/server";
-import type { Network } from "@x402/core/types";
-import { ExactCasperScheme } from "@make-software/casper-x402/exact/server";
+import { x402HTTPResourceServer, x402ResourceServer, type FacilitatorClient, type RoutesConfig } from "@x402/core/server";
+import type { AssetAmount, Network } from "@x402/core/types";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { usdPriceToTokenUnits, type CascetConfig, type ToolPrice } from "@cascet/core";
+import {
+  AUTHORIZATION_STYLE_EXTRA_KEY,
+  assetsForPrice,
+  facilitatorAuthorization,
+  facilitatorFor,
+  facilitatorTimeouts,
+  HOSTED_FACILITATOR_HOST,
+  isAuthorizationStyle,
+  isHostedFacilitatorUrl,
+  isLegacyAmountToken,
+  isPackageHash,
+  normalizePackageHash,
+  usdPriceToTokenUnits,
+  type CascetConfig,
+  type FacilitatorConfig,
+  type ResolvedAsset,
+  type ToolPrice,
+} from "@cascet/core";
 import { normalizeAccountAddress } from "./authorization.js";
+import { createCasperRpc } from "./casper-rpc.js";
 import { TimeoutFacilitatorClient } from "./facilitator.js";
+import { AssetRoutingFacilitatorClient, ExtraStrippingFacilitatorClient, type AssetRoute } from "./facilitator-router.js";
+import { HOSTED_PREFLIGHT_DEADLINE_MS, hostedPreflightHook } from "./hosted-preflight.js";
+import { PREEMPTION_CHECK_TIMEOUT_MS } from "./preemption.js";
+import { CascetCasperServerScheme } from "./server-scheme.js";
+import { TokenProbe } from "./token-probe.js";
 
 /** Seconds an authorization must still be valid when settlement starts (inclusion + execution on Casper). */
 export const SETTLE_HEADROOM_SECONDS = 30;
 /** Tolerated clock difference between buyer and gateway. */
 export const MAX_CLOCK_SKEW_SECONDS = 120;
 
-/** Facilitator, scheme and payment terms shared by every tool. Built once. */
+/** Facilitators, scheme and payment terms shared by every tool. Built once. */
 export interface PaymentRail {
   resourceServer: x402ResourceServer;
   network: Network;
   /** Payee account: "00" + account hash, lowercase. */
   payTo: string;
-  /** Token contract package hash, 64 lowercase hex. */
-  asset: string;
+  /**
+   * The tokens buyers can pay in, in config order (the order of every 402's
+   * `accepts`), package hashes as bare lower-case hex. Each one is verified and
+   * settled by its own facilitator.
+   */
+  assets: readonly ResolvedAsset[];
+  /**
+   * The tokens whose payments the gateway preflights on-chain itself before
+   * the facilitator verifies them: those the hosted facilitator settles, when
+   * a node is configured (see {@link hostedPreflightAssets}).
+   */
+  preflightAssets: readonly ResolvedAsset[];
   /** Validity window the gateway asks buyers to sign (x402 maxTimeoutSeconds). */
   maxTimeoutSeconds: number;
 }
 
+export interface PaymentRailOptions {
+  /** fetch used for every facilitator request (tests). */
+  fetch?: typeof fetch;
+}
+
+/** The Casper node of the gateway's read-only checks: `settlement.nodeUrl`, else `anchoring.nodeUrl`. */
+export function settlementNodeUrl(cfg: CascetConfig): string | undefined {
+  return cfg.settlement.nodeUrl ?? cfg.anchoring?.nodeUrl;
+}
+
+/**
+ * The assets whose payments the gateway preflights itself (unused nonce,
+ * balance, token ABI and name; see hosted-preflight.ts): those the hosted
+ * facilitator settles, whose own nonce pre-check does not work. Needs a node
+ * ({@link settlementNodeUrl}); without one there is no preflight.
+ */
+export function hostedPreflightAssets(cfg: CascetConfig): ResolvedAsset[] {
+  if (!settlementNodeUrl(cfg)) return [];
+  return cfg.assets.filter(asset => isHostedFacilitatorUrl(facilitatorFor(cfg, asset).url));
+}
+
+/** The timeouts a paid call can take, in milliseconds. */
+export interface GatewayTimeouts {
+  /** The gateway's own on-chain preflight before verify (hosted-facilitator assets only; 0 when there is none). */
+  preflightMs: number;
+  /** Longest /verify (and /supported) call. */
+  facilitatorMs: number;
+  /** Longest settle phase: one /settle timeout, which x402's retry of a pending settlement shares. */
+  settleMs: number;
+  /** One upstream MCP request. */
+  upstreamMs: number;
+}
+
+/**
+ * The gateway's effective timeouts: the upstream's, the longest verify and
+ * settle timeouts of the facilitators that settle the configured assets (a
+ * facilitator's own `timeoutMs` replaces `timeouts.facilitatorMs` and
+ * `timeouts.settleMs` for its calls), and the preflight deadline when some
+ * asset is preflighted.
+ */
+export function gatewayTimeouts(cfg: CascetConfig): GatewayTimeouts {
+  let facilitatorMs = 0;
+  let settleMs = 0;
+  for (const asset of cfg.assets) {
+    const timeouts = facilitatorTimeouts(cfg, facilitatorFor(cfg, asset));
+    facilitatorMs = Math.max(facilitatorMs, timeouts.verifyMs);
+    settleMs = Math.max(settleMs, timeouts.settleMs);
+  }
+  const preflightMs = hostedPreflightAssets(cfg).length > 0 ? HOSTED_PREFLIGHT_DEADLINE_MS : 0;
+  return { preflightMs, facilitatorMs, settleMs, upstreamMs: cfg.timeouts.upstreamMs };
+}
+
 /**
  * How long an authorization must still be valid when it arrives: the
- * facilitator's verify, then (in the default run-then-settle mode) the tool
- * run, must leave SETTLE_HEADROOM_SECONDS for the settle transaction.
+ * preflight and the facilitator's verify, then (in the default run-then-settle
+ * mode) the tool run, must leave SETTLE_HEADROOM_SECONDS for the settle
+ * transaction. Sized with the slowest facilitator, so it holds whichever
+ * asset a buyer pays in.
  */
 export function requiredValiditySeconds(cfg: CascetConfig, settleBeforeExecute: boolean): number {
-  const beforeSettleMs = cfg.timeouts.facilitatorMs + (settleBeforeExecute ? 0 : cfg.timeouts.upstreamMs);
+  const { preflightMs, facilitatorMs, upstreamMs } = gatewayTimeouts(cfg);
+  const beforeSettleMs = preflightMs + facilitatorMs + (settleBeforeExecute ? 0 : upstreamMs);
   return Math.ceil(beforeSettleMs / 1_000) + SETTLE_HEADROOM_SECONDS;
 }
 
@@ -38,8 +125,136 @@ export function requiredValiditySeconds(cfg: CascetConfig, settleBeforeExecute: 
  * so it grows with the configured timeouts; never below x402's customary 300 s.
  */
 export function maxTimeoutSecondsFor(cfg: CascetConfig): number {
-  const { facilitatorMs, upstreamMs, settleMs } = cfg.timeouts;
-  return Math.max(300, Math.ceil((facilitatorMs + upstreamMs + settleMs) / 1_000) + SETTLE_HEADROOM_SECONDS);
+  const { preflightMs, facilitatorMs, upstreamMs, settleMs } = gatewayTimeouts(cfg);
+  return Math.max(300, Math.ceil((preflightMs + facilitatorMs + upstreamMs + settleMs) / 1_000) + SETTLE_HEADROOM_SECONDS);
+}
+
+/**
+ * The longest a paid call can take before the gateway answers: the preflight,
+ * the facilitator's verify, the tool, the settle phase (x402's retry of a
+ * pending settlement included: the facilitator router keeps both calls within
+ * one settle timeout) and, with `settlementCheck`, the on-chain check of a
+ * settlement that did not succeed. Buyers must wait longer than this, and
+ * close() waits this long for calls in flight.
+ */
+export function longestPaidCallMs(cfg: CascetConfig, settlementCheck: boolean): number {
+  const { preflightMs, facilitatorMs, upstreamMs, settleMs } = gatewayTimeouts(cfg);
+  return preflightMs + facilitatorMs + upstreamMs + settleMs + (settlementCheck ? PREEMPTION_CHECK_TIMEOUT_MS : 0);
+}
+
+/**
+ * The `extra` of an accepts entry in `asset`: the EIP-712 domain buyers sign
+ * over (name, version), the symbol and decimals for display, and the asset's
+ * authorization style. The style is server-owned (x402 v2 matching makes
+ * buyers echo it) and informational: buyers may prefer a style and refuse
+ * unknown ones, facilitators read the token's ABI instead.
+ */
+export function requirementExtra(asset: ResolvedAsset): Record<string, string> {
+  return {
+    name: asset.name,
+    symbol: asset.symbol,
+    version: asset.version,
+    decimals: String(asset.decimals),
+    [AUTHORIZATION_STYLE_EXTRA_KEY]: asset.authorization,
+  };
+}
+
+/** The x402 price of one `accepts` entry: `amount` raw units of `asset`, with {@link requirementExtra}. */
+export function assetAmountFor(asset: ResolvedAsset, amount: string): AssetAmount {
+  return { asset: asset.packageHash, amount, extra: requirementExtra(asset) };
+}
+
+/**
+ * The tokens this gateway sells in, in config order, each checked: a contract
+ * package hash (returned as bare lower-case hex), listed once under a unique
+ * id, with a known authorization style that does not contradict a known
+ * token's ABI. The config schema guarantees all of this already; configs built
+ * in code bypass it, so the gateway checks again before it starts.
+ */
+export function gatewayAssets(cfg: CascetConfig): CascetConfig["assets"] {
+  if (!Array.isArray(cfg.assets) || cfg.assets.length === 0) {
+    throw new Error("the config lists no asset: parse it with cascetConfigSchema from @cascet/core");
+  }
+  const ids = new Set<string>();
+  const hashes = new Set<string>();
+  const assets = cfg.assets.map(asset => {
+    const packageHash = normalizePackageHash(String(asset.packageHash));
+    if (!isPackageHash(packageHash)) {
+      throw new Error(`asset "${asset.id}": packageHash must be 64 hex characters (optionally prefixed with hash-)`);
+    }
+    if (ids.has(asset.id)) throw new Error(`asset id "${asset.id}" is used twice`);
+    if (hashes.has(packageHash)) throw new Error(`asset "${asset.id}": token ${packageHash} is listed twice`);
+    ids.add(asset.id);
+    hashes.add(packageHash);
+    if (!isAuthorizationStyle(asset.authorization)) {
+      throw new Error(`asset "${asset.id}": unknown authorization style ${JSON.stringify(asset.authorization)}`);
+    }
+    if (asset.authorization !== "legacy-amount" && isLegacyAmountToken(packageHash)) {
+      throw new Error(`asset "${asset.id}": token ${packageHash} is CasCet's x402 token, whose authorization style is "legacy-amount"`);
+    }
+    return packageHash === asset.packageHash ? asset : { ...asset, packageHash };
+  });
+  return assets as CascetConfig["assets"];
+}
+
+/**
+ * Groups of assets that share a symbol (ignoring case), in config order.
+ * Receipts, `_meta.cascet` and the payment graph label amounts by symbol, so
+ * such assets are told apart only by their package hash; the gateway warns.
+ */
+export function assetsSharingASymbol(assets: readonly ResolvedAsset[]): ResolvedAsset[][] {
+  const bySymbol = new Map<string, ResolvedAsset[]>();
+  for (const asset of assets) {
+    const key = asset.symbol.trim().toLowerCase();
+    bySymbol.set(key, [...(bySymbol.get(key) ?? []), asset]);
+  }
+  return [...bySymbol.values()].filter(group => group.length > 1);
+}
+
+/** What a priced tool costs in one token. */
+export interface AssetPrice {
+  asset: ResolvedAsset;
+  /** Raw token units buyers must authorize, decimal string. */
+  amount: string;
+}
+
+/**
+ * A price in every token it accepts (`price.assets`, or every configured
+ * asset), in config order. Throws when the price accepts no configured asset
+ * or rounds to zero units of one of its assets.
+ */
+export function assetPricesFor(cfg: CascetConfig, price: ToolPrice): AssetPrice[] {
+  const assets = assetsForPrice({ assets: gatewayAssets(cfg) }, price);
+  if (assets.length === 0) {
+    throw new Error(`price ${price.price} accepts none of the configured assets (it lists ${(price.assets ?? []).join(", ")})`);
+  }
+  return assets.map(asset => {
+    try {
+      return { asset, amount: usdPriceToTokenUnits(price.price, asset).toString() };
+    } catch (err) {
+      throw new Error(`asset "${asset.id}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+}
+
+/**
+ * Every configured price must convert into each of its assets. Checked at
+ * startup, so a price that rounds to zero in one token stops the gateway
+ * instead of hiding tools later.
+ */
+export function checkPricing(cfg: CascetConfig): void {
+  const prices: Array<[string, ToolPrice | undefined]> = [
+    ["pricing.default", cfg.pricing.default],
+    ...Object.entries(cfg.pricing.tools).map(([tool, price]): [string, ToolPrice] => [`pricing.tools.${tool}`, price]),
+  ];
+  for (const [path, price] of prices) {
+    if (!price) continue;
+    try {
+      assetPricesFor(cfg, price);
+    } catch (err) {
+      throw new Error(`${path}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 /**
@@ -62,31 +277,102 @@ export function settleablePayTo(value: string): string {
   throw new Error(`payTo must be the payee's account hash ("00" + 64 hex, or account-hash-<64 hex>); ${hint}`);
 }
 
-/** Create the x402 resource server and load the facilitator's supported kinds. */
-export async function createPaymentRail(cfg: CascetConfig): Promise<PaymentRail> {
-  const network = cfg.network as Network;
-  const asset = cfg.asset.packageHash.toLowerCase().replace(/^hash-/, "");
-  const payTo = settleablePayTo(cfg.payTo);
-  if (!/^[0-9a-f]{64}$/.test(asset)) throw new Error("asset.packageHash must be 64 hex characters (optionally prefixed with hash-)");
-  const facilitator = new TimeoutFacilitatorClient({
-    url: cfg.facilitator.url,
-    authorization: cfg.facilitator.apiKey,
-    verifyTimeoutMs: cfg.timeouts.facilitatorMs,
-    settleTimeoutMs: cfg.timeouts.settleMs,
-  });
-  const scheme = new ExactCasperScheme().registerAsset(network, asset, cfg.asset.decimals);
-  const resourceServer = new x402ResourceServer(facilitator).register(network, scheme);
-  await resourceServer.initialize();
-  if (!resourceServer.getSupportedKind(2, network, "exact")) {
-    throw new Error(`facilitator ${cfg.facilitator.url} does not support x402 v2 "exact" payments on ${network}`);
+/** Origin of a facilitator URL, for logs and messages: never its path, query or credentials. */
+export function facilitatorOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "<invalid url>";
   }
-  return {
-    resourceServer,
-    network,
-    payTo,
-    asset,
-    maxTimeoutSeconds: maxTimeoutSecondsFor(cfg),
-  };
+}
+
+/** The client of one configured facilitator: its URL, its key in its auth scheme, its timeouts. */
+function facilitatorClient(cfg: CascetConfig, settler: FacilitatorConfig, fetchImpl: typeof fetch | undefined): FacilitatorClient {
+  const timeouts = facilitatorTimeouts(cfg, settler);
+  const client = new TimeoutFacilitatorClient({
+    url: settler.url,
+    authorization: facilitatorAuthorization(settler),
+    verifyTimeoutMs: timeouts.verifyMs,
+    settleTimeoutMs: timeouts.settleMs,
+    fetchImpl,
+  });
+  // The hosted facilitator gets the requirements without CasCet's own extra field.
+  return isHostedFacilitatorUrl(settler.url) ? new ExtraStrippingFacilitatorClient(client, [AUTHORIZATION_STYLE_EXTRA_KEY]) : client;
+}
+
+/**
+ * Route every configured asset to its facilitator, with one client per
+ * facilitator (assets that name the same one share it). Refuses what could
+ * never settle, even in a config built in code that bypassed the schema: a
+ * legacy-amount token sent to the hosted facilitator (which passes `value`,
+ * so every settlement would revert), and the hosted facilitator with a bearer
+ * key (it takes the raw access key).
+ */
+export function assetRoutes(cfg: CascetConfig, network: Network, options: PaymentRailOptions = {}): AssetRoute[] {
+  const clients = new Map<string, FacilitatorClient>();
+  return gatewayAssets(cfg).map(asset => {
+    const settler = facilitatorFor(cfg, asset);
+    if (isHostedFacilitatorUrl(settler.url)) {
+      if (asset.authorization === "legacy-amount") {
+        throw new Error(
+          `asset "${asset.id}" is a legacy-amount token, but its facilitator "${asset.facilitator}" is the hosted one ` +
+            `(${HOSTED_FACILITATOR_HOST}), which sends the CEP-3009 \`value\` argument: every settlement would revert ` +
+            "(User error: 64658). Settle it through a self-hosted facilitator",
+        );
+      }
+      if (settler.authScheme === "bearer") {
+        throw new Error(
+          `facilitator "${asset.facilitator}" is the hosted one, which takes the raw CSPR.cloud access key: use authScheme "raw"`,
+        );
+      }
+    }
+    let client = clients.get(asset.facilitator);
+    if (!client) {
+      client = facilitatorClient(cfg, settler, options.fetch);
+      clients.set(asset.facilitator, client);
+    }
+    return {
+      network,
+      asset: asset.packageHash,
+      facilitator: client,
+      label: `facilitator "${asset.facilitator}" (${facilitatorOrigin(settler.url)})`,
+      // x402's retry of a pending settlement shares this budget with the first call.
+      settleTimeoutMs: facilitatorTimeouts(cfg, settler).settleMs,
+    };
+  });
+}
+
+/**
+ * Create the x402 resource server: every asset's facilitator behind one
+ * AssetRoutingFacilitatorClient, the CasCet scheme with every asset, the
+ * on-chain preflight of payments the hosted facilitator settles (when a node
+ * is configured), and the startup checks (payTo, every price converts, every
+ * facilitator answers and supports "exact" payments on this network).
+ */
+export async function createPaymentRail(cfg: CascetConfig, options: PaymentRailOptions = {}): Promise<PaymentRail> {
+  const network = cfg.network as Network;
+  const payTo = settleablePayTo(cfg.payTo);
+  const assets = gatewayAssets(cfg);
+  checkPricing(cfg);
+  const router = new AssetRoutingFacilitatorClient(assetRoutes(cfg, network, options));
+  const scheme = new CascetCasperServerScheme(assets.map(asset => ({ network, asset: asset.packageHash, decimals: asset.decimals })));
+  const resourceServer = new x402ResourceServer(router).register(network, scheme);
+  const nodeUrl = settlementNodeUrl(cfg);
+  const preflightIds = new Set(hostedPreflightAssets(cfg).map(asset => asset.id));
+  const preflightAssets = assets.filter(asset => preflightIds.has(asset.id));
+  if (nodeUrl && preflightAssets.length > 0) {
+    // Runs before x402 asks the facilitator to verify; refuses (never throws) what would revert on-chain.
+    resourceServer.onBeforeVerify(hostedPreflightHook({ probe: new TokenProbe(createCasperRpc(nodeUrl)), network, assets: preflightAssets }));
+  }
+  try {
+    await resourceServer.initialize();
+  } catch (err) {
+    // x402 wraps the facilitator's own error as the cause; name it.
+    const reason = err instanceof Error && err.cause instanceof Error ? err.cause.message : err instanceof Error ? err.message : String(err);
+    throw new Error(`cannot load the supported payment kinds of the facilitators: ${reason}`, { cause: err });
+  }
+  await router.assertCoverage();
+  return { resourceServer, network, payTo, assets, preflightAssets, maxTimeoutSeconds: maxTimeoutSecondsFor(cfg) };
 }
 
 /** What the gateway does with one upstream tool. */
@@ -95,10 +381,19 @@ export type ToolPolicy =
   | {
       kind: "paid";
       price: ToolPrice;
-      /** Raw token units buyers must authorize. */
-      amount: string;
+      /** What the tool costs in each token it accepts, in config order (the order of its 402 `accepts`). */
+      accepts: readonly AssetPrice[];
       settleBeforeExecute: boolean;
     };
+
+/** The policy of a priced tool. */
+export type PaidToolPolicy = Extract<ToolPolicy, { kind: "paid" }>;
+
+/** The price of a tool in `asset` (any spelling), or undefined when the tool does not accept that token. */
+export function priceIn(policy: PaidToolPolicy, asset: string): AssetPrice | undefined {
+  const wanted = normalizePackageHash(asset);
+  return policy.accepts.find(entry => entry.asset.packageHash === wanted);
+}
 
 /**
  * Pricing policy of a tool, or undefined when the tool must be hidden: an
@@ -111,7 +406,7 @@ export function resolveToolPolicy(cfg: CascetConfig, name: string): ToolPolicy |
   const paid = (price: ToolPrice): ToolPolicy => ({
     kind: "paid",
     price,
-    amount: usdPriceToTokenUnits(price.price, cfg.asset).toString(),
+    accepts: assetPricesFor(cfg, price),
     settleBeforeExecute: price.settleBeforeExecute,
   });
   if (explicit) return paid(explicit);
@@ -164,24 +459,14 @@ export function buildToolTable(cfg: CascetConfig, rail: PaymentRail, tools: Tool
     }
     pricedToolNames.push(name);
     routes[`POST ${routeForTool(name)}`] = {
-      accepts: [
-        {
-          scheme: "exact",
-          price: {
-            asset: rail.asset,
-            amount: policy.amount,
-            extra: {
-              name: cfg.asset.name,
-              symbol: cfg.asset.symbol,
-              version: cfg.asset.version,
-              decimals: String(cfg.asset.decimals),
-            },
-          },
-          network: rail.network,
-          payTo: rail.payTo,
-          maxTimeoutSeconds: rail.maxTimeoutSeconds,
-        },
-      ],
+      // One entry per accepted token, in config order: x402 buyers take the first one they can pay.
+      accepts: policy.accepts.map(({ asset, amount }) => ({
+        scheme: "exact",
+        price: assetAmountFor(asset, amount),
+        network: rail.network,
+        payTo: rail.payTo,
+        maxTimeoutSeconds: rail.maxTimeoutSeconds,
+      })),
       description: policy.price.description ?? `Paid MCP tool: ${name}`,
       mimeType: "application/json",
       serviceName: cfg.name,

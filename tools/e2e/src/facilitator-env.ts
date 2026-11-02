@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE } from "@cascet/core";
 import { DEFAULT_PREFLIGHT_DEADLINE_MS, normalizeAsset, normalizePayTo } from "./facilitator-core.js";
 import { normalizeAccountHash } from "./facilitator-roles.js";
 
@@ -59,8 +60,12 @@ export const NETWORKS = {
   },
 } as const;
 
-/** Measured settle consumption is ~2.68–2.71 CSPR; 4 CSPR keeps headroom and stays in wasm lane 5 (≤ 5 CSPR). */
-export const DEFAULT_SETTLE_PAYMENT_MOTES = 4_000_000_000;
+/**
+ * Gas limit of a settle of CasCet's legacy-amount token. Measured consumption is
+ * ~2.68–2.71 CSPR; 4 CSPR keeps headroom and stays in wasm lane 5 (≤ 5 CSPR).
+ * Shared with the gateway as DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE in @cascet/core.
+ */
+export const DEFAULT_SETTLE_PAYMENT_MOTES = DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE["legacy-amount"];
 /** Below this a settle is likely to run out of gas, and a revert burns the whole limit. */
 export const MIN_SETTLE_PAYMENT_MOTES = 3_000_000_000;
 /** Above this a settle leaves wasm lane 5 (40 tx/block) for lane 4 (2 tx/block). */

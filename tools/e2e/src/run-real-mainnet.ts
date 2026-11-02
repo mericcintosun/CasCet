@@ -1,9 +1,8 @@
 import { resolve } from "node:path";
 import { cascetConfigSchema, type CascetConfig } from "@cascet/core";
-import { startGateway } from "@cascet/gateway";
+import { createCasperRpc, startGateway } from "@cascet/gateway";
 import { createPayingFetch, PaidMcpHttpClient } from "@cascet/client";
 import { accountsSignableBy } from "./account-keys.js";
-import { createCasperRpc } from "./casper-rpc.js";
 import { NETWORKS, readFacilitatorEnv } from "./facilitator-env.js";
 import { checkRecorderSeparation } from "./facilitator-roles.js";
 import { accountHashOfKeyFile } from "./key-file.js";

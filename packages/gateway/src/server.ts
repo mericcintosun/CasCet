@@ -4,23 +4,31 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { v4 as uuidv4 } from "uuid";
 import { ErrorCode, McpError, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { HTTPProcessResult, HTTPRequestContext, HTTPResponseInstructions } from "@x402/core/server";
+import type {
+  HTTPProcessResult,
+  HTTPRequestContext,
+  HTTPResponseInstructions,
+  VerifiedPaymentCancelOptions,
+} from "@x402/core/server";
 import { decodePaymentRequiredHeader, decodePaymentSignatureHeader, encodePaymentRequiredHeader } from "@x402/core/http";
 import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import {
+  facilitatorFor,
   HEADER_CASCET_PARENT_ID,
   HEADER_CASCET_PAYMENT_ID,
   HEADER_PAYMENT_REQUIRED,
   HEADER_PAYMENT_RESPONSE,
   HEADER_PAYMENT_SIGNATURE,
+  isHostedFacilitatorUrl,
   normalizeOrigin,
   type CascetConfig,
   type PaymentReceipt,
   type ReceiptStatus,
+  type ResolvedAsset,
 } from "@cascet/core";
 import { expressAdapter, withoutPaymentHeader } from "./adapter.js";
 import { Anchorer, chainNameForNetwork, createCasperAnchorChain, type AnchorChain, type AnchoringHealth } from "./anchor.js";
-import { normalizeAccountAddress, parseCasperAuthorization, type CasperAuthorization } from "./authorization.js";
+import { normalizeAccountAddress, parseCasperAuthorization, paymentAssetOf, type CasperAuthorization } from "./authorization.js";
 import { buildDiscovery } from "./discovery.js";
 import { classifySettleFailure, SettlementIndeterminateError } from "./facilitator.js";
 import {
@@ -40,16 +48,22 @@ import {
 } from "./jsonrpc.js";
 import { errorMessage, log, logSafe } from "./log.js";
 import {
+  assetsSharingASymbol,
   buildToolTable,
   createPaymentRail,
+  facilitatorOrigin,
+  longestPaidCallMs,
   MAX_CLOCK_SKEW_SECONDS,
+  priceIn,
   requiredValiditySeconds,
+  settlementNodeUrl,
   unmatchedConfiguredTools,
+  type AssetPrice,
+  type PaidToolPolicy,
   type PaymentRail,
-  type ToolPolicy,
   type ToolTable,
 } from "./paywall.js";
-import { createCesPreemptionChecker, type SettlementPreemptionChecker } from "./preemption.js";
+import { createCesPreemptionChecker, routePreemptionChecks, type SettlementPreemptionChecker } from "./preemption.js";
 import { isSupportedProtocolVersion, negotiateProtocolVersion } from "./protocol.js";
 import { ReplayGuard, replayKey } from "./replay.js";
 import { ReceiptStore, makeEventPusher } from "./store.js";
@@ -89,8 +103,13 @@ export interface GatewayOptions {
    * supervisor restarts it.
    */
   onFatal?: (error: Error) => void;
-  /** On-chain settlement check; `null` disables it. Defaults to the token-event checker when a node URL is configured. */
+  /**
+   * On-chain settlement check; `null` disables it. Defaults to one token-event checker per
+   * asset when a node URL is configured. Queries name the asset (`query.asset`).
+   */
   preemptionChecker?: SettlementPreemptionChecker | null;
+  /** Replace fetch for every facilitator request (tests). */
+  facilitatorFetch?: typeof fetch;
   /** Replace the anchoring chain client (tests). */
   anchorChain?: AnchorChain;
   /** How often a submitted anchor is polled for execution (default 5 s). */
@@ -103,7 +122,9 @@ export interface GatewayOptions {
   upstreamHealthCheck?: Partial<HealthCheckPolicy>;
   /**
    * How long close() waits for calls in flight (a paid call may be settling) before it cuts
-   * the remaining connections. Default: timeouts.facilitatorMs + upstreamMs + settleMs.
+   * the remaining connections. Default: the longest a paid call can take (see longestPaidCallMs):
+   * the preflight, the facilitator's verify, timeouts.upstreamMs, the settle timeout (x402's
+   * retry of a pending settlement shares it) and the on-chain settlement check when it is on.
    */
   drainTimeoutMs?: number;
 }
@@ -154,15 +175,20 @@ interface SettleOutcome {
   headers?: Record<string, string>;
 }
 
+/** x402's answer for a payment that matched a route and passed the facilitator's verify. */
+type VerifiedPayment = Extract<HTTPProcessResult, { type: "payment-verified" }>;
+
 /** Everything about one verified paid call. */
 interface PaidCall {
   id: JsonRpcId;
   name: string;
   args: Record<string, unknown>;
-  policy: Extract<ToolPolicy, { kind: "paid" }>;
+  policy: PaidToolPolicy;
+  /** The token and amount of the requirements x402 matched and the facilitator verified. */
+  price: AssetPrice;
   table: ToolTable;
   context: HTTPRequestContext;
-  verified: Extract<HTTPProcessResult, { type: "payment-verified" }>;
+  verified: VerifiedPayment;
   authorization: CasperAuthorization;
   paymentId: string;
   parentId?: string;
@@ -171,7 +197,7 @@ interface PaidCall {
 
 /** Start a paid MCP gateway in front of the configured upstream server. */
 export async function startGateway(cfg: CascetConfig, options: GatewayOptions = {}): Promise<RunningGateway> {
-  const rail: PaymentRail = await createPaymentRail(cfg);
+  const rail: PaymentRail = await createPaymentRail(cfg, { fetch: options.facilitatorFetch });
 
   const anchoringCfg = cfg.anchoring;
   let anchorer: Anchorer | undefined;
@@ -190,17 +216,25 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     );
   }
 
-  const settlementNode = cfg.settlement.nodeUrl ?? anchoringCfg?.nodeUrl;
+  const settlementNode = settlementNodeUrl(cfg);
+  // One event checker per token: a payment's on-chain trace is in the events of the token it paid in.
   const preemption: SettlementPreemptionChecker | undefined =
     options.preemptionChecker === null
       ? undefined
       : (options.preemptionChecker ??
         (settlementNode
-          ? createCesPreemptionChecker({
-              nodeUrl: settlementNode,
-              tokenPackageHash: rail.asset,
-              scanWindow: cfg.settlement.eventScanWindow,
-            })
+          ? routePreemptionChecks(
+              new Map(
+                rail.assets.map(asset => [
+                  asset.packageHash,
+                  createCesPreemptionChecker({
+                    nodeUrl: settlementNode,
+                    tokenPackageHash: asset.packageHash,
+                    scanWindow: cfg.settlement.eventScanWindow,
+                  }),
+                ]),
+              ),
+            )
           : undefined));
   let chainChecksInFlight = 0;
 
@@ -215,8 +249,8 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   let closing: Promise<void> | undefined;
   /** /mcp requests being handled; close() lets them finish (paid calls may be settling). */
   const inFlight = new Set<Promise<void>>();
-  const drainTimeoutMs =
-    options.drainTimeoutMs ?? cfg.timeouts.facilitatorMs + cfg.timeouts.upstreamMs + cfg.timeouts.settleMs;
+  // Cutting a call short could leave a settled payment without its receipt.
+  const drainTimeoutMs = options.drainTimeoutMs ?? longestPaidCallMs(cfg, preemption !== undefined);
 
   const announceOnline = (): void => {
     pushEvent({
@@ -314,6 +348,9 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     status: ReceiptStatus;
     payer: string;
     nonce: string;
+    /** The token of the matched requirements. */
+    asset: ResolvedAsset;
+    /** The amount of the matched requirements. */
     amountRaw: string;
     priceUsd: string;
     txHash?: string;
@@ -331,8 +368,8 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       payer: input.payer,
       payTo: rail.payTo,
       amountRaw: input.amountRaw,
-      asset: rail.asset,
-      assetSymbol: cfg.asset.symbol,
+      asset: input.asset.packageHash,
+      assetSymbol: input.asset.symbol,
       priceUsd: input.priceUsd,
       txHash: input.txHash,
       status: input.status,
@@ -393,15 +430,31 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     res.status(response.status).set(withoutContentType(response.headers)).json(rpcError(id, RPC_PAYMENT_REQUIRED, message, data));
   }
 
-  /** Check the authorization against this gateway's terms before asking the facilitator. */
-  function authorizationProblem(auth: CasperAuthorization, policy: Extract<ToolPolicy, { kind: "paid" }>): string | undefined {
+  /**
+   * The tool's price in the token the payment says it pays in, or the reason to
+   * refuse it: the buyer must pay in one of the tool's tokens, and the amount
+   * and every later check depend on which one.
+   */
+  function requestedPrice(payload: unknown, policy: PaidToolPolicy): { price: AssetPrice } | { problem: string } {
+    const asset = paymentAssetOf(payload);
+    if (asset === undefined) return { problem: "invalid_payload: accepted.asset is missing or not a contract package hash" };
+    const price = priceIn(policy, asset);
+    if (!price) {
+      const accepted = policy.accepts.map(entry => entry.asset.id).join(", ");
+      return { problem: `unsupported_asset: this tool is not sold for token ${asset} (it accepts ${accepted})` };
+    }
+    return { price };
+  }
+
+  /** Check the authorization against this gateway's terms, in the token it pays in, before asking the facilitator. */
+  function authorizationProblem(auth: CasperAuthorization, price: AssetPrice, settleBeforeExecute: boolean): string | undefined {
     if (auth.to !== rail.payTo) return "invalid_payload: authorization.to is not this gateway's payTo";
-    if (auth.value !== policy.amount) {
-      return `invalid_payload: authorization.value ${auth.value} does not equal the price ${policy.amount}`;
+    if (auth.value !== price.amount) {
+      return `invalid_payload: authorization.value ${auth.value} does not equal the price ${price.amount} (${price.asset.symbol})`;
     }
     const now = Math.floor(Date.now() / 1_000);
     const remaining = auth.validBefore - now;
-    const needed = requiredValiditySeconds(cfg, policy.settleBeforeExecute);
+    const needed = requiredValiditySeconds(cfg, settleBeforeExecute);
     if (remaining < needed) {
       return `authorization_expires_too_soon: it must stay valid for at least ${needed} s, it has ${Math.max(0, remaining)} s`;
     }
@@ -411,32 +464,66 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     return undefined;
   }
 
-  /** Fail closed when what the facilitator verified is not exactly this tool's configured price. */
-  function requirementsProblem(reqs: PaymentRequirements, auth: CasperAuthorization, policy: Extract<ToolPolicy, { kind: "paid" }>): string | undefined {
+  /**
+   * Fail closed when what the facilitator verified is not exactly this tool's
+   * configured price in the token the gateway checked locally (`requested`).
+   * `matched` is the tool's price in the asset of the requirements x402 matched.
+   */
+  function requirementsProblem(
+    reqs: PaymentRequirements,
+    auth: CasperAuthorization,
+    requested: AssetPrice,
+    matched: AssetPrice | undefined,
+  ): string | undefined {
     if (reqs.scheme !== "exact") return "verified payment uses an unexpected scheme";
     if (reqs.network !== rail.network) return "verified payment is for another network";
     if (reqs.payTo.toLowerCase() !== rail.payTo || auth.to !== rail.payTo) return "verified payment pays another payee";
-    if (reqs.asset.toLowerCase() !== rail.asset) return "verified payment is in another asset";
-    if (reqs.amount !== policy.amount || auth.value !== policy.amount) {
+    if (!matched || matched.asset.packageHash !== requested.asset.packageHash) return "verified payment is in another asset";
+    if (reqs.amount !== matched.amount || auth.value !== matched.amount) {
       return "verified payment amount does not equal the configured price";
     }
     return undefined;
+  }
+
+  /**
+   * Tell x402 that verified work ended before settlement: it runs the
+   * verified-payment cancellation hooks and, for schemes that refund on
+   * cancel, settles the refund. "exact" defines no refund, so nothing moves
+   * on-chain. Never throws: the caller is already answering a failure.
+   */
+  async function cancelVerified(verified: VerifiedPayment, tool: string, options: VerifiedPaymentCancelOptions): Promise<void> {
+    try {
+      const refund = await verified.cancellationDispatcher.cancel(options);
+      if (refund && !refund.success) {
+        log.warn(`[x402] cancel settlement for ${logSafe(tool, 80)} failed: ${logSafe(refund.errorReason ?? "unknown reason")}`);
+      }
+    } catch (err) {
+      log.warn(`[x402] canceling the verified payment for ${logSafe(tool, 80)} failed: ${logSafe(err)}`);
+    }
   }
 
   /** Settle a verified payment and classify the outcome. */
   async function settle(call: PaidCall): Promise<SettleOutcome> {
     let result;
     try {
+      // CASCET_PAYMENT_FLOWS refuses every flow that settles before the handler, so x402 hands over
+      // no before-handler settlement; passing it on keeps x402 from ever settling a payment twice.
       result = await call.table.http.processSettlement(
         call.verified.paymentPayload,
         call.verified.paymentRequirements,
         call.verified.declaredExtensions,
         { request: call.context },
+        undefined,
+        call.verified.beforeHandlerSettlement,
       );
     } catch (err) {
-      const reason =
-        err instanceof SettlementIndeterminateError ? err.message : `facilitator gave an unusable settle answer: ${errorMessage(err)}`;
-      return reconcile({ status: "unknown", reason }, call.authorization);
+      // FacilitatorResponseError (including our SettlementIndeterminateError and x402's
+      // FacilitatorTimeoutError) or anything unexpected: the transfer may still execute.
+      // The router names the transfer when an earlier answer reported it as pending.
+      if (err instanceof SettlementIndeterminateError) {
+        return reconcile({ status: "unknown", reason: err.message, txHash: err.transaction }, call);
+      }
+      return reconcile({ status: "unknown", reason: `facilitator gave an unusable settle answer: ${errorMessage(err)}` }, call);
     }
     if (result.success) {
       return {
@@ -459,7 +546,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       txHash: result.transaction || undefined,
       headers: result.headers,
     };
-    return classified.checkChain ? reconcile(outcome, call.authorization) : outcome;
+    return classified.checkChain ? reconcile(outcome, call) : outcome;
   }
 
   /**
@@ -476,15 +563,23 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
    *   transfer would look "consumed elsewhere", and calling it failed would
    *   invite the buyer to pay twice;
    * - nothing found: the facilitator's verdict stands.
+   * The events read are those of the token the payment was in.
    */
-  async function reconcile(outcome: SettleOutcome, auth: CasperAuthorization): Promise<SettleOutcome> {
+  async function reconcile(outcome: SettleOutcome, call: PaidCall): Promise<SettleOutcome> {
     if (!preemption) return outcome;
     if (chainChecksInFlight >= MAX_CONCURRENT_CHAIN_CHECKS) {
       return { ...outcome, note: "on-chain settlement check skipped (too many in flight)" };
     }
+    const auth = call.authorization;
     chainChecksInFlight++;
     try {
-      const found = await preemption.check({ payer: auth.from, nonce: auth.nonce, payTo: rail.payTo, amount: auth.value });
+      const found = await preemption.check({
+        payer: auth.from,
+        nonce: auth.nonce,
+        payTo: rail.payTo,
+        amount: auth.value,
+        asset: call.price.asset.packageHash,
+      });
       switch (found.kind) {
         case "paid":
           if (cfg.settlement.acceptThirdPartySettlement) {
@@ -530,6 +625,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
           `${logSafe(call.authorization.from)}; the receipt records the authorization's payer`,
       );
     }
+    // Token and amount come from the requirements x402 matched and the facilitator verified.
     return recordReceipt({
       id: call.paymentId,
       tool: call.name,
@@ -537,7 +633,8 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       status: outcome.status,
       payer: call.authorization.from,
       nonce: call.authorization.nonce,
-      amountRaw: call.policy.amount,
+      asset: call.price.asset,
+      amountRaw: call.verified.paymentRequirements.amount,
       priceUsd: call.policy.price.price,
       txHash: outcome.txHash,
       parentId: call.parentId,
@@ -555,6 +652,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
           paymentId: receipt.id,
           txHash: receipt.txHash,
           amountRaw: receipt.amountRaw,
+          asset: receipt.asset,
           assetSymbol: receipt.assetSymbol,
           network: receipt.network,
           settledBy: receipt.settledBy,
@@ -601,11 +699,13 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
         _meta: { cascet: { paymentId: call.paymentId, server: cfg.name } },
       });
     } catch (err) {
+      await cancelVerified(call.verified, call.name, { reason: "handler_threw", error: err });
       sendUpstreamError(res, call.id, err, " (not charged)");
       return;
     }
     if (result.isError) {
       // Not charged: the authorization is left unsettled (and stays single-use here).
+      await cancelVerified(call.verified, call.name, { reason: "handler_failed" });
       res.json(rpcResult(call.id, result));
       return;
     }
@@ -627,6 +727,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       await upstream.ping(Math.min(cfg.timeouts.upstreamMs, UPSTREAM_PING_TIMEOUT_MS));
     } catch (err) {
       log.warn(`[upstream] not answering before settlement of ${logSafe(call.name, 80)}: ${logSafe(err)}`);
+      await cancelVerified(call.verified, call.name, { reason: "handler_failed", error: err, responseStatus: 503 });
       res.status(503).json(rpcError(call.id, RPC_INTERNAL_ERROR, "upstream MCP server is unavailable; nothing was charged"));
       return;
     }
@@ -707,8 +808,9 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       return;
     }
 
-    // 1. Local checks on the authorization, before any facilitator or upstream work.
+    // 1. Local checks on the authorization, in the token it pays in, before any facilitator or upstream work.
     let authorization: CasperAuthorization | undefined;
+    let requested: AssetPrice | undefined;
     let reservation: string | undefined;
     if (context.paymentHeader) {
       let payload: unknown;
@@ -721,7 +823,10 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
         const parsed = parseCasperAuthorization(payload);
         if (!parsed.ok) return rejectPayment(req, res, id, snapshot, name, parsed.reason);
         authorization = parsed.authorization;
-        const problem = authorizationProblem(authorization, policy);
+        const asked = requestedPrice(payload, policy);
+        if ("problem" in asked) return rejectPayment(req, res, id, snapshot, name, asked.problem);
+        requested = asked.price;
+        const problem = authorizationProblem(authorization, requested, policy.settleBeforeExecute);
         if (problem) return rejectPayment(req, res, id, snapshot, name, problem);
         const key = replayKey(authorization.from, authorization.nonce);
         const reserved = replay.reserve(key, (authorization.validBefore + MAX_CLOCK_SKEW_SECONDS) * 1_000);
@@ -736,8 +841,8 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       }
     }
 
-    // 2. x402: match the payment to this tool's requirements and verify it with the facilitator
-    //    (the facilitator's balance and nonce preflight runs here, right before execution).
+    // 2. x402: match the payment to one of this tool's requirements and verify it with the
+    //    facilitator of that token (its balance and nonce preflight runs here, right before execution).
     let processed: HTTPProcessResult;
     try {
       processed = await snapshot.http.processHTTPRequest(context);
@@ -752,20 +857,25 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       sendPaymentError(res, id, processed.response, name, reservation !== undefined);
       return;
     }
-    if (processed.type === "no-payment-required" || !authorization || !reservation) {
+    if (processed.type === "no-payment-required" || !authorization || !requested || !reservation) {
       if (reservation) replay.release(reservation);
+      if (processed.type === "payment-verified") await cancelVerified(processed, name, { reason: "after_verify_aborted" });
       log.error(`[x402] payment for ${logSafe(name, 80)} was not verified as expected; refusing to run it`);
       res.status(500).json(rpcError(id, RPC_INTERNAL_ERROR, "payment could not be verified; the tool was not run and nothing was charged"));
       return;
     }
 
-    const mismatch = requirementsProblem(processed.paymentRequirements, authorization, policy);
-    if (mismatch) {
+    // Everything from here on reads the requirements x402 matched (token, amount), never a default asset.
+    const matched = priceIn(policy, processed.paymentRequirements.asset);
+    const mismatch = requirementsProblem(processed.paymentRequirements, authorization, requested, matched);
+    if (mismatch || !matched) {
+      const reason = mismatch ?? "verified payment is in another asset";
       // Nothing ran and nothing was charged: the authorization stays the buyer's.
       replay.release(reservation);
-      log.error(`[x402] ${logSafe(mismatch)} for ${logSafe(name, 80)}; refusing to run it`);
-      const { headers, paymentRequired } = await challenge(req, snapshot, name, mismatch);
-      res.status(402).set(headers).json(rpcError(id, RPC_PAYMENT_REQUIRED, `payment rejected: ${mismatch}`, paymentRequired));
+      await cancelVerified(processed, name, { reason: "after_verify_aborted" });
+      log.error(`[x402] ${logSafe(reason)} for ${logSafe(name, 80)}; refusing to run it`);
+      const { headers, paymentRequired } = await challenge(req, snapshot, name, reason);
+      res.status(402).set(headers).json(rpcError(id, RPC_PAYMENT_REQUIRED, `payment rejected: ${reason}`, paymentRequired));
       return;
     }
 
@@ -778,12 +888,14 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
         payer: authorization.from,
         nonce: authorization.nonce,
         validBefore: authorization.validBefore,
+        asset: matched.asset.packageHash,
         paymentId,
         tool: name,
         createdAt: new Date().toISOString(),
       });
     } catch (err) {
       replay.release(reservation);
+      await cancelVerified(processed, name, { reason: "after_verify_aborted", error: err });
       log.error(`[receipts] cannot record a paid call to ${logSafe(name, 80)} (${logSafe(err)}); refusing to run it`);
       res
         .status(503)
@@ -797,6 +909,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       name,
       args,
       policy,
+      price: matched,
       table: snapshot,
       context,
       verified: processed,
@@ -924,17 +1037,39 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
 
   app.get("/pricing", (_req, res) => {
     const snapshot = table;
+    const [preferred] = rail.assets;
     res.json({
       server: cfg.name,
       network: cfg.network,
-      asset: { symbol: cfg.asset.symbol, packageHash: cfg.asset.packageHash },
+      // The first (preferred) token, which is all that earlier, single-token gateways reported.
+      asset: preferred ? { symbol: preferred.symbol, packageHash: preferred.packageHash } : undefined,
+      assets: rail.assets.map(asset => ({
+        id: asset.id,
+        symbol: asset.symbol,
+        name: asset.name,
+        packageHash: asset.packageHash,
+        decimals: asset.decimals,
+        authorizationStyle: asset.authorization,
+      })),
       tools: [...snapshot.pricedToolNames, ...snapshot.freeToolNames].map(name => {
         const policy = snapshot.policyOf(name);
+        if (policy?.kind !== "paid") return { name };
+        // `amountRaw` stays in the preferred token, the top-level `asset`, as for single-token gateways:
+        // left out when the tool does not accept that token. Every token's amount is in `accepts`.
+        const inPreferred = preferred ? priceIn(policy, preferred.packageHash) : undefined;
         return {
           name,
-          priceUsd: policy?.kind === "paid" ? policy.price.price : undefined,
-          amountRaw: policy?.kind === "paid" ? policy.amount : undefined,
-          settleBeforeExecute: policy?.kind === "paid" ? policy.settleBeforeExecute : undefined,
+          priceUsd: policy.price.price,
+          amountRaw: inPreferred?.amount,
+          asset: inPreferred?.asset.id,
+          settleBeforeExecute: policy.settleBeforeExecute,
+          accepts: policy.accepts.map(({ asset, amount }) => ({
+            asset: asset.id,
+            symbol: asset.symbol,
+            packageHash: asset.packageHash,
+            amountRaw: amount,
+            authorizationStyle: asset.authorization,
+          })),
         };
       }),
     });
@@ -1008,7 +1143,29 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   if (!isLoopbackAddress(address.address)) {
     log.warn(`    listening on a non-loopback interface (${logSafe(cfg.host)}): every free tool is reachable by anyone who can reach this port`);
   }
+  for (const asset of rail.assets) {
+    const settler = facilitatorFor(cfg, asset);
+    log.info(
+      `    accepts ${logSafe(asset.symbol, 40)} (${logSafe(asset.id, 64)}, ${asset.authorization}) hash-${asset.packageHash}` +
+        ` via facilitator "${logSafe(asset.facilitator, 64)}" ${logSafe(facilitatorOrigin(settler.url), 120)}`,
+    );
+  }
+  for (const group of assetsSharingASymbol(rail.assets)) {
+    log.warn(
+      `    assets ${logSafe(group.map(asset => `"${asset.id}"`).join(", "), 200)} share the symbol ${logSafe(group[0]?.symbol, 40)}: ` +
+        "receipts and the payment graph label amounts by symbol, so give each asset its own",
+    );
+  }
   log.info(`    on-chain settlement check: ${preemption ? "on" : "off (set settlement.nodeUrl to enable)"}`);
+  const hosted = rail.assets.filter(asset => isHostedFacilitatorUrl(facilitatorFor(cfg, asset).url)).map(asset => asset.id);
+  if (rail.preflightAssets.length > 0) {
+    log.info(`    on-chain preflight of hosted-facilitator payments (nonce, balance, token ABI and name): on for ${logSafe(hosted.join(", "), 200)}`);
+  } else if (hosted.length > 0) {
+    log.warn(
+      `    on-chain preflight of hosted-facilitator payments: off for ${logSafe(hosted.join(", "), 200)} (set settlement.nodeUrl to enable); ` +
+        "the hosted facilitator's own nonce pre-check does not work, so a spent authorization reaches its settle",
+    );
+  }
   announceOnline();
 
   /**

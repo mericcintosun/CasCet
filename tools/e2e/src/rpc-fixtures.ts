@@ -111,23 +111,6 @@ export const testnetContractResponse = {
   }
 } as const;
 
-/** used_nonces item of the settled authorization in tx 04e54a95… */
-export const testnetUsedNonceResponse = {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "api_version": "2.0.0",
-    "block_header": null,
-    "stored_value": {
-      "CLValue": {
-        "cl_type": "Bool",
-        "bytes": "01",
-        "parsed": true
-      }
-    }
-  }
-} as const;
-
 /** A nonce that was never used: the node answers "value was not found". */
 export const testnetUnusedNonceResponse = {
   "jsonrpc": "2.0",
@@ -136,23 +119,6 @@ export const testnetUnusedNonceResponse = {
     "code": -32003,
     "message": "Query failed",
     "data": "value was not found in the global state"
-  }
-} as const;
-
-/** balances item of payer 6519… on testnet. */
-export const testnetBalanceResponse = {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "api_version": "2.0.0",
-    "block_header": null,
-    "stored_value": {
-      "CLValue": {
-        "cl_type": "U256",
-        "bytes": "0600059b74ef5a",
-        "parsed": "99984500000000"
-      }
-    }
   }
 } as const;
 
@@ -168,126 +134,6 @@ export const testnetNameResponse = {
         "cl_type": "String",
         "bytes": "11000000436173436574205834303220546f6b656e",
         "parsed": "CasCet X402 Token"
-      }
-    }
-  }
-} as const;
-
-export const mainnetPackageResponse = {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "api_version": "2.0.0",
-    "block_header": null,
-    "stored_value": {
-      "ContractPackage": {
-        "access_key": "uref-c3ae319a0d500331ffac5f14101a2b7b916a50613f42c8c4dd49c0181baf2c89-007",
-        "versions": [
-          {
-            "protocol_version_major": 2,
-            "contract_version": 1,
-            "contract_hash": "contract-b424e9c999a962574ad057dea0a6b8ae5c3398ee12f16b829e1bdaf6f13f58a0"
-          }
-        ],
-        "disabled_versions": [],
-        "groups": [
-          {
-            "group_name": "constructor_group",
-            "group_users": []
-          },
-          {
-            "group_name": "upgrader_group",
-            "group_users": []
-          }
-        ],
-        "lock_status": "Unlocked"
-      }
-    }
-  }
-} as const;
-
-export const mainnetContractResponse = {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "api_version": "2.0.0",
-    "block_header": null,
-    "stored_value": {
-      "Contract": {
-        "contract_package_hash": "contract-package-8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41",
-        "contract_wasm_hash": "contract-wasm-46450b3dc4dcf1ea2b7fac07880b2390ddb24571689e7cb12a7006b5a458bfd0",
-        "named_keys": [
-          {
-            "name": "__events",
-            "key": "uref-bdf1782d7a09e801f4dded8c5abc1214e26f3bd4b022ff3921bc5b3fd8eb30e2-007"
-          },
-          {
-            "name": "__events_ces_version",
-            "key": "uref-142d46462433730461b9ca76f8772681033058aeb1cda2c28a9e4eef0ad2c732-007"
-          },
-          {
-            "name": "__events_length",
-            "key": "uref-8309ae46e3440588bd436647db562de8cd41400f3d543c55d6409897e89a38db-007"
-          },
-          {
-            "name": "__events_schema",
-            "key": "uref-6eed106ac78ce0451c8b46d8327d4ae4414fd64f5e6a699766c125e3f6093ab0-007"
-          },
-          {
-            "name": "allowances",
-            "key": "uref-1bbc1ef5d6541e5fc6a8ce84c6c6308f1e4630daf2e92bcbcbea29d2f0b6ee15-007"
-          },
-          {
-            "name": "balances",
-            "key": "uref-dce587b513cd7bb91057b5a8d17b1508f4a4f9c50409c2951cb786e0d91803aa-007"
-          },
-          {
-            "name": "chain_name",
-            "key": "uref-7c93dbbb34c806c93940e0cae9af6531d7b2d0c0b327d844ee96b6a961424360-007"
-          },
-          {
-            "name": "decimals",
-            "key": "uref-88ec32fca64c6bdb21b9c4deca99a899ce53a576fa8127599a06f3711bbfc760-007"
-          },
-          {
-            "name": "name",
-            "key": "uref-e2b604e2d8244db66fa8935ca1cdfcb6d573957da737e0ace9b5af3fdd7509c3-007"
-          },
-          {
-            "name": "state",
-            "key": "uref-a7e7a452c60ec2ef0284f2ab7ce73dd37f906bbafe92cb25cfa7af61d9e06adc-007"
-          },
-          {
-            "name": "symbol",
-            "key": "uref-7abb06ef1fda17c63ca8c710f34d00cf699103c60e5c55f8621f5fc6b8fa7e68-007"
-          },
-          {
-            "name": "total_supply",
-            "key": "uref-7385136705d71febe1c0e28f2d6a3e5d31c16f316b5cddb5f0a16517d47d76a1-007"
-          },
-          {
-            "name": "used_nonces",
-            "key": "uref-a040188ea26493e66b91f99b2789f93d1dac380112520cbb1cd60bd1ca872d20-007"
-          }
-        ],
-        "protocol_version": "2.2.2"
-      }
-    }
-  }
-} as const;
-
-/** used_nonces item of the settled authorization in mainnet tx 2c66141c… */
-export const mainnetUsedNonceResponse = {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "api_version": "2.0.0",
-    "block_header": null,
-    "stored_value": {
-      "CLValue": {
-        "cl_type": "Bool",
-        "bytes": "01",
-        "parsed": true
       }
     }
   }
@@ -547,12 +393,6 @@ export const testnetSettledTransaction = {
       }
     }
   }
-} as const;
-
-/** from / nonce args of settled mainnet tx 2c66141c… (its nonce reads back as used). */
-export const mainnetSettledArgs = {
-  "from": "0065190126b1ca282f041fad6b74b845a3c48e0c8411392b13c640a16a1438faf9",
-  "nonce": "2000000013d8ff4253e3578cba389b52fafdaa659dacba5162dbfb12dcf734d6df6cc76a"
 } as const;
 
 export const noSuchTransactionResponse = {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { VerifyResponse } from "@x402/core/types";
+import { TokenStateError } from "@cascet/gateway";
 import { AuthorizationLedger } from "./authorization-ledger.js";
 import {
   createFacilitatorCore,
@@ -13,7 +14,6 @@ import {
 } from "./facilitator-core.js";
 import { DailyGasBudget } from "./gas-budget.js";
 import type { ExecutionOutcome, SettlementChain, SubmitOutcome } from "./settlement.js";
-import { TokenStateError } from "./token-state.js";
 import { FakeClock } from "./test-helpers.js";
 
 const NETWORK = "casper:casper-test" as const;

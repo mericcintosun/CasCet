@@ -1,8 +1,8 @@
 import type { Network, PaymentPayload, PaymentRequirements, SettleResponse, SupportedResponse, VerifyResponse } from "@x402/core/types";
+import { TokenStateError, type TokenProbe } from "@cascet/gateway";
 import type { AuthorizationId, AuthorizationLedger } from "./authorization-ledger.js";
 import type { DailyGasBudget } from "./gas-budget.js";
 import type { BuiltTransaction, ExecutionOutcome, SettlementChain, SettlementInput, SubmitOutcome } from "./settlement.js";
-import { TokenStateError, type TokenStateReader } from "./token-state.js";
 
 /**
  * Policy core of the self-hosted facilitator: everything between "the HTTP
@@ -170,7 +170,7 @@ export interface FacilitatorCoreDeps {
   /** casper-x402 cryptographic verification (EIP-712 digest, signature, pubkey ↔ payer). */
   verifySignature(payload: PaymentPayload, requirements: PaymentRequirements): Promise<VerifyResponse>;
   /** On-chain reads; undefined disables the preflight. Its clock must be `now` (deadlines are absolute). */
-  tokenState?: Pick<TokenStateReader, "balanceOf" | "isNonceUsed" | "tokenName">;
+  tokenState?: Pick<TokenProbe, "balanceOf" | "isNonceUsed" | "tokenName">;
   chain: SettlementChain;
   ledger: AuthorizationLedger;
   gas: DailyGasBudget;

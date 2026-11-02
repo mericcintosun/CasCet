@@ -1,5 +1,5 @@
 import casperSdk from "casper-js-sdk";
-import { isNoSuchTransaction, RpcNodeError, type CasperRpc } from "./casper-rpc.js";
+import { isNoSuchTransaction, RpcNodeError, type CasperRpc } from "@cascet/gateway";
 
 const { Args, CLValue, CLTypeUInt8, ContractCallBuilder, Key, PublicKey, Timestamp, TransactionWrapper } = casperSdk;
 type PrivateKeyT = InstanceType<typeof casperSdk.PrivateKey>;

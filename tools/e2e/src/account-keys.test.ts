@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { createCasperRpc } from "@cascet/gateway";
 import { accountsSignableBy, AccountKeysError, readAccountKeys } from "./account-keys.js";
-import { createCasperRpc } from "./casper-rpc.js";
 import * as fx from "./rpc-fixtures.js";
 import { replayFetch, rpcError } from "./test-helpers.js";
 
