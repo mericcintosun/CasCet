@@ -252,9 +252,11 @@ Then edit `cascet.config.json`:
 - `payTo`: the `00…` value printed by `account-hash`. It must be an account
   hash, never a public key: a public key (`01…` or `02…`) is rejected, because a
   payment to it would land in an account nobody controls. Do not point `payTo`
-  at a contract package (such as a `RevenueSplit`) yet: the settlement library,
-  `@make-software/casper-x402` 1.0.0, always settles to an account hash, so such
-  a payment would be lost.
+  at a contract package (such as a `RevenueSplit`) yet: CasCet's self-hosted
+  facilitator builds its own settlement in the token's style (`amount` or
+  `value`) and still settles to account hashes only, so it refuses such a
+  payment, and `@make-software/casper-x402` 1.0.0 facilitators settle it to an
+  account hash nobody controls, so it would be lost.
 - `asset`: a token your facilitator can settle (see the table below). On testnet
   that is CasCet's x402 token, `hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3`
   (name `CasCet X402 Token`, version `1`, 9 decimals).
@@ -362,7 +364,7 @@ and pick up whatever is published next.
 
 ## How it works
 
-**The x402 flow, per tool call.** MCP speaks JSON-RPC over one HTTP endpoint, so the gateway maps each priced tool to a synthetic x402 route. On `tools/call`, the gateway returns `402 Payment Required` with the price; the agent's wallet signs a CEP-18 `transfer_with_authorization` (EIP-712) and retries; the gateway verifies the authorization, runs the tool, and **only settles payment if the tool succeeds** (a failed call is never charged). Tools marked `settleBeforeExecute` settle first and run only once the payment is on-chain. Tools that are neither priced nor listed as free are hidden and rejected. Settlement uses a self-hosted x402 facilitator built on the official `@make-software/casper-x402` package — CasCet builds *on* the official rails, it does not reimplement verification.
+**The x402 flow, per tool call.** MCP speaks JSON-RPC over one HTTP endpoint, so the gateway maps each priced tool to a synthetic x402 route. On `tools/call`, the gateway returns `402 Payment Required` with the price; the agent's wallet signs a CEP-18 `transfer_with_authorization` (EIP-712) and retries; the gateway verifies the authorization, runs the tool, and **only settles payment if the tool succeeds** (a failed call is never charged). Tools marked `settleBeforeExecute` settle first and run only once the payment is on-chain. Tools that are neither priced nor listed as free are hidden and rejected. Settlement uses a self-hosted x402 facilitator: it checks each signature with the official `@x402/casper` EIP-712 digest and builds the `transfer_with_authorization` transaction itself, with the `amount` or `value` argument that the token's on-chain ABI takes.
 
 > **Real settlement, verified.** `pnpm --filter @cascet/e2e demo-real` (a maintainer
 > demo) settles a real `transfer_with_authorization` on-chain: the agent pays from

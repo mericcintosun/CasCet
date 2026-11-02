@@ -139,7 +139,8 @@ def main() -> int:
     print(f"[python] facilitator response (HTTP {resp.status_code}): {data}")
 
     if resp.status_code != 200:
-        # Policy rejections (401 auth, 403 allowlist, 429 rate limit, 503 gas cap) carry {"error": ...}.
+        # Refusals before any verdict (401 auth, 429 rate limit, 503 gas cap/unavailable) carry "errorReason";
+        # allowlist and duplicate verdicts come back as HTTP 200 with success: false (handled below).
         reason = data.get("error") or data.get("errorReason") or "unknown error"
         print(f"\n❌ facilitator refused the settle (HTTP {resp.status_code}): {reason}")
         return 1

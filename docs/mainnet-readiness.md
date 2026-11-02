@@ -125,8 +125,8 @@ pnpm --filter @cascet/e2e facilitator
 | `CASCET_SELLER_ACCOUNT_HASH` | mainnet: deployer account | comma list of `payTo` accounts it settles to |
 | `CASCET_OWNER_ACCOUNT_HASH` | none (mainnet: the deployer is always added) | comma list of owner accounts; the fee payer must be none of them, nor an associated key of an owner or seller account |
 | `CASCET_ALLOWED_ASSETS` | the CasCet x402 token | comma list of package hashes; each is settled in the style its on-chain ABI shows |
-| `CASCET_ASSET_STYLES` | none | optional `<package hash>=<legacy-amount\|cep3009-value>` list; the chain must agree (start-up and every payment) |
-| `CASCET_ASSET_NAMES` | the names CasCet knows, else the on-chain name | optional `<package hash>=<EIP-712 name>` list of pinned domain names |
+| `CASCET_ASSET_STYLES` | none | optional `<package hash>=<legacy-amount\|cep3009-value>` list; the chain must agree (start-up and every payment); a style CasCet knows to be wrong (its own token as `cep3009-value`, Wrapped CSPR as `legacy-amount`) is refused even with the preflight off |
+| `CASCET_ASSET_NAMES` | the names CasCet knows, else the on-chain name | optional `<package hash>=<EIP-712 name>` list of pinned domain names; required for a token without an on-chain `name` |
 | `CASCET_SETTLE_PAYMENT_MOTES` | per style: `4000000000` (4 CSPR) for `amount` tokens, `3500000000` (3.5 CSPR) for `value` tokens | gas limit per settle of every asset without its own; at least 3 CSPR (`amount`) or 1.5 CSPR (`value`), at most 100 CSPR |
 | `CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET` | none | optional `<package hash>=<motes>` list of per-asset gas limits |
 | `CASCET_DAILY_GAS_CAP_MOTES` | `500000000000` (500 CSPR) | sponsored gas per UTC day |
@@ -144,7 +144,11 @@ What it enforces:
   on any non-loopback bind. Keep it bound to `127.0.0.1` next to the gateway; if it
   must be public, front it with TLS.
 - **Rate limits** (express-rate-limit): per client IP before authentication, then
-  across all callers, per payer, and for settles.
+  across all callers, per payer, and for settles. A settle of an authorization
+  that already has a transaction here passes the limits after authentication: it
+  can only follow that transaction or be answered as a duplicate with its hash, so
+  the immediate x402 retry of `settlement_pending` never loses the hash to a 429.
+  The per-IP limit (600 a minute) still counts it; keep it well above the others.
 - **Allowlists** (required on mainnet): only the configured sellers and tokens;
   payees and payers must be account-hash Keys (`00…`). Contract-package payees
   (`hash-…`, `01…`) are refused: this facilitator, like casper-x402 1.0.0, settles
@@ -161,7 +165,9 @@ What it enforces:
   transaction hash). A settle of the exact same payment after an answer of
   `settlement_pending` / `settlement_unknown` (x402 resource servers retry
   `settlement_pending` once) follows the earlier transaction and answers its
-  outcome; nothing is ever submitted twice.
+  outcome; nothing is ever submitted twice. Both answers come before any other
+  check: a retry close to `validBefore` is never told "expires too soon, not
+  submitted" while its transaction can still execute.
 - **Authorization styles**: every request reads the token's ABI again (cached for
   5 minutes) and refuses the payment (`authorization_style_mismatch`) when it no
   longer matches the style pinned at start-up, for example after an upgrade of
@@ -174,7 +180,9 @@ What it enforces:
   `/settle`: the nonce is unused (`used_nonces` dictionary), the payer's balance
   (`balances` dictionary) covers the value plus everything already in flight, and
   the EIP-712 domain name equals the token's on-chain name (the name is also pinned,
-  `CASCET_TOKEN_NAME`, and checked without RPC). One deadline bounds all reads of a
+  `CASCET_TOKEN_NAME`, and checked without RPC). A token whose domain cannot be
+  checked is refused, at start-up and per request: one without a `chain_name`, or
+  without a name on-chain or pinned. One deadline bounds all reads of a
   request (`CASCET_PREFLIGHT_DEADLINE_MS`, 10 s): a read that times out or fails in
   transit is retried once if the deadline allows it; if the node still cannot be
   read, the request fails with 503 instead of guessing.
@@ -197,13 +205,16 @@ What it enforces:
   `duplicate`: nothing was submitted for this request, but an earlier transaction
   (its hash is included when this facilitator sent it) may have charged the payer.
   An internal error on `/settle` answers `settlement_unknown` / `unknown`, never
-  `not_submitted`. `success` and `failed` are final; `pending` and `unknown` need
-  reconciling.
+  `not_submitted`, with the transaction hash when the facilitator holds one for
+  the authorization. `success` and `failed` are final; `pending` and `unknown`
+  need reconciling.
 - **Shutdown**: on SIGINT or SIGTERM the facilitator stops accepting work (new
   requests get 503), lets running `/verify` and `/settle` requests finish and
   answer, and then exits; it waits at most `CASCET_SETTLE_WAIT_MS` + the preflight
   deadline + two RPC timeouts (about 86 s by default). A second signal exits at
-  once. Give the process manager about 90 s to stop it.
+  once. Give the process manager about 90 s to stop it. While shutting down, a
+  settle of an authorization that already has a transaction gets 503 with that
+  transaction's hash and `pending` (reconcile it by hash), never `not_submitted`.
 
 **Gas limit.** Measured consumption of a settle is 2.68 CSPR on mainnet (tx
 `2c66141c…`) and 2.71 CSPR on testnet (tx `04e54a95…`). Mainnet refunds 75 % of the
@@ -266,22 +277,37 @@ contain, then rotate, then review what was signed. The ReceiptRegistry is
 ## 6. Residual / accepted risk (documented, not blocking)
 
 - **CascadeController operator is trusted up to the whole budget** (F7) and the owner can `close()` and reclaim unspent budget at any time (C3/F3). Mitigation: charge hops synchronously within the call that renders them (the gateway already does), and keep cascades short-lived. Document this in the trust model; a future settlement-window/expiry hardens it further.
-- **O3 / O4 — execute-before-settle.** The facilitator side is now covered (duplicate
-  ledger with 409, on-chain nonce and balance preflight at `/verify` and `/settle`,
-  pending/unknown results with the hash). What remains is inherent to running the
+- **O3 / O4 — execute-before-settle.** The facilitator side is now covered (an
+  in-flight ledger that answers duplicates with `duplicate_nonce`, HTTP 200; on-chain
+  nonce and balance preflight at `/verify` and `/settle`; pending/unknown results
+  with the hash). What remains is inherent to running the
   tool before settling: a payer can still move their balance or use the nonce from
   their own key between `/verify` and `/settle`; the gateway's settle-before-execute
   option closes that for side-effectful tools.
 - **The in-flight ledger is in memory and per process.** A restart forgets
   unsettled entries; the on-chain preflight still rejects nonces that were used.
-  Run one facilitator per fee-payer key.
-- **Pending settles are not reconciled by the facilitator.** When `/settle` answers
-  `settlement_pending` or `settlement_unknown`, the gas cap keeps the full limit
-  and the payer's value stays counted as in flight until the transaction can no
-  longer execute: the end of its TTL, which is never later than `validBefore`
-  (plus a 60 s grace). Payers with a tight balance may see `insufficient_funds`
-  during that time. The gateway records such receipts as unknown; reconcile them
-  by transaction hash (`info_get_transaction`) or by the authorization nonce
+  Run one facilitator per fee-payer key. A restart also forgets the pending
+  settlements (below): a settle of a payment whose transaction was still pending
+  before the restart is then a new settlement. If that transaction has executed by
+  then, the preflight finds the nonce used (`nonce_already_used`); if it has not,
+  the facilitator submits a second transaction for the same authorization, and one
+  of the two reverts (a nonce is used only once) and burns its gas limit. The payer
+  is charged once either way. The graceful shutdown waits for running requests, not
+  for later retries, so this can cost one gas limit per payment whose settle is
+  retried across a restart; a persistent pending store would remove it.
+- **Pending settles are followed, not submitted again.** When `/settle` answers
+  `settlement_pending` or `settlement_unknown`, the facilitator keeps the
+  transaction with a fingerprint of the exact payment. A settle of that same
+  payment (x402 resource servers retry `settlement_pending` once, at once) follows
+  the transaction for up to `CASCET_SETTLE_WAIT_MS` and answers its outcome, and
+  once the outcome is known the day's gas charge is corrected from the full limit
+  to the real cost. Until then the gas cap counts the full limit (it stays there
+  when no settle of the payment comes again), and the payer's value stays counted
+  as in flight until the transaction can no longer execute: the end of its TTL,
+  which is never later than `validBefore` (plus a 60 s grace). Payers with a tight
+  balance may see `insufficient_funds` during that time. When the outcome is still
+  open after the retry, the gateway records the receipt as unknown; reconcile it by
+  transaction hash (`info_get_transaction`) or by the authorization nonce
   (`used_nonces`).
 - **Verified hold.** A successful `/verify` keeps the payer's value counted as in
   flight for up to 180 s (less if `validBefore` comes first), so a concurrent
