@@ -91,14 +91,18 @@ CasCet's x402 token is the earlier reference build that expects `amount`, and th
 published npm SDK (`@make-software/casper-x402` 1.0.0) still sends `amount`, so
 CasCet settles through its own fee-sponsored facilitator. It builds the settlement
 itself and sends `amount` or `value` according to each token's on-chain ABI, so it
-also settles CEP-3009 tokens such as testnet Wrapped CSPR (covered by offline
-tests against recorded testnet data; no live Wrapped CSPR settle has been run yet).
+also settles CEP-3009 tokens such as testnet Wrapped CSPR (three live testnet
+settles on 2026-11-02, `fd667f19…`, `660784c8…` and `43bba5ed…`, consumed
+1.117–1.118 CSPR of gas each; no mainnet Wrapped CSPR settle has run yet).
 The same hosted fee-payer on the same CasCet testnet token, before and after the rename:
 
 - before, settled: <https://testnet.cspr.live/transaction/2ffeb8c7a9313cb1df7affc1fc50669bf0ea19be9474498e6960273ea470a8b3> (2026-07-07)
 - after, `User error: 64658` (Odra `MissingArg`): <https://testnet.cspr.live/transaction/9fe35eed1042c4600b8c769386511ecbcf75b4a733f8aabf101e372389aa94ec> (2026-07-23)
 
-Migrating to `value` and the official Wrapped CSPR is on the roadmap. Until then,
-a seller using CasCet's x402 token needs the self-hosted facilitator
-(`pnpm --filter @cascet/e2e facilitator`; see the README's
-[Monetize your own MCP server](../README.md#monetize-your-own-mcp-server)).
+CasCet's x402 tokens take `amount`, so a seller using them needs the
+self-hosted facilitator (`pnpm --filter @cascet/e2e facilitator`; see the
+README's [Monetize your own MCP server](../README.md#monetize-your-own-mcp-server)).
+The official Wrapped CSPR, which takes `value`, is already supported: a seller
+using it can choose either facilitator (see the
+[Wrapped CSPR variant](../examples/wrap-third-party/README.md#variant-wrapped-cspr-through-the-hosted-facilitator)
+of the third-party example).

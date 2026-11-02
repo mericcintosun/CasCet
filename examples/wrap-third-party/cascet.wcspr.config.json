@@ -24,6 +24,9 @@
     "apiKey": "REPLACE_WITH_YOUR_CSPR_CLOUD_ACCESS_KEY",
     "authScheme": "raw"
   },
+  "settlement": {
+    "nodeUrl": "https://node.testnet.casper.network/rpc"
+  },
   "pricing": {
     "tools": {
       "echo": {

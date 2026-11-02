@@ -275,9 +275,11 @@ with `contracts/keys/deployer_secret_key.pem` unless you pass
    and stops when the balance is short or when either cannot be read. The
    mainnet fee payer is funded.
 
-4. Measure the settle gas. `demo-real` prints the measured gas of every run; to
-   set the `cep3009-value` limit (`DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE`, 3.5
-   CSPR until measured), collect 3 to 5 settle hashes and run:
+4. Measure the settle gas. `demo-real` prints the measured gas of every run.
+   The `cep3009-value` limit (`DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE`) is
+   2.5 CSPR, set from three testnet settles of 2026-11-02 (`fd667f19…`,
+   `660784c8…`, `43bba5ed…`, which consumed 1.117–1.118 CSPR each). To re-check
+   it, collect 3 to 5 settle hashes and run:
 
    ```bash
    pnpm --filter @cascet/e2e settle-report <tx-hash> <tx-hash> <tx-hash>
@@ -289,8 +291,12 @@ with `contracts/keys/deployer_secret_key.pem` unless you pass
    consumed). A suggestion below 2.5 CSPR is a valid limit: Casper's 2.5 CSPR
    (`baseline_motes_amount`) is the minimum balance of the account that submits
    a transaction, not a minimum gas limit, and the report says so next to such
-   a suggestion. Never use `@x402/casper`'s 2.5 CSPR default for the legacy
-   token: its settles consume about 2.7 CSPR.
+   a suggestion. For the three settles above it suggests 1.46 CSPR; the
+   default stays at 2.5 CSPR, the limit the hosted facilitator sets for the
+   same call: a settle that runs out of gas reverts and burns its whole limit,
+   and the lower limit would save only about 0.25 CSPR per settle. Never
+   use `@x402/casper`'s 2.5 CSPR default for the legacy token: its settles
+   consume about 2.7 CSPR.
 
 ### Python client
 

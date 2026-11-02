@@ -149,7 +149,7 @@ This is not a portable pattern dressed in Casper branding — it leans on things
 | `servers/casper-defi-data` | Flagship paid MCP: CSPR market data, RWA prices, DeFi yields (live + labeled fallback) |
 | `servers/portfolio-analyst` | Paid MCP that **buys** from the data server — the cascade in action |
 | `apps/dashboard` | Next.js + shadcn/ui live dashboard + x402 economy explorer (dark/light/system) |
-| `contracts` | Odra 2.8.2 (5): `ReceiptRegistry`, `RevenueSplit`, `CascadeController`, `PaymentChannel`, `DemoToken` (CEP-18), with tests |
+| `contracts` | Odra 2.9.1 (5): `ReceiptRegistry`, `RevenueSplit`, `CascadeController`, `PaymentChannel`, `DemoToken` (CEP-18), with tests |
 | `examples/wrap-third-party` | Wrapping the official `server-everything` MCP server as paid, on testnet, with your own keys |
 | `tools/e2e` | The self-hosted x402 facilitator, plus the end-to-end demos (real settlement on Casper testnet and mainnet) |
 | `registry` | MCP Registry listing for the `casper-defi-data` server (testnet) |
@@ -222,11 +222,17 @@ it they stay empty.
 
 ### Maintainer demos
 
-The scripts in `tools/e2e` that move tokens (`fund-token`, `wrap-wcspr`, `demo`,
-`demo-real`, `demo-real-wcspr`, `demo-real-mainnet`, `agent`, `connect-demo`)
-sign with the CasCet operator's keys in `contracts/keys/`, which are not part of
-the repository, so they only run on a maintainer's machine. They produced the
-transactions linked in this README.
+The demos in `tools/e2e` (`demo`, `demo-real`, `demo-real-wcspr`, `agent`,
+`connect-demo`) sign with the CasCet operator's keys in `contracts/keys/` by
+default, which are not part of the repository, so they run on a maintainer's
+machine. `demo-real-mainnet` does not read `contracts/keys/`: it takes each
+role's key from its own environment variable and settles a real payment on
+mainnet (see [`docs/mainnet-readiness.md`](docs/mainnet-readiness.md)). These
+demos produced the transactions linked in this README. `fund-token` and
+`wrap-wcspr` also default to the operator key, but sign with your own testnet
+key when you pass `--key /absolute/path/to/key.pem`: that is how a buyer wraps
+testnet CSPR in the
+[Wrapped CSPR example](examples/wrap-third-party/README.md#variant-wrapped-cspr-through-the-hosted-facilitator).
 
 ```bash
 pnpm --filter @cascet/e2e gen-keys                                # throwaway testnet keys in tools/e2e/keys/
@@ -401,7 +407,7 @@ to start without the allowlists and both budgets.
 | `CASCET_MAX_SESSION` | yes² | most raw token units the whole session may spend (tracked per token) |
 | `CASCET_PREFER_STYLES` | no | comma-separated authorization styles in order of preference (`cep3009-value`, `legacy-amount`) when a gateway offers several tokens; it only orders the options the allowlists and budgets accept |
 | `CASCET_TIMEOUT_MS` | no | deadline per paid call in milliseconds, settlement included (default `200000`) |
-| `CASCET_TOOL_PINS` | no | file where the bridge records each gateway's tools (default `~/.cascet/tool-pins.json`); `--accept-tool-changes` accepts a changed tool list after you have reviewed it |
+| `CASCET_TOOL_PINS` | no | file where the bridge records each gateway's tools (default `~/.cascet/tool-pins.json`); a changed or new tool is quarantined until you review it and pass `--accept-tool-changes=<sha256>[,<sha256>…]` with the digests the warning prints, which pins only those definitions; a bare `--accept-tool-changes` is refused ([details](packages/cli/README.md)) |
 
 ¹ Unless `CASCET_ALLOW_ANY_SELLER=1` or `--allow-any-seller`, which lets any
 gateway name any payee and token. Not recommended.

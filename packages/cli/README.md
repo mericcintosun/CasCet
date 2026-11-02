@@ -28,11 +28,12 @@ Writes a starter `cascet.config.json` for Casper Testnet and prints the next ste
   `cascet account-hash <public-key>`. `cascet wrap` refuses a public key or the
   template placeholder.
 - **Do not use a contract package** (`hash-<hex>`, e.g. a RevenueSplit) as `payTo`
-  yet. The config accepts it, but every facilitator that exists today
-  (`@make-software/casper-x402` 1.0.0, hosted or self-hosted) settles a payTo as an
-  account hash, so that revenue would be credited to an account nobody controls,
-  and CasCet buyers refuse to pay a contract-package payee. `cascet wrap` warns
-  about it.
+  yet. The config schema accepts it, but CasCet's self-hosted facilitator refuses
+  contract-package payees, facilitators built on `@make-software/casper-x402`
+  1.0.0 settle every payTo as an account hash (so that revenue would be credited
+  to an account nobody controls), and CasCet buyers refuse to pay a
+  contract-package payee. `cascet wrap` warns about it, and the gateway then
+  refuses to start.
 - **`facilitator.url`** points at CasCet's **self-hosted facilitator**
   (`http://127.0.0.1:4501`), and `asset` at CasCet's testnet x402 token. Start the
   facilitator from a CasCet checkout:
@@ -50,9 +51,11 @@ Writes a starter `cascet.config.json` for Casper Testnet and prints the next ste
 takes `value`, such as the official Wrapped CSPR (testnet
 `hash-3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e`, mainnet
 `hash-8df5d26790e18cf0404502c62ce5dc9025800ad6975c97466e20506c39c505b6`). CasCet's own
-x402 token takes `amount`, so it only settles through the self-hosted facilitator.
-`cascet wrap` warns when the hosted facilitator is paired with a token that is not
-known to be CEP-3009.
+x402 token takes `amount`, so it only settles through the self-hosted facilitator:
+a config that pairs the hosted facilitator with a `legacy-amount` token (CasCet's
+own x402 token, or any asset marked `"authorization": "legacy-amount"`) is
+refused, and `cascet wrap` exits with that error. With any other token that is
+not known to be CEP-3009, `cascet wrap` only warns.
 
 ### `cascet account-hash <public-key>`
 Prints the `payTo` value (`"00"` + account hash) for an ed25519 (`01…`) or secp256k1
@@ -64,8 +67,10 @@ Validates the config (default `./cascet.config.json`) and starts the paid gatewa
 fronts your upstream MCP server, advertises each tool's price in `tools/list` and runs
 the x402 flow on `tools/call`. Also serves a Bazaar-compatible catalog at
 `/.well-known/x402.json`. Config errors are reported per field, without a stack trace
-(`CASCET_DEBUG=1` shows it), and a contract-package `payTo` or a hosted facilitator
-paired with a token it cannot settle prints a warning.
+(`CASCET_DEBUG=1` shows it), and stop `wrap`; a `legacy-amount` token settled by the
+hosted facilitator is one of them. A hosted facilitator paired with another token
+that is not known to be CEP-3009 prints a warning. A contract-package `payTo` prints
+a warning, and then the gateway refuses to start.
 
 ### `cascet connect <gateway-mcp-url>`
 A stdio ⇄ paid-HTTP bridge for MCP hosts (Claude Code, Claude Desktop, Cursor). It
@@ -109,7 +114,7 @@ The same in an MCP host config:
 | `CASCET_KEY_PATH` | PEM private key of the paying wallet (required). Use an absolute path: MCP hosts start the bridge from an unpredictable working directory. |
 | `CASCET_KEY_ALGO` | `ed25519` (default) or `secp256k1`. |
 | `CASCET_NETWORK` | Comma-separated CAIP-2 networks to pay on. Default `casper:casper-test`; add `casper:casper` to pay on mainnet. A `402` for any other network is refused. |
-| `CASCET_ALLOWED_PAYTO` | Comma-separated payees to pay: account hashes (`00…` or `account-hash-…`). A contract package (`hash-…`) is rejected: no facilitator can settle one today. Required unless `--allow-any-seller`. |
+| `CASCET_ALLOWED_PAYTO` | Comma-separated payees to pay: account hashes (`00…` or `account-hash-…`). A contract package (`hash-…`) is rejected: CasCet's self-hosted facilitator refuses contract-package payees, and `@make-software/casper-x402` 1.0.0 facilitators credit such a payment to an account nobody controls. Required unless `--allow-any-seller`. |
 | `CASCET_ALLOWED_ASSETS` | Comma-separated CEP-18 package hashes to pay in. Required unless `--allow-any-seller`. |
 | `CASCET_MAX_PER_CALL` | Largest single payment, in raw token units. Required unless `--allow-unlimited-budget`. |
 | `CASCET_MAX_SESSION` | Total per token for this bridge session, in raw token units. Required unless `--allow-unlimited-budget`. |
