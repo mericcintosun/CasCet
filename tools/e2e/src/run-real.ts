@@ -6,10 +6,11 @@ import {
   usdPriceToTokenUnits,
   type CascetConfig,
 } from "@cascet/core";
-import { createCasperRpc, longestPaidCallMs, settlementNodeUrl, startGateway, TokenProbe } from "@cascet/gateway";
+import { createCasperRpc, startGateway, TokenProbe } from "@cascet/gateway";
 import { createPayingFetch, PaidMcpHttpClient } from "@cascet/client";
 import { formatAmount, formatCspr } from "./amounts.js";
 import { ANCHOR_WAIT_MS, waitForAnchor } from "./demo-anchor.js";
+import { paidCallTimeoutMs } from "./demo-paid-call.js";
 import {
   assertAssetAllowed,
   demoConfiguredLimit,
@@ -80,12 +81,6 @@ const TESTNET = NETWORKS["casper:casper-test"];
 const NODE_URL = TESTNET.rpcUrl;
 const TOOL = "get_cspr_market_data";
 const PRICE = "$0.01";
-/**
- * Margin on top of the gateway's longest paid call (longestPaidCallMs): a buyer
- * that gives up before the gateway answers may be charged without receiving
- * the result.
- */
-const PAID_CALL_MARGIN_MS = 15_000;
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -206,7 +201,8 @@ async function main(): Promise<number> {
     port: 4402,
   });
 
-  const paidCallTimeoutMs = longestPaidCallMs(dataConfig, settlementNodeUrl(dataConfig) !== undefined) + PAID_CALL_MARGIN_MS;
+  // Beyond the gateway's longest paid call: a buyer that gives up first may be charged without the result.
+  const callTimeoutMs = paidCallTimeoutMs(dataConfig);
   const gateway = await startGateway(dataConfig);
   let code = 1;
   try {
@@ -216,14 +212,14 @@ async function main(): Promise<number> {
       privateKeyPath: resolve(KEYS, "agent.pem"),
       allowedPayTo: [seller],
       allowedAssets: [asset.config.packageHash],
-      timeoutMs: paidCallTimeoutMs,
+      timeoutMs: callTimeoutMs,
       onPayment: info =>
         console.log(
           `[agent] 💸 authorizing ${info.amountRaw} raw units of ${info.asset.slice(0, 10)}… ` +
             `(${info.authorizationStyle ?? "style not advertised"}) → ${info.payTo.slice(0, 12)}…`,
         ),
     });
-    const client = new PaidMcpHttpClient("http://localhost:4402/mcp", paying.fetch, { timeoutMs: paidCallTimeoutMs });
+    const client = new PaidMcpHttpClient("http://localhost:4402/mcp", paying.fetch, { timeoutMs: callTimeoutMs });
     await client.initialize();
 
     // Gateway receipts persist across runs: remember the earlier ones, so a failed
