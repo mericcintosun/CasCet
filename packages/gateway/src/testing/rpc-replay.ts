@@ -14,7 +14,12 @@ export function replayFetch(routes: Record<string, Replay>, calls: string[] = []
     const params = req.params ?? {};
     const withKey = typeof params["key"] === "string" ? `${req.method} ${params["key"]}` : req.method;
     calls.push(withKey);
-    const route = withKey in routes ? routes[withKey] : routes[req.method];
+    // Own keys only: a method such as "constructor" must not reach Object.prototype.
+    const route = Object.hasOwn(routes, withKey)
+      ? routes[withKey]
+      : Object.hasOwn(routes, req.method)
+        ? routes[req.method]
+        : undefined;
     if (route === undefined) throw new Error(`unexpected RPC call: ${withKey}`);
     const response = typeof route === "function" ? (route as (p: Record<string, unknown>) => unknown)(params) : route;
     if (response instanceof Error) throw response;

@@ -67,6 +67,9 @@ function memoryFacilitators(supported: (origin: string) => unknown = () => ({ ki
 }
 
 /** A fetch that fails the test if anything calls it. */
+/** `text` as a regular expression that matches it literally. */
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const noFetch = (async () => {
   throw new Error("no facilitator may be contacted");
 }) as typeof fetch;
@@ -281,7 +284,7 @@ describe("a facilitator that cannot serve its asset stops the gateway", () => {
     );
     await assert.rejects(
       createPaymentRail(twoAssetConfig(SELF, CEP), { fetch: memory.fetch }),
-      new RegExp(`facilitator "self" \\(${SELF.replace(/\./g, "\\.")}\\) does not support x402 v2 "exact" payments on casper:casper-test, which asset ${LEGACY_TOKEN} needs`),
+      new RegExp(`facilitator "self" \\(${escapeRegExp(SELF)}\\) does not support x402 v2 "exact" payments on casper:casper-test, which asset ${LEGACY_TOKEN} needs`),
     );
   });
 
@@ -321,7 +324,7 @@ describe("a facilitator that cannot serve its asset stops the gateway", () => {
   it("names an asset transfer method the scheme does not have, and starts when the facilitator asks for the authorization flow", async () => {
     await assert.rejects(
       createPaymentRail(twoAssetConfig(SELF, CEP), { fetch: advertisingAt(SELF, { assetTransferMethod: "permit" }).fetch }),
-      new RegExp(`^Error: facilitator "self" \\(${SELF.replace(/\./g, "\\.")}\\) advertises asset transfer method "permit" .*which asset "cascet" \\(${LEGACY_TOKEN}\\) needs: the CasCet scheme has no asset transfer method on the wire`),
+      new RegExp(`^Error: facilitator "self" \\(${escapeRegExp(SELF)}\\) advertises asset transfer method "permit" .*which asset "cascet" \\(${LEGACY_TOKEN}\\) needs: the CasCet scheme has no asset transfer method on the wire`),
     );
     const rail = await createPaymentRail(twoAssetConfig(SELF, CEP), { fetch: advertisingAt(CEP, { paymentFlow: "authorization" }).fetch });
     assert.equal(rail.assets.length, 2);

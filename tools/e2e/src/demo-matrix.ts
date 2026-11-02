@@ -4,7 +4,7 @@ import {
   normalizePackageHash,
   type AuthorizationStyle,
 } from "@cascet/core";
-import type { CasperRpc } from "@cascet/gateway";
+import { withoutTrailingSlashes, type CasperRpc } from "@cascet/gateway";
 import { formatCspr } from "./amounts.js";
 import { NETWORKS } from "./facilitator-env.js";
 import { normalizePayTo } from "./facilitator-core.js";
@@ -244,7 +244,7 @@ export async function fetchHostedSupported(
   opts: { timeoutMs?: number; fetchImpl?: SupportedFetch } = {},
 ): Promise<unknown> {
   const doFetch = opts.fetchImpl ?? ((input, init) => fetch(input, init));
-  const response = await doFetch(`${url.replace(/\/+$/, "")}/supported`, { signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000) });
+  const response = await doFetch(`${withoutTrailingSlashes(url)}/supported`, { signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000) });
   if (!response.ok) throw new Error(`GET /supported answered HTTP ${response.status}`);
   return response.json();
 }

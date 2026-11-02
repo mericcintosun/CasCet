@@ -71,7 +71,7 @@ export {
 } from "./upstream.js";
 export { ReceiptStore, makeEventPusher } from "./store.js";
 export { Anchorer, chainNameForNetwork, type AnchorChain, type AnchoringHealth } from "./anchor.js";
-export { TimeoutFacilitatorClient, SettlementIndeterminateError, classifySettleFailure } from "./facilitator.js";
+export { TimeoutFacilitatorClient, SettlementIndeterminateError, classifySettleFailure, withoutTrailingSlashes } from "./facilitator.js";
 export {
   createCesPreemptionChecker,
   decodeCesEvent,

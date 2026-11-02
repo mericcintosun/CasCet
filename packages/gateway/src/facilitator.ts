@@ -57,7 +57,7 @@ export class TimeoutFacilitatorClient implements FacilitatorClient {
   private readonly fetchImpl: typeof fetch;
 
   constructor(private readonly opts: FacilitatorClientOptions) {
-    this.url = opts.url.replace(/\/+$/, "");
+    this.url = withoutTrailingSlashes(opts.url);
     this.fetchImpl = opts.fetchImpl ?? fetch;
   }
 
@@ -305,4 +305,11 @@ export function classifySettleFailure(
   if (reason === CASPER_SETTLE_FAILED) return reverted ? { kind: "failed", checkChain: true } : { kind: "unknown", checkChain: true };
   if (INDETERMINATE_HINT.test(reason) || INDETERMINATE_HINT.test(message)) return { kind: "unknown", checkChain: true };
   return { kind: "failed", checkChain: true };
+}
+
+/** `url` without its trailing slashes; a loop, since /\/+$/ backtracks quadratically on a long run of them. */
+export function withoutTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 0x2f) end--;
+  return url.slice(0, end);
 }
