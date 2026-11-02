@@ -335,10 +335,14 @@ describe("replay protection (M18)", () => {
     });
   });
 
-  it("needs only verify time plus headroom when the tool settles before it runs", async () => {
+  it("needs only verify time, the upstream ping and headroom when the tool settles before it runs", async () => {
+    // Defaults: facilitatorMs 15 s + the upstream ping before the settlement (5 s at most) + 30 s settle headroom = 50 s.
     const config = { pricing: { tools: { paid_tool: { price: "$0.01", settleBeforeExecute: true } } } };
     await withHarness({ config }, async h => {
-      const { header } = await payFor(h, "paid_tool", { validBefore: Math.floor(Date.now() / 1_000) + 15 + 30 + 2 });
+      const tooShort = await payFor(h, "paid_tool", { validBefore: Math.floor(Date.now() / 1_000) + 15 + 30 + 2 });
+      const refused = await callPaid(h, "paid_tool", tooShort.header);
+      assert.match(refused.body.error?.message ?? "", /authorization_expires_too_soon: it must stay valid for at least 50 s/);
+      const { header } = await payFor(h, "paid_tool", { validBefore: Math.floor(Date.now() / 1_000) + 15 + 5 + 30 + 2 });
       assert.equal((await callPaid(h, "paid_tool", header)).status, 200);
     });
   });

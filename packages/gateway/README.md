@@ -64,7 +64,9 @@ reported as pending stays within the same `settleMs`. With
 `settlement.nodeUrl` (or `anchoring.nodeUrl`) set, add up to 15 s for the
 on-chain check of a settlement that did not succeed and, when the hosted
 facilitator settles one of the assets, 5 s for the on-chain preflight of its
-payments (185 s with the defaults).
+payments (185 s with the defaults). When a tool settles before it runs
+(`settleBeforeExecute`), add the upstream ping that precedes its settlement:
+`upstreamMs`, at most 5 s (170 s with the defaults, 190 s with a node).
 
 ## Accepting several tokens
 
@@ -165,9 +167,10 @@ other's payments.
      the public key's, and the public key belongs to the payer (casper-x402
      1.0.0 verifies authorizations that break these rules, but they always
      revert on-chain);
-   - it stays valid long enough: `facilitatorMs` + `upstreamMs` (not with
-     `settleBeforeExecute`) + 30 s for the settle transaction, + 5 s when the
-     gateway preflights hosted-facilitator payments;
+   - it stays valid long enough: `facilitatorMs` + `upstreamMs` (with
+     `settleBeforeExecute`, the upstream ping before the settlement instead:
+     at most 5 s) + 30 s for the settle transaction, + 5 s when the gateway
+     preflights hosted-facilitator payments;
    - this `(payer, nonce)` was never presented before, in any of the
      gateway's tokens. Replays are refused, also across restarts.
 
@@ -254,8 +257,9 @@ Wrapped CSPR).
 - Shutdown (`close()`, SIGINT/SIGTERM): new calls get 503 and calls in flight
   may finish settling and writing their receipts, for at most the longest
   paid call (see the buyer timeouts above: 165 s with the defaults, up to
-  185 s with a node configured). Give the process supervisor a stop timeout
-  at least that long. A second signal exits at once.
+  190 s with a node configured and a tool that settles before it runs). Give
+  the process supervisor a stop timeout at least that long. A second signal
+  exits at once.
 - Browser requests carrying an `Origin` that is not allowlisted get HTTP 403.
 - `GET /receipts`, `GET /pricing` (`assets`, and per tool its `accepts`:
   token id, symbol, package hash, raw amount, authorization style). As on

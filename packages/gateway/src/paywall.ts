@@ -33,6 +33,8 @@ import { TokenProbe } from "./token-probe.js";
 export const SETTLE_HEADROOM_SECONDS = 30;
 /** Tolerated clock difference between buyer and gateway. */
 export const MAX_CLOCK_SKEW_SECONDS = 120;
+/** Longest upstream ping before a settle-first call settles (settling is irreversible: the upstream must still answer). */
+export const UPSTREAM_PING_TIMEOUT_MS = 5_000;
 
 /** Facilitators, scheme and payment terms shared by every tool. Built once. */
 export interface PaymentRail {
@@ -93,6 +95,18 @@ export interface GatewayTimeouts {
   settleMs: number;
   /** One upstream MCP request. */
   upstreamMs: number;
+  /** The upstream ping before a settle-first call settles: `upstreamMs`, at most {@link UPSTREAM_PING_TIMEOUT_MS}. */
+  pingMs: number;
+}
+
+/** How long the upstream ping before a settle-first call's settlement may take (see {@link GatewayTimeouts.pingMs}). */
+export function upstreamPingMs(cfg: CascetConfig): number {
+  return Math.min(cfg.timeouts.upstreamMs, UPSTREAM_PING_TIMEOUT_MS);
+}
+
+/** Whether some configured price settles before its tool runs (`settleBeforeExecute`). */
+function anyToolSettlesFirst(cfg: CascetConfig): boolean {
+  return [cfg.pricing.default, ...Object.values(cfg.pricing.tools)].some(price => price?.settleBeforeExecute === true);
 }
 
 /**
@@ -111,19 +125,19 @@ export function gatewayTimeouts(cfg: CascetConfig): GatewayTimeouts {
     settleMs = Math.max(settleMs, timeouts.settleMs);
   }
   const preflightMs = hostedPreflightAssets(cfg).length > 0 ? HOSTED_PREFLIGHT_DEADLINE_MS : 0;
-  return { preflightMs, facilitatorMs, settleMs, upstreamMs: cfg.timeouts.upstreamMs };
+  return { preflightMs, facilitatorMs, settleMs, upstreamMs: cfg.timeouts.upstreamMs, pingMs: upstreamPingMs(cfg) };
 }
 
 /**
  * How long an authorization must still be valid when it arrives: the
- * preflight and the facilitator's verify, then (in the default run-then-settle
- * mode) the tool run, must leave SETTLE_HEADROOM_SECONDS for the settle
- * transaction. Sized with the slowest facilitator, so it holds whichever
- * asset a buyer pays in.
+ * preflight and the facilitator's verify, then the tool run (in the default
+ * run-then-settle mode) or the upstream ping (settleBeforeExecute), must leave
+ * SETTLE_HEADROOM_SECONDS for the settle transaction. Sized with the slowest
+ * facilitator, so it holds whichever asset a buyer pays in.
  */
 export function requiredValiditySeconds(cfg: CascetConfig, settleBeforeExecute: boolean): number {
-  const { preflightMs, facilitatorMs, upstreamMs } = gatewayTimeouts(cfg);
-  const beforeSettleMs = preflightMs + facilitatorMs + (settleBeforeExecute ? 0 : upstreamMs);
+  const { preflightMs, facilitatorMs, upstreamMs, pingMs } = gatewayTimeouts(cfg);
+  const beforeSettleMs = preflightMs + facilitatorMs + (settleBeforeExecute ? pingMs : upstreamMs);
   return Math.ceil(beforeSettleMs / 1_000) + SETTLE_HEADROOM_SECONDS;
 }
 
@@ -140,13 +154,21 @@ export function maxTimeoutSecondsFor(cfg: CascetConfig): number {
  * The longest a paid call can take before the gateway answers: the preflight,
  * the facilitator's verify, the tool, the settle phase (x402's retry of a
  * pending settlement included: the facilitator router keeps both calls within
- * one settle timeout) and, with `settlementCheck`, the on-chain check of a
+ * one settle timeout), when a tool settles before it runs the upstream ping
+ * before its settlement and, with `settlementCheck`, the on-chain check of a
  * settlement that did not succeed. Buyers must wait longer than this, and
  * close() waits this long for calls in flight.
  */
 export function longestPaidCallMs(cfg: CascetConfig, settlementCheck: boolean): number {
-  const { preflightMs, facilitatorMs, upstreamMs, settleMs } = gatewayTimeouts(cfg);
-  return preflightMs + facilitatorMs + upstreamMs + settleMs + (settlementCheck ? PREEMPTION_CHECK_TIMEOUT_MS : 0);
+  const { preflightMs, facilitatorMs, upstreamMs, settleMs, pingMs } = gatewayTimeouts(cfg);
+  return (
+    preflightMs +
+    facilitatorMs +
+    upstreamMs +
+    settleMs +
+    (anyToolSettlesFirst(cfg) ? pingMs : 0) +
+    (settlementCheck ? PREEMPTION_CHECK_TIMEOUT_MS : 0)
+  );
 }
 
 /**

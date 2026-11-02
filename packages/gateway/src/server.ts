@@ -59,6 +59,7 @@ import {
   requiredValiditySeconds,
   settlementNodeUrl,
   unmatchedConfiguredTools,
+  upstreamPingMs,
   type AssetPrice,
   type PaidToolPolicy,
   type PaymentRail,
@@ -80,7 +81,6 @@ import {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_CONCURRENT_CHAIN_CHECKS = 4;
-const UPSTREAM_PING_TIMEOUT_MS = 5_000;
 const CORS_ALLOW_HEADERS = [
   "accept",
   "authorization",
@@ -125,7 +125,8 @@ export interface GatewayOptions {
    * How long close() waits for calls in flight (a paid call may be settling) before it cuts
    * the remaining connections. Default: the longest a paid call can take (see longestPaidCallMs):
    * the preflight, the facilitator's verify, timeouts.upstreamMs, the settle timeout (x402's
-   * retry of a pending settlement shares it) and the on-chain settlement check when it is on.
+   * retry of a pending settlement shares it), the upstream ping before a settle-first call
+   * settles when a tool settles first, and the on-chain settlement check when it is on.
    */
   drainTimeoutMs?: number;
 }
@@ -752,7 +753,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   async function settleThenExecute(req: Request, res: Response, call: PaidCall): Promise<void> {
     // Settling is irreversible: make sure the upstream still answers before charging for a call it must run.
     try {
-      await upstream.ping(Math.min(cfg.timeouts.upstreamMs, UPSTREAM_PING_TIMEOUT_MS));
+      await upstream.ping(upstreamPingMs(cfg));
     } catch (err) {
       log.warn(`[upstream] not answering before settlement of ${logSafe(call.name, 80)}: ${logSafe(err)}`);
       await cancelVerified(call.verified, call.name, { reason: "handler_failed", error: err, responseStatus: 503 });
