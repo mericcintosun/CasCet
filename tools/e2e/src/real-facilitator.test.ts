@@ -489,7 +489,11 @@ describe("startRealFacilitator start-up rules (M07)", () => {
     await fac.close();
   });
 
-  test("a non-loopback bind needs a token on any network", async () => {
+  test("a non-loopback bind needs a long token on any network: the per-IP limit does not slow down guesses", async () => {
+    await assert.rejects(
+      startRealFacilitator({ port: 0, host: "0.0.0.0", keyPath: feePayerPem, authToken: "x".repeat(31), logger: quiet }),
+      /authToken for a non-loopback host must be at least 32 characters/,
+    );
     await assert.rejects(
       startRealFacilitator({ port: 0, host: "0.0.0.0", keyPath: feePayerPem, logger: quiet }),
       /non-loopback/,

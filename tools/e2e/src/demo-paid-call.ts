@@ -135,7 +135,16 @@ export async function runMainnetDemoCall(call: MainnetDemoCall, deps: MainnetDem
     }
 
     const receiptById = async (id: string) => (await deps.listReceipts(base)).find(r => r.id === id);
-    const receipt = runReceipt(await deps.listReceipts(base), { paymentId, tool: call.tool, earlier });
+    // The gateway may have closed itself (a fatal upstream) with the payment already on its way: say where the
+    // transaction is recorded, so that nobody re-runs this with real money to find out.
+    let after: readonly DemoReceipt[];
+    try {
+      after = await deps.listReceipts(base);
+    } catch (err) {
+      error(`could not read the gateway's receipts (${message(err)}); the settlement may have gone through. Check .cascet/*.receipts.jsonl and the fee payer on ${call.explorer} before you run this again.`);
+      return 1;
+    }
+    const receipt = runReceipt(after, { paymentId, tool: call.tool, earlier });
     const settled = receipt?.status === "settled" ? receipt : undefined;
     log("──────── real MAINNET settlement ────────");
     log(`settlement tx: ${receipt?.txHash ?? "(none)"}`);
@@ -150,9 +159,14 @@ export async function runMainnetDemoCall(call: MainnetDemoCall, deps: MainnetDem
     // outcome instead of a fixed delay, so the run reports what happened.
     const anchoringOn = running.health().anchoring.state !== "disabled";
     if (anchoringOn) log(`\n[demo] waiting for the receipt's anchor (up to ${(deps.anchorWait?.timeoutMs ?? ANCHOR_WAIT_MS) / 1000} s)…`);
-    const anchor = await waitForAnchor(settled.id, { health: () => running.health().anchoring, receiptById, ...deps.anchorWait });
-    if (anchor.hash) log(`anchor tx: ${anchor.hash}\n  ${call.explorer}/transaction/${anchor.hash}`);
-    if (anchoringOn && anchor.note !== "anchored") warn(`[demo] ${anchor.note}`);
+    // The payment is settled whatever happens to its anchor: a failure to read it is a warning, not a failed run.
+    try {
+      const anchor = await waitForAnchor(settled.id, { health: () => running.health().anchoring, receiptById, ...deps.anchorWait });
+      if (anchor.hash) log(`anchor tx: ${anchor.hash}\n  ${call.explorer}/transaction/${anchor.hash}`);
+      if (anchoringOn && anchor.note !== "anchored") warn(`[demo] ${anchor.note}`);
+    } catch (err) {
+      warn(`[demo] could not read the receipt's anchor: ${message(err)}`);
+    }
     log(`\n✅ REAL x402 settlement succeeded on Casper MAINNET\n`);
     return 0;
   } finally {

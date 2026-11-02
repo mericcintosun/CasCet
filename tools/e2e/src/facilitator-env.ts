@@ -18,7 +18,7 @@ import type { RealFacilitatorOptions } from "./real-facilitator.js";
  *   CASCET_NETWORK                casper:casper | casper:casper-test (or legacy CASCET_NET=mainnet|testnet)
  *   CASCET_FACILITATOR_KEY        PEM of the fee payer (REQUIRED on mainnet; testnet falls back to the deployer key)
  *   CASCET_FACILITATOR_KEY_ALGO   ed25519 (default) | secp256k1
- *   CASCET_FACILITATOR_TOKEN      shared bearer token, gateway `facilitator.apiKey` (REQUIRED on mainnet, ≥ 32 chars)
+ *   CASCET_FACILITATOR_TOKEN      shared bearer token, gateway `facilitator.apiKey` (REQUIRED, ≥ 32 chars, on mainnet and on a non-loopback host)
  *   CASCET_SELLER_ACCOUNT_HASH    comma list of payTo account hashes the facilitator settles to
  *   CASCET_OWNER_ACCOUNT_HASH     comma list of owner accounts (e.g. a new ReceiptRegistry owner); on mainnet the
  *                                 CasCet deployer is always added. Start is refused on mainnet if the fee payer is

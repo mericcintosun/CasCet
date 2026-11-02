@@ -333,13 +333,13 @@ with real funds.
 | --- | --- | --- |
 | `CASCET_NETWORK` | `casper:casper-test` | `casper:casper` for mainnet (or the legacy `CASCET_NET=mainnet`) |
 | `CASCET_FACILITATOR_KEY` | testnet: the deployer key | PEM of the fee payer, which pays the gas of every settlement; required on mainnet |
-| `CASCET_FACILITATOR_TOKEN` | none | token the gateway sends as `facilitator.apiKey`; required on mainnet (at least 32 characters) and on any non-loopback host |
+| `CASCET_FACILITATOR_TOKEN` | none | token the gateway sends as `facilitator.apiKey`; required, with at least 32 characters, on mainnet and on any non-loopback host |
 | `CASCET_SELLER_ACCOUNT_HASH` | testnet: the demo seller; mainnet: the deployer account | comma-separated `payTo` accounts it settles to |
 | `CASCET_OWNER_ACCOUNT_HASH` | none (mainnet: the deployer is always added) | owner accounts the fee payer must not be |
 | `CASCET_ALLOWED_ASSETS` | CasCet's x402 token | comma-separated token package hashes it settles |
 | `CASCET_SETTLE_PAYMENT_MOTES` | 4 CSPR (`amount` tokens), 2.5 CSPR (`value` tokens) | gas limit per settlement |
 | `CASCET_FACILITATOR_STATE_FILE` | none (testnet warns) | file that keeps every settlement the facilitator submitted across restarts, so a retried settle never submits a second transaction; required on mainnet (`none` runs without one, with a loud warning); one file per facilitator, on persistent storage, never shared |
-| `CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE` | `600` | requests one client IP (the gateway) may send a minute before authentication; raise it when one gateway sends a lot of traffic |
+| `CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE` | `600` | requests without the token one client IP may send a minute before authentication; with no token set every request counts, so raise it when one gateway sends a lot of traffic |
 | `CASCET_FACILITATOR_HOST` / `PORT` | `127.0.0.1` / `4501` | bind address and port |
 
 Every variable, with the mainnet rules and how to back up the state file, is in

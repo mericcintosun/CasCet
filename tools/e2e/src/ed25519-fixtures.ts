@@ -73,6 +73,17 @@ export const ED25519_VECTORS: readonly Ed25519Vector[] = [
     sdk: true,
   },
   {
+    // The chain accepts it: verify_strict refuses small-order points, not mixed-order ones, and 8 divides k here, so
+    // the order-8 part of the key vanishes from the equation. A check that also wanted a torsion-free key would be
+    // stricter than the chain.
+    label: "mixed-order key (aB + an order-8 point), 8 divides k",
+    publicKey: "2b2c88c3abb0bf48d16c56f48241055901155fa503fc5a180bfc96d368280fde",
+    message: "0000000000000000000000000000000000000000000000000000000000000000",
+    signature: "ae9f778ed1919d8f5ff31a22b6c2fd0e273abc752daa709c2a7506858ef373e827f3d4cc673fe488580c281a8d58a818bad7cf4b5a1f67a35c5085d30cdb8a05",
+    chain: true,
+    sdk: true,
+  },
+  {
     label: "mixed-order R (rB + an order-8 point), s = r + k·a",
     publicKey: "f9f8fa92fe5a2790752ea0ec1f356c739ac3a1fa603b5c972fe39225332e0592",
     message: "ba32d4630961b5b18345af763d155115c778eebfd87f5a362de63c09b49687bc",

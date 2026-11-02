@@ -185,10 +185,11 @@ mainnet) before the mainnet run.
 Expected: the agent pays from its on-chain balance of the x402 token; the
 self-hosted facilitator verifies and settles; the receipt is anchored on-chain.
 The script prints the transaction link (e.g. testnet `0218ff4c…`, mainnet
-`2c66141c…`). The testnet demo then waits for the anchor (up to 150 s) and reads
-both transactions back with read-only RPC: it prints the gas limit, consumed
-gas, refund and net cost of the settle and of the anchor, and a limit suggested
-from the measurement (ceil(1.3 × consumed)) next to the configured one.
+`2c66141c…`). Both demos then wait for the anchor (up to 150 s) and print its hash,
+and print the settlement transaction even when the paid call fails. The testnet
+demo also reads both transactions back with read-only RPC: it prints the gas limit,
+consumed gas, refund and net cost of the settle and of the anchor, and a limit
+suggested from the measurement (ceil(1.3 × consumed)) next to the configured one.
 
 ### Two token styles on testnet: CasCet X402 Token and Wrapped CSPR
 
@@ -289,7 +290,7 @@ with `contracts/keys/deployer_secret_key.pem` unless you pass
    ```
 
    It reads the transactions (read-only, `--network casper:casper` for mainnet
-   ones), prints limit, consumed, refund and net cost per transaction, and per
+   ones; it refuses a `CASCET_RPC_URL` node that serves another chain), prints limit, consumed, refund and net cost per transaction, and per
    kind (settle per style, anchor, wrap, transfer) suggests ceil(1.3 × max
    consumed). A suggestion below 2.5 CSPR is a valid limit: Casper's 2.5 CSPR
    (`baseline_motes_amount`) is the minimum balance of the account that submits

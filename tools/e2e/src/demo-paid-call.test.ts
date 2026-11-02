@@ -195,6 +195,33 @@ describe("demo-real-mainnet: what a run reports, and that it always shuts down",
     assert.deepEqual(h.events, ["gateway closed at 0", "facilitator closed at 0"]);
   });
 
+  test("receipts it cannot read after the call: says where the transaction is recorded, and shuts down gracefully", async () => {
+    const h = harness({
+      receiptsAfter: () => {
+        throw new Error("GET /receipts answered 503");
+      },
+    });
+    assert.equal(await runMainnetDemoCall(call(mainnetConfig(false)), h.deps), 1);
+    const report = h.errors.find(l => l.includes("could not read the gateway's receipts"));
+    assert.match(String(report), /GET \/receipts answered 503/);
+    assert.match(String(report), /receipts\.jsonl/);
+    assert.deepEqual(h.events, ["gateway closed at 0", "facilitator closed at 0"]);
+  });
+
+  test("a settled payment whose anchor cannot be read is still a success: a re-run would pay again", async () => {
+    let reads = 0;
+    const h = harness({
+      anchoring: [{ ...idle, inFlight: 1 }],
+      receiptsAfter: () => {
+        if (++reads > 1) throw new Error("connection refused");
+        return [settledReceipt()];
+      },
+    });
+    assert.equal(await runMainnetDemoCall(call(mainnetConfig(true)), h.deps), 0);
+    assert.ok(h.errors.some(l => l.includes("could not read the receipt's anchor: connection refused")));
+    assert.ok(h.logs.some(l => l.includes("REAL x402 settlement succeeded on Casper MAINNET")));
+  });
+
   test("an error anywhere still closes what was started", async () => {
     const h = harness({
       initialize: async () => {

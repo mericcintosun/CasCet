@@ -9,6 +9,7 @@ import {
   isKnownCep3009Asset,
   usdPriceToTokenUnits,
 } from "@cascet/core";
+import { hostedPreflightAssets } from "@cascet/gateway";
 import { TESTNET_WCSPR } from "./wcspr.js";
 
 const example = (file: string) =>
@@ -33,6 +34,9 @@ describe("example configs", () => {
     assert.equal(cfg.facilitator.url, DEFAULT_FACILITATOR_URL);
     assert.equal(cfg.facilitator.authScheme, "raw");
     assert.equal(facilitatorAuthorization(facilitatorFor(cfg, cfg.asset)), "cspr-cloud-access-key");
+    // The hosted facilitator's own nonce check does not work: without a node the gateway's preflight is off.
+    assert.equal(cfg.settlement.nodeUrl, "https://node.testnet.casper.network/rpc");
+    assert.deepEqual(hostedPreflightAssets(cfg).map(asset => asset.id), ["wcspr"]);
   });
 
   test("ships placeholders, never a key or an account", () => {

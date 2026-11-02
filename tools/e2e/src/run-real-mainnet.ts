@@ -130,7 +130,11 @@ async function main(): Promise<number> {
       startGateway,
       createPayingFetch,
       newClient: (url, fetchImpl, options) => new PaidMcpHttpClient(url, fetchImpl, options),
-      listReceipts: async base => ((await (await fetch(`${base}/receipts`)).json()) as { receipts: DemoReceipt[] }).receipts,
+      listReceipts: async base => {
+        const response = await fetch(`${base}/receipts`);
+        if (!response.ok) throw new Error(`GET /receipts answered ${response.status}`);
+        return ((await response.json()) as { receipts: DemoReceipt[] }).receipts;
+      },
       facilitator,
     },
   );

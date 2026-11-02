@@ -122,7 +122,7 @@ pnpm --filter @cascet/e2e facilitator
 | `CASCET_NETWORK` (or legacy `CASCET_NET=mainnet`) | `casper:casper-test` | one network per facilitator |
 | `CASCET_FACILITATOR_KEY` | testnet: deployer key | **required on mainnet**; the fee payer |
 | `CASCET_FACILITATOR_KEY_ALGO` | `ed25519` | or `secp256k1` |
-| `CASCET_FACILITATOR_TOKEN` | none | **required on mainnet**, at least 32 characters; accepted as `Authorization: <token>` or `Bearer <token>` |
+| `CASCET_FACILITATOR_TOKEN` | none | **required on mainnet** and on a non-loopback host, at least 32 characters there; accepted as `Authorization: <token>` or `Bearer <token>` |
 | `CASCET_SELLER_ACCOUNT_HASH` | mainnet: deployer account | comma list of `payTo` accounts it settles to |
 | `CASCET_OWNER_ACCOUNT_HASH` | none (mainnet: the deployer is always added) | comma list of owner accounts; the fee payer must be none of them, nor an associated key of an owner or seller account |
 | `CASCET_ALLOWED_ASSETS` | the CasCet x402 token | comma list of package hashes; each is settled in the style its on-chain ABI shows |
@@ -138,7 +138,7 @@ pnpm --filter @cascet/e2e facilitator
 | `CASCET_TOKEN_NAME` | `CasCet X402 Token` when only the CasCet token is allowlisted | pinned EIP-712 domain name of the single allowlisted asset, checked without RPC (and against the on-chain name when the preflight is on); with several assets use `CASCET_ASSET_NAMES` |
 | `CASCET_RPC_URL` | the network's public endpoint, which is load-balanced (mainnet warns) | use **one** node you run or trust, so balance reads already include the settlements this facilitator observed; a lagging backend can overstate a balance right after a settle, and the next settle then reverts |
 | `CASCET_FACILITATOR_STATE_FILE` | none (testnet warns) | **required on mainnet**: the [state file](#state-file) that keeps every authorization the facilitator submitted a transaction for across restarts; one file per facilitator, on persistent storage, in an existing directory; `none` runs without one (on mainnet with a loud warning) |
-| `CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE` | `600` | requests one client IP may send a minute, on every route, before authentication; raise it when one gateway sends a lot of traffic, and keep it above the 300 `/verify` + `/settle` requests a minute allowed after authentication (the facilitator warns otherwise) |
+| `CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE` | `600` | requests **without the token** one client IP may send a minute, on every route, before authentication; requests with it (the gateway's) are limited after authentication only. With no token set every request counts: then raise it when one gateway sends a lot of traffic, and keep it above the 300 `/verify` + `/settle` requests a minute allowed after authentication (the facilitator warns otherwise) |
 | `CASCET_FACILITATOR_HOST` / `PORT` | `127.0.0.1` / `4501` | a non-loopback host requires the token |
 
 What it enforces:
@@ -146,15 +146,20 @@ What it enforces:
 - **Auth**: constant-time comparison of the shared token; required on mainnet and
   on any non-loopback bind. Keep it bound to `127.0.0.1` next to the gateway; if it
   must be public, front it with TLS.
-- **Rate limits** (express-rate-limit): per client IP before authentication, then
-  across all callers, per payer, and for settles. A settle of an authorization
+- **Rate limits** (express-rate-limit): per client IP before authentication, for
+  requests without the token, then across all callers, per payer, and for settles. A settle of an authorization
   that already has a transaction here passes the limits after authentication: it
   can only follow that transaction or be answered as a duplicate with its hash, so
   the immediate x402 retry of `settlement_pending` never loses the hash to a 429.
   The per-IP limit (600 a minute by default,
-  `CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE`) still counts it: raise it
-  when one gateway sends a lot of traffic, and keep it well above the others (the
-  facilitator warns when it is not above the 300 a minute after authentication).
+  `CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE`) skips requests that carry
+  the token, so behind a TLS proxy, where every client has the proxy's address,
+  traffic without the token cannot use up the gateway's budget. It therefore does
+  not slow down token guesses: the token's length is the defence, which is why it
+  must have at least 32 characters on mainnet and on any non-loopback host. With no
+  token set every request counts, so raise the limit when one gateway sends a lot
+  of traffic (the facilitator warns when it is not above the 300 a minute after
+  authentication).
 - **Allowlists** (required on mainnet): only the configured sellers and tokens;
   payees and payers must be account-hash Keys (`00…`). Contract-package payees
   (`hash-…`, `01…`) are refused: this facilitator, like casper-x402 1.0.0, settles

@@ -8,7 +8,7 @@ import type { Network } from "@x402/core/types";
 import { createCasperRpc, TokenProbe } from "@cascet/gateway";
 import { AuthorizationLedger } from "./authorization-ledger.js";
 import { verifyPaymentSignature } from "./authorization-signature.js";
-import { assertUsableToken, authorizationMatches, MIN_MAINNET_TOKEN_LENGTH } from "./facilitator-auth.js";
+import { assertUsableToken, authorizationMatches, MIN_TOKEN_LENGTH } from "./facilitator-auth.js";
 import {
   checkDomainString,
   checkPaymentMotes,
@@ -75,7 +75,7 @@ export const TOKEN_STATE_CACHE_MS = 5 * 60_000;
  * a reverted deploy burns its whole gas limit. The server therefore:
  *   - binds to 127.0.0.1 by default; a non-loopback host requires the token;
  *   - requires a bearer token (constant-time compare) on /verify and /settle —
- *     always on mainnet, where it must be ≥ 32 characters;
+ *     always on mainnet and beyond loopback, where it must be ≥ 32 characters;
  *   - rate-limits per client IP the requests without the token, before
  *     authentication (behind a TLS proxy every client has one address, and
  *     traffic without the token must not use up the gateway's budget), and
@@ -417,11 +417,13 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     sendRejection(req, res, network, 429, Reason.rateLimited, "too many requests; retry after the window resets");
   };
 
-  // 1) Per client IP, before anything else (also shields the token check), for
-  // requests without the token only. Behind a TLS proxy every client has the
-  // proxy's address: counting the gateway's requests there would let anyone
-  // without the token use up its budget. Its requests are limited after
-  // authentication instead. Without a token configured every request counts, and
+  // 1) Per client IP, before anything else, for requests without the token only.
+  // Behind a TLS proxy every client has the proxy's address: counting the
+  // gateway's requests there would let anyone without the token use up its
+  // budget. Its requests are limited after authentication instead. The price:
+  // the token is compared before this limit, so the limit does not slow down
+  // guesses, and the token's length is the defence against them (at least 32
+  // characters beyond loopback). Without a token configured every request counts, and
   // this limit cannot tell a settle retry of a known transaction from any other
   // request: keep it well above the limits after authentication (default 600
   // against 300 a minute).
@@ -655,7 +657,7 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   // --- refuse unsafe configurations before touching the key ---
   assertUsableToken(opts.authToken, {
     required: mainnet || !isLoopbackHost(host),
-    minLength: mainnet ? MIN_MAINNET_TOKEN_LENGTH : 1,
+    minLength: mainnet || !isLoopbackHost(host) ? MIN_TOKEN_LENGTH : 1,
     label: mainnet ? "authToken (CASCET_FACILITATOR_TOKEN) on mainnet" : "authToken for a non-loopback host",
   });
   const allowedPayTo = opts.allowedPayTo?.map(normalizePayTo);
