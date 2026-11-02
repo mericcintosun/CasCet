@@ -230,3 +230,142 @@ def direct_session() -> Any:
     session = requests.Session()
     session.trust_env = False
     return session
+
+
+# ---- a TLS server on 127.0.0.1, with a throwaway certificate authority made for the test ----
+def throwaway_certificates(directory: str) -> Dict[str, str]:
+    """
+    Write a test CA (ca.pem) and a certificate for 127.0.0.1 it signed (cert.pem, key.pem) into `directory`.
+    The keys are generated for the test and live only there.
+    """
+    import datetime
+    import ipaddress
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    def key_usage(**allowed: bool) -> x509.KeyUsage:
+        names = ("digital_signature", "content_commitment", "key_encipherment", "data_encipherment", "key_agreement",
+                 "key_cert_sign", "crl_sign", "encipher_only", "decipher_only")
+        return x509.KeyUsage(**{name: allowed.get(name, False) for name in names})
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ca_key = ec.generate_private_key(ec.SECP256R1())
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "cascet test CA")])
+    ca = (
+        x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name).public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5)).not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(key_usage(key_cert_sign=True, crl_sign=True), critical=True)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
+    key = ec.generate_private_key(ec.SECP256R1())
+    cert = (
+        x509.CertificateBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")]))
+        .issuer_name(ca_name).public_key(key.public_key()).serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5)).not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(key_usage(digital_signature=True), critical=True)
+        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+        .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
+    paths = {name: str(Path(directory) / name) for name in ("ca.pem", "cert.pem", "key.pem")}
+    Path(paths["ca.pem"]).write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+    Path(paths["cert.pem"]).write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    Path(paths["key.pem"]).write_bytes(
+        key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    )
+    return paths
+
+
+class TlsServer:
+    """
+    A TLS server on an ephemeral 127.0.0.1 port that serves one connection at a time. After the handshake it
+    reads one HTTP request (headers and Content-Length body) into `requests`, then hands the TLS socket to
+    `app(tls_socket, server)`. A failed handshake is recorded in `handshake_errors`. Use it as a context manager.
+    """
+
+    def __init__(self, app: Callable[[Any, "TlsServer"], None], certfile: str, keyfile: str):
+        import socket
+        import ssl
+
+        self.app = app
+        self.requests: List[bytes] = []
+        self.handshake_errors: List[str] = []
+        self.stop = threading.Event()
+        self._context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self._context.load_cert_chain(certfile, keyfile)
+        self._socket = socket.socket()
+        self._socket.bind(("127.0.0.1", 0))
+        self._socket.listen(4)
+        self._socket.settimeout(0.05)
+        self.url = f"https://127.0.0.1:{self._socket.getsockname()[1]}"
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def _serve(self) -> None:
+        while not self.stop.is_set():
+            try:
+                conn, _ = self._socket.accept()
+            except OSError:  # the accept timeout, or the socket was closed
+                continue
+            conn.settimeout(5)
+            try:
+                tls = self._context.wrap_socket(conn, server_side=True)
+            except OSError as exc:  # ssl.SSLError included: the client refused the certificate
+                self.handshake_errors.append(repr(exc))
+                conn.close()
+                continue
+            with tls:
+                try:
+                    self.requests.append(self._read_request(tls))
+                    self.app(tls, self)
+                except OSError:  # the client gave up first
+                    pass
+
+    @staticmethod
+    def _read_request(tls: Any) -> bytes:
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = tls.recv(4096)
+            if not chunk:
+                return data
+            data += chunk
+        head, _, body = data.partition(b"\r\n\r\n")
+        length = 0
+        for line in head.split(b"\r\n")[1:]:
+            name, _, value = line.partition(b":")
+            if name.strip().lower() == b"content-length":
+                length = int(value.strip())
+        while len(body) < length:
+            chunk = tls.recv(4096)
+            if not chunk:
+                break
+            body += chunk
+        return head + b"\r\n\r\n" + body
+
+    def __enter__(self) -> "TlsServer":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.stop.set()
+        self._thread.join(5)
+        self._socket.close()
+
+
+def corrupt_tls(tls: Any) -> None:
+    """Write bytes that are not a TLS record straight to the socket under `tls`, as a broken proxy might."""
+    import os
+
+    os.write(tls.fileno(), b"this is not a TLS record\r\n" * 4)
+    try:
+        tls.recv(1)  # wait for the client to give up, so the bytes are not cut short by a reset
+    except OSError:
+        pass

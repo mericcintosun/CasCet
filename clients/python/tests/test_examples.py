@@ -9,6 +9,7 @@ import io
 import json
 import os
 import socket
+import ssl
 import tempfile
 import unittest
 from unittest import mock
@@ -16,10 +17,12 @@ from unittest import mock
 import requests
 import urllib3
 from cryptography.hazmat.primitives import serialization
+from urllib3.util.ssl_match_hostname import CertificateError
 
 from helpers import (
-    MAINNET, SELLER, TEST_KEY, TESTNET, TOKEN, OTHER_TOKEN, WCSPR, FakeResponse, FakeSession, LocalServer, challenge,
-    direct_session, legacy_requirements, make_payment_required, wcspr_requirements, x402,
+    MAINNET, SELLER, TEST_KEY, TESTNET, TOKEN, OTHER_TOKEN, WCSPR, FakeResponse, FakeSession, LocalServer, TlsServer,
+    challenge, corrupt_tls, direct_session, legacy_requirements, make_payment_required, throwaway_certificates,
+    wcspr_requirements, x402,
 )
 
 import example_gateway  # noqa: E402  (helpers puts clients/python on sys.path)
@@ -413,6 +416,20 @@ def dropped_connection():
     )
 
 
+def tls_error(reason):
+    """What requests raises for a TLS error, in the handshake or after the request went out alike."""
+    return requests.exceptions.SSLError(
+        urllib3.exceptions.MaxRetryError(None, "/settle", urllib3.exceptions.SSLError(reason))
+    )
+
+
+def certificate_not_verified():
+    """What requests raises when the facilitator's certificate does not verify: the handshake stops."""
+    return tls_error(ssl.SSLCertVerificationError(
+        1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate"
+    ))
+
+
 class TestSettleOutcome(unittest.TestCase):
     """A settle that may still execute is reported as an unknown outcome (exit 3), never as a failure to re-run."""
 
@@ -462,17 +479,33 @@ class TestSettleOutcome(unittest.TestCase):
         for error in (
             refused_connection(),
             requests.exceptions.ConnectTimeout("HTTPSConnectionPool(host='x402-facilitator.cspr.cloud'): timed out"),
-            requests.exceptions.SSLError(urllib3.exceptions.MaxRetryError(
-                None, "/settle", urllib3.exceptions.SSLError("certificate verify failed"))),
+            certificate_not_verified(),
         ):
             with self.subTest(error=type(error).__name__):
                 code, out = self.run_main(["--asset", "wcspr"], self.hosted_env, error=error)
                 self.assert_failed(code, out)
                 self.assertIn("facilitator unreachable", out)
 
+    def test_an_error_that_can_come_after_the_request_is_an_unknown_outcome(self):
+        for error in (
+            # The same SSLError as a failed handshake, raised while the answer was awaited or read.
+            tls_error(ssl.SSLError(1, "[SSL: RECORD_LAYER_FAILURE] record layer failure (_ssl.c:2711)")),
+            requests.exceptions.SSLError(urllib3.exceptions.SSLError(ssl.SSLError(1, "[SSL: BAD_RECORD_MAC] bad record mac"))),
+            # urllib3 raises it while it parses the answer; requests itself never could (the keys are checked first).
+            requests.exceptions.InvalidHeader("Content-Length contained multiple unmatching values (17, 18)"),
+        ):
+            with self.subTest(error=str(error)[:60]):
+                code, out = self.run_main(["--asset", "wcspr"], self.hosted_env, error=error)
+                self.assert_unknown(code, out)
+
     def test_request_never_left(self):
         self.assertTrue(example_settle.request_never_left(refused_connection()))
         self.assertTrue(example_settle.request_never_left(requests.exceptions.ConnectTimeout("timed out")))
+        self.assertTrue(example_settle.request_never_left(certificate_not_verified()))
+        self.assertTrue(example_settle.request_never_left(tls_error(CertificateError("hostname '127.0.0.2' doesn't match"))))
+        self.assertFalse(example_settle.request_never_left(tls_error(ssl.SSLError(1, "[SSL] record layer failure"))))
+        self.assertFalse(example_settle.request_never_left(tls_error(ssl.SSLEOFError(8, "EOF occurred in violation"))))
+        self.assertFalse(example_settle.request_never_left(requests.exceptions.InvalidHeader("Content-Length: 17, 18")))
         self.assertFalse(example_settle.request_never_left(dropped_connection()))
         self.assertFalse(example_settle.request_never_left(requests.exceptions.ReadTimeout("read timed out")))
         self.assertFalse(example_settle.request_never_left(requests.exceptions.ConnectionError("no cause")))
@@ -602,6 +635,77 @@ class TestSettleOverSockets(unittest.TestCase):
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
         code, out = self.run_main(f"http://127.0.0.1:{port}")
+        self.assertEqual(code, example_settle.EXIT_FAILED, out)
+        self.assertIn("facilitator unreachable", out)
+        self.assertNotIn("outcome unknown", out)
+
+    def test_an_answer_urllib3_cannot_parse(self):
+        def conflicting_lengths(handler, server):  # a settle verdict whose Content-Length values disagree
+            body = b'{"success": true}'
+            handler.send_response(200)
+            handler.send_header("Content-Type", "application/json")
+            handler.send_header("Content-Length", f"{len(body)}, {len(body) + 1}")
+            handler.end_headers()
+            handler.wfile.write(body)
+            handler.close_connection = True
+
+        with LocalServer(conflicting_lengths) as server:
+            code, out = self.run_main(server.url)
+        self.assertEqual(len(server.requests), 1)
+        self.assertEqual(code, example_settle.EXIT_OUTCOME_UNKNOWN, out)
+        self.assertIn("InvalidHeader", out)
+        self.assertNotIn("unreachable", out)
+
+
+class TestSettleOverTls(unittest.TestCase):
+    """TLS errors over real sockets: only a certificate that does not verify shows that nothing was sent."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.certs = throwaway_certificates(tmp.name)
+
+    def serve(self, app):
+        return TlsServer(app, self.certs["cert.pem"], self.certs["key.pem"])
+
+    def run_main(self, url, *, trusted=True):
+        env = {"CASCET_KEY_PATH": write_test_pem(self)}
+        out = io.StringIO()
+        with direct_session() as session:  # ignores proxy settings from the environment
+            session.verify = self.certs["ca.pem"] if trusted else True
+            with mock.patch.object(example_settle.requests, "post", side_effect=session.post), \
+                    mock.patch.object(example_settle, "SETTLE_TIMEOUT", (5, 5)):
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                    code = example_settle.main(["--facilitator", url], env)
+        return code, out.getvalue()
+
+    def assert_unknown_after_the_request(self, server, code, out):
+        self.assertEqual(len(server.requests), 1)
+        self.assertIn(b'"paymentPayload"', server.requests[0], "the facilitator read the whole settle request")
+        self.assertEqual(code, example_settle.EXIT_OUTCOME_UNKNOWN, out)
+        self.assertIn("SSLError", out)
+        self.assertIn("can pay twice", out)
+        self.assertNotIn("unreachable", out)
+
+    def test_a_tls_error_before_the_answer(self):
+        with self.serve(lambda tls, server: corrupt_tls(tls)) as server:
+            code, out = self.run_main(server.url)
+        self.assert_unknown_after_the_request(server, code, out)
+
+    def test_a_tls_error_in_the_middle_of_the_answer(self):
+        def answer_then_break(tls, server):
+            tls.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n{\"success\":")
+            corrupt_tls(tls)
+
+        with self.serve(answer_then_break) as server:
+            code, out = self.run_main(server.url)
+        self.assert_unknown_after_the_request(server, code, out)
+
+    def test_a_certificate_that_does_not_verify(self):
+        with self.serve(lambda tls, server: None) as server:
+            code, out = self.run_main(server.url, trusted=False)
+        self.assertEqual(server.requests, [])
+        self.assertEqual(len(server.handshake_errors), 1)
         self.assertEqual(code, example_settle.EXIT_FAILED, out)
         self.assertIn("facilitator unreachable", out)
         self.assertNotIn("outcome unknown", out)

@@ -83,11 +83,13 @@ Exit status:
        (a hosted failure without a transaction hash prints the caution of 3)
     2  invalid options
     3  outcome unknown: the request may have reached the facilitator but no
-       answer came back, or the facilitator could not tell whether the
-       transfer executed (settlement_pending, settlement_unknown, or a server
-       error that does not say). The settle may still execute. Check the
-       payer's token balance and the explorer before running again: a re-run
-       signs a new authorization and can pay twice.
+       answer came back (a timeout, a dropped connection, a TLS error other
+       than a certificate that does not verify, an answer that cannot be
+       parsed), or the facilitator could not tell whether the transfer
+       executed (settlement_pending, settlement_unknown, or a server error
+       that does not say). The settle may still execute. Check the payer's
+       token balance and the explorer before running again: a re-run signs a
+       new authorization and can pay twice.
 """
 from __future__ import annotations
 
@@ -95,15 +97,17 @@ import argparse
 import ipaddress
 import os
 import re
+import ssl
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 import requests
 import urllib3
+from urllib3.util.ssl_match_hostname import CertificateError
 
 from cascet_x402 import (
     AUTHORIZATION_STYLE_EXTRA_KEY,
@@ -154,6 +158,9 @@ UNKNOWN_SETTLEMENT_STATUSES = frozenset({"pending", "unknown"})
 _TX_HASH_RE = re.compile(r"[0-9a-fA-F]{64}")
 #: A facilitator key: one line of printable ASCII without spaces (used with fullmatch).
 _FACILITATOR_KEY_RE = re.compile(r"[\x21-\x7e]{1,256}")
+#: TLS errors raised only in the handshake, before the request is sent: a certificate that does not verify
+#: (ssl's own check, or urllib3's when it matches the hostname itself).
+_HANDSHAKE_ONLY_ERRORS = (ssl.SSLCertVerificationError, CertificateError)
 
 
 @dataclass(frozen=True)
@@ -419,30 +426,50 @@ def settle_request(payment_payload: dict, requirements: dict) -> dict:
     return {"x402Version": X402_VERSION, "paymentPayload": payment_payload, "paymentRequirements": requirements}
 
 
+def _wrapped_errors(exc: BaseException) -> Iterator[BaseException]:
+    """`exc` and every error it wraps: requests and urllib3 keep the original in args[0], `reason` or the chain."""
+    seen = set()
+    pending = [exc]
+    while pending:
+        err = pending.pop()
+        if id(err) in seen:
+            continue
+        seen.add(id(err))
+        yield err
+        for inner in (getattr(err, "reason", None), err.__cause__, err.__context__, err.args[0] if err.args else None):
+            if isinstance(inner, BaseException):
+                pending.append(inner)
+
+
 def request_never_left(exc: requests.RequestException) -> bool:
     """
     Whether `exc` ended the /settle POST before the facilitator could have
-    received it: the connection, the DNS lookup or the TLS handshake failed,
-    or the request was refused while it was being prepared.
+    received it: the connection or the DNS lookup failed, the facilitator's
+    certificate did not verify, or the request was refused while it was
+    being prepared.
 
-    requests raises a failed connect as ConnectTimeout, as SSLError (TLS
-    handshake), or as a ConnectionError around urllib3's MaxRetryError with a
-    NewConnectionError (connection refused, DNS). A connection dropped or
-    reset after the request went out is a ConnectionError around urllib3's
-    ProtocolError instead, and a slow answer a ReadTimeout. The facilitator
-    may already have broadcast the transfer then, so those, and any other
-    error, leave the outcome unknown.
+    requests raises a failed connect as ConnectTimeout, or as a
+    ConnectionError around urllib3's MaxRetryError with a NewConnectionError
+    (connection refused, DNS), and a certificate that does not verify stops
+    the TLS handshake. Any other error can come after the request went out,
+    when the facilitator may already have broadcast the transfer, so it
+    leaves the outcome unknown: another TLS error (an SSLError, which
+    requests raises the same way while the answer is awaited or read as in
+    the handshake), a connection dropped or reset (a ConnectionError around
+    urllib3's ProtocolError), a slow answer (ReadTimeout), an answer urllib3
+    cannot parse (InvalidHeader, such as a Content-Length with values that
+    disagree).
     """
+    if isinstance(exc, requests.exceptions.SSLError):
+        return any(isinstance(err, _HANDSHAKE_ONLY_ERRORS) for err in _wrapped_errors(exc))
     if isinstance(
         exc,
         (
             requests.exceptions.ConnectTimeout,
-            requests.exceptions.SSLError,
             requests.exceptions.ProxyError,
             requests.exceptions.InvalidURL,
             requests.exceptions.InvalidSchema,
             requests.exceptions.MissingSchema,
-            requests.exceptions.InvalidHeader,
         ),
     ):
         return True
