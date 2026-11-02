@@ -1045,7 +1045,10 @@ def _direct_proxies(url: str) -> Optional[Dict[str, None]]:
         loopback_http = parts.scheme.lower() == "http" and _is_loopback_host(parts.hostname)
     except ValueError:  # requests reports a malformed URL itself
         return None
-    return {"http": None, "https": None, "all": None} if loopback_http else None
+    if not loopback_http:
+        return None
+    # The host's own keys as well: requests prefers them, also from a session's `proxies`.
+    return {"http": None, "https": None, "all": None, f"http://{parts.hostname}": None, f"all://{parts.hostname}": None}
 
 
 #: A deadline in seconds for a whole PayingClient call, or None for no deadline.

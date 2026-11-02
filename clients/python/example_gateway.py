@@ -21,9 +21,10 @@ payment through its facilitator; the settlement comes back in PAYMENT-RESPONSE.
 Exit status: 0 the call succeeded; 1 it did not (a refusal before anything was
 signed, an unreachable gateway, a rejected payment, an error answer); 2 invalid
 options or settings; 3 outcome unknown: the payment was authorized but no
-answer came back (the deadline passed, or the connection broke), and the
-gateway may still settle it. Check the payer's token balance before running
-again then: a re-run signs a new authorization and can pay twice.
+verdict came back (the deadline passed, the connection broke, a server or proxy
+error, or the gateway's own "settlement unknown" answer), and it may still
+settle. Check the payer's token balance before running again then: a re-run
+signs a new authorization and can pay twice.
 
 To pay in one of the two tokens a CasCet gateway may offer, name it instead of
 its package hash: `--asset legacy` (the CasCet X402 Token, on testnet or
@@ -60,6 +61,8 @@ from cascet_x402 import (
 
 #: The payment was authorized but no answer came back: the gateway may still settle it.
 EXIT_OUTCOME_UNKNOWN = 3
+#: The JSON-RPC error a CasCet gateway answers when it cannot tell whether a settlement went through.
+RPC_SETTLEMENT_UNKNOWN = -32003
 
 #: Package hashes of the tokens --asset names, by network.
 ASSETS: Dict[str, Dict[str, str]] = {
@@ -191,11 +194,23 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
         print(f"[python] settled: tx={shown(settlement.get('transaction'))} payer={shown(settlement.get('payer'))} "
               f"payment-id={shown(response.headers.get(HEADER_CASCET_PAYMENT_ID))}", file=sys.stderr)
     try:
-        print(json.dumps(response.json(), indent=2))  # ensure_ascii: every control character comes out escaped
+        answer = response.json()
+        print(json.dumps(answer, indent=2))  # ensure_ascii: every control character comes out escaped
     except ValueError:
+        answer = None
         print(f"HTTP {response.status_code}: {shown(response.text[:500], 500)}")
-        return 1
-    return 0 if response.ok else 1
+    error = answer.get("error") if isinstance(answer, dict) else None
+    # A signed payment and no verdict: the gateway's own "settlement unknown" answer (HTTP 200), or a server
+    # or proxy error that may have come after the gateway received the payment.
+    if authorized and (response.status_code >= 500 or (isinstance(error, dict) and error.get("code") == RPC_SETTLEMENT_UNKNOWN)):
+        print(
+            f"the gateway answered {response.status_code} after the payment was authorized, without saying it settled. "
+            "The payment may still settle: check the payer's token balance before running this again, as a re-run "
+            "signs a new authorization and can pay twice.",
+            file=sys.stderr,
+        )
+        return EXIT_OUTCOME_UNKNOWN
+    return 0 if response.ok and answer is not None and error is None else 1
 
 
 if __name__ == "__main__":

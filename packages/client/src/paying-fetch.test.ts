@@ -1,6 +1,7 @@
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import net from "node:net";
 import type { AddressInfo } from "node:net";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -77,7 +78,8 @@ function requirement(overrides: Record<string, unknown> = {}): Record<string, un
  * A tiny x402 resource: 402 without PAYMENT-SIGNATURE, 200 with it. /hang never answers; /redirect redirects;
  * /big402 streams a 402 body larger than MAX_402_BODY_BYTES (chunked), /big402-declared declares one;
  * /reject-paid answers 402 to the paid retry too (as a gateway whose verification failed); /slow402 answers
- * its 402 after 600 ms; /stall-body sends a 200 and the start of its body, then nothing more.
+ * its 402 after 600 ms; /stall-body sends a 200 and the start of its body, then nothing more; /stall-402 the
+ * same with a 402.
  */
 async function startFakeGateway(): Promise<FakeGateway> {
   const hits: Hit[] = [];
@@ -94,6 +96,12 @@ async function startFakeGateway(): Promise<FakeGateway> {
       hits.push(hit);
       res.on("close", () => (hit.closedAt = Date.now()));
       if (path === "/hang") return; // never answer
+      if (path === "/stall-402") {
+        const paymentRequired = { x402Version: state.x402Version, accepts: state.accepts };
+        res.writeHead(402, { "payment-required": Buffer.from(JSON.stringify(paymentRequired)).toString("base64") });
+        res.write("{");
+        return;
+      }
       if (path === "/stall-body") {
         res.writeHead(200, { "content-type": "application/json" }).write('{"jsonrpc":"2.0",'); // and never more
         return;
@@ -198,6 +206,84 @@ function stalledBody(head = '{"jsonrpc":"2.0",'): { body: ReadableStream<Uint8Ar
 }
 
 describe("settleOnAbort and withDeadline", () => {
+  /** A real server answering `status`, which http.createServer refuses to send for some values. */
+  async function rawStatusServer(status: number): Promise<{ url: string; closed: Promise<void>; close: () => Promise<void> }> {
+    let notify: () => void = () => undefined;
+    const closed = new Promise<void>(resolve => (notify = resolve));
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer(socket => {
+      sockets.add(socket);
+      socket.on("error", () => undefined);
+      socket.on("close", notify);
+      socket.once("data", () => socket.write(`HTTP/1.1 ${status} Odd\r\ncontent-type: text/plain\r\ntransfer-encoding: chunked\r\n\r\n2\r\nhi\r\n`));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    return {
+      url: `http://127.0.0.1:${port}/x`,
+      closed,
+      close: () =>
+        new Promise<void>(resolve => {
+          for (const socket of sockets) socket.destroy();
+          server.close(() => resolve());
+        }),
+    };
+  }
+
+  it("keep a status the Response constructor refuses, and still end its body at the deadline", { timeout: 10_000 }, async () => {
+    for (const status of [600, 999]) {
+      const raw = await rawStatusServer(status);
+      try {
+        const response = await withDeadline(fetch, 300)(raw.url);
+        assert.equal(response.status, status);
+        assert.equal(response.ok, false);
+        assert.equal(response.clone().status, status, "a clone reads the same");
+        await assert.rejects(response.text(), RequestTimeoutError);
+        await raw.closed; // the deadline closed the connection
+      } finally {
+        await raw.close();
+      }
+    }
+  });
+
+  it("keep what a response says about itself", { timeout: 5_000 }, async () => {
+    const raw = await rawStatusServer(200);
+    try {
+      const direct = await fetch(raw.url);
+      await direct.body?.cancel();
+      const bound = await withDeadline(fetch, 200)(raw.url);
+      assert.deepEqual([bound.url, bound.redirected, bound.type], [direct.url, direct.redirected, direct.type]);
+      assert.equal(bound.clone().url, direct.url);
+      await bound.body?.cancel();
+    } finally {
+      await raw.close();
+    }
+  });
+
+  it("leave no timer behind once the body has been read", { timeout: 5_000 }, async () => {
+    // The deadline's timer is unref'd, so process.getActiveResourcesInfo() does not show it: watch it directly.
+    const { setTimeout: realSet, clearTimeout: realClear } = globalThis;
+    const running = new Set<unknown>();
+    globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+      const timer = realSet(fn, ms);
+      if (ms === 60_000) running.add(timer);
+      return timer;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((timer: Parameters<typeof clearTimeout>[0]) => {
+      running.delete(timer);
+      realClear(timer);
+    }) as typeof clearTimeout;
+    try {
+      const response = await withDeadline(async () => new Response("body"), 60_000)("http://127.0.0.1:9/x");
+      assert.equal(running.size, 1, "the deadline runs while the body is unread");
+      assert.equal(await response.text(), "body");
+      assert.equal(running.size, 0);
+    } finally {
+      globalThis.setTimeout = realSet;
+      globalThis.clearTimeout = realClear;
+    }
+  });
+
   it("end a call at its deadline even when the fetch never settles and ignores its signal", { timeout: 5_000 }, async () => {
     // Nothing else holds the event loop open, and on Node 22 and 23 node:test cancels a test whose only
     // pending handle is an unref'd timer (the deadline's), with every test after it in the file.
@@ -547,6 +633,14 @@ describe("createPayingFetch", () => {
         assert.ok(Date.now() - started < 2_000);
         await until(() => gateway.hits[before]?.closedAt !== undefined, 2_000, "the gateway to see the connection closed");
       }
+    });
+
+    it("closes a 402 whose body stalls, at the deadline", { timeout: 10_000 }, async () => {
+      globalThis.fetch = ((input: Parameters<typeof fetch>[0]) => realFetch(new Request(input, { signal: null }))) as typeof fetch;
+      const paying = await make({ timeoutMs: 200 });
+      const before = gateway.hits.length;
+      await assert.rejects(paying.fetch(gateway.url("/stall-402"), { method: "POST", body: "{}" }), RequestTimeoutError);
+      await until(() => gateway.hits[before]?.closedAt !== undefined, 2_000, "the gateway to see the connection closed");
     });
 
     it("never sends the paid retry once the call is over, even when the 402 comes back later", { timeout: 10_000 }, async () => {

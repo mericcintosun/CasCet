@@ -178,19 +178,41 @@ export function bindBody(response: Response, signal: AbortSignal, done: () => vo
     },
     { highWaterMark: 0 },
   );
-  let bound: Response;
-  try {
-    bound = new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
-  } catch {
-    // A status text the Response constructor refuses (it takes no character above U+00FF).
-    bound = new Response(body, { status: response.status, headers: response.headers });
-  }
+  const bound = sameResponse(body, response);
   // Locked before returning: nothing refers to `response` from here on, and undici cancels the body
   // of a Response that is collected while its body is still unlocked.
   const reader = source.getReader();
   if (signal.aborted) onAbort();
   else signal.addEventListener("abort", onAbort, { once: true });
   return bound;
+}
+
+/**
+ * A Response with `body` that reads as `response` does. Its constructor takes
+ * a status only in 200-599 and no url, redirect flag or type, while fetch
+ * answers with any status up to 999, so those are set on the new object (and
+ * on its clones). The body does not offer BYOB readers.
+ */
+function sameResponse(body: ReadableStream<Uint8Array>, response: Response): Response {
+  const { status, statusText, headers, url, redirected, type } = response;
+  const unusual = status < 200 || status > 599;
+  const init = { status: unusual ? 200 : status, headers };
+  let bound: Response;
+  try {
+    bound = new Response(body, { ...init, statusText });
+  } catch {
+    // A status text the Response constructor refuses (it takes no character above U+00FF).
+    bound = new Response(body, init);
+  }
+  const reads = (target: Response): Response =>
+    Object.defineProperties(target, {
+      url: { value: url },
+      redirected: { value: redirected },
+      type: { value: type },
+      clone: { value: () => reads(Response.prototype.clone.call(target)) },
+      ...(unusual ? { status: { value: status }, ok: { value: false } } : {}),
+    });
+  return reads(bound);
 }
 
 /**

@@ -591,6 +591,22 @@ class TestSettleOutcome(unittest.TestCase):
             200, "invalid_exact_casper_facilitator_settle_failed", "Timed out waiting for transaction 1234"))
         self.assert_failed(code, out)
 
+    def test_a_hosted_failure_with_a_transaction_hash_is_an_unknown_outcome(self):
+        # A hash means something was broadcast, whatever the reason says, unless the message says it reverted.
+        failure = {"success": False, "errorReason": "something_else", "transaction": "ab" * 32, "network": TESTNET}
+        self.assertEqual(example_settle.hosted_failure(failure), "unknown")
+        # A reverted transfer is no unknown outcome; this reason is not one the script recognizes either.
+        self.assertIsNone(
+            example_settle.hosted_failure({**failure, "errorMessage": "transaction execution failed: User error: 64658"})
+        )
+
+    def test_only_plain_http_to_this_machine_skips_the_proxies(self):
+        direct = {"http": None, "https": None, "all": None}
+        self.assertEqual(example_settle.settle_proxies("http://127.0.0.1:4501"), direct)
+        for url in ("https://x402-facilitator.cspr.cloud", "https://127.0.0.1:4501", "http://facilitator.example.test"):
+            with self.subTest(url=url):
+                self.assertIsNone(example_settle.settle_proxies(url))
+
     def test_hosted_failures_that_say_nothing_moved(self):
         hosted = ["--asset", "wcspr", "--facilitator", "hosted"]
         for reason, message in (
@@ -855,6 +871,34 @@ class TestGatewayExample(unittest.TestCase):
         self.assertEqual(code, 1, err)
         self.assertIn("did not answer in time", err)
         self.assertNotIn("may still settle", err)
+
+    def test_an_answer_with_no_verdict_after_the_payment_is_an_unknown_outcome(self):
+        url = "https://gateway.test/mcp"
+        unknown = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32003, "message": "settlement unknown"}}
+        for name, answer in (
+            ("the gateway's own settlement unknown", GatewayResponse(200, {}, body=unknown)),
+            ("a proxy's 504", TextResponse(504, {})),
+            ("a gateway's 500", GatewayResponse(500, {}, body={"error": "internal"})),
+        ):
+            session = GatewaySession(challenge(make_payment_required(legacy_requirements())), answer)
+            with self.subTest(name):
+                code, err, _ = self.run_with(session, [url, "echo"], self.env)
+                self.assertEqual(code, example_gateway.EXIT_OUTCOME_UNKNOWN, err)
+                self.assertIn("may still settle", err)
+                self.assertIn("can pay twice", err)
+
+    def test_an_error_answer_is_a_failure_and_no_caution_without_a_payment(self):
+        url = "https://gateway.test/mcp"
+        tool_failed = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "tool failed"}}
+        paid = GatewaySession(challenge(make_payment_required(legacy_requirements())), GatewayResponse(200, {}, body=tool_failed))
+        code, err, _ = self.run_with(paid, [url, "echo"], self.env)
+        self.assertEqual(code, 1, err)
+        self.assertNotIn("may still settle", err)
+        # Nothing was signed: a 504 or the same code before any payment is a plain failure.
+        for answer in (TextResponse(504, {}), GatewayResponse(200, {}, body={"error": {"code": -32003}})):
+            code, err, _ = self.run_with(GatewaySession(answer), [url, "echo"], self.env)
+            self.assertEqual(code, 1, err)
+            self.assertNotIn("may still settle", err)
 
     def test_text_from_the_gateway_is_escaped(self):
         # A hostile gateway must not clear the terminal, fake a line ("settled: tx=...") or reorder the output.

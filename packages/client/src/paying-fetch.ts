@@ -20,6 +20,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   decodeBase64Json,
   encodeBase64Json,
+  bindBody,
   readTextCapped,
   RequestTimeoutError,
   validateTimeoutMs,
@@ -565,7 +566,8 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
       const response = await baseFetch(i, callSignal ? { ...n, signal: callSignal } : n);
       if (response.status !== 402) return response;
       // @x402/fetch would read an unbounded 402 body into memory (L117): give it a capped copy.
-      const text = await readTextCapped(response, MAX_402_BODY_BYTES, "the gateway's 402 response");
+      // Bound to the call's signal: a gateway that stalls inside this body must not hold the connection past the deadline.
+      const text = await readTextCapped(callSignal ? bindBody(response, callSignal) : response, MAX_402_BODY_BYTES, "the gateway's 402 response");
       const headers = new Headers(response.headers);
       headers.delete("content-length");
       headers.delete("content-encoding");

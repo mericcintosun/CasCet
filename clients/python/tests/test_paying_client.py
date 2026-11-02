@@ -771,6 +771,18 @@ class TestRealHttp(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             response.close()
 
+    def test_only_plain_http_to_this_machine_skips_the_proxies(self):
+        for url in ("https://gateway.test/mcp", "https://127.0.0.1:4402/mcp", "http://gateway.test/mcp", "not a url"):
+            with self.subTest(url=url):
+                self.assertIsNone(x402._direct_proxies(url))
+        direct = x402._direct_proxies("http://127.0.0.1:4402/mcp")
+        self.assertIsNone(direct["http"])
+        # A proxy a session names for exactly this host loses too: requests looks up the host's own keys first.
+        session = requests.Session()
+        session.proxies = {"http://127.0.0.1": "http://proxy.test:1", "all://127.0.0.1": "http://proxy.test:1"}
+        settings = session.merge_environment_settings("http://127.0.0.1:4402/mcp", direct, False, None, None)
+        self.assertIsNone(requests.utils.select_proxy("http://127.0.0.1:4402/mcp", settings["proxies"]))
+
     def test_a_gateway_on_this_machine_is_reached_directly_whatever_the_proxy_settings(self):
         # Plain http:// is paid over only to this machine; through HTTP_PROXY or ALL_PROXY the request and its
         # PAYMENT-SIGNATURE would reach another machine in cleartext.
