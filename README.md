@@ -149,7 +149,7 @@ This is not a portable pattern dressed in Casper branding — it leans on things
 | `servers/casper-defi-data` | Flagship paid MCP: CSPR market data, RWA prices, DeFi yields (live + labeled fallback) |
 | `servers/portfolio-analyst` | Paid MCP that **buys** from the data server — the cascade in action |
 | `apps/dashboard` | Next.js + shadcn/ui live dashboard + x402 economy explorer (dark/light/system) |
-| `contracts` | Odra 2.8.2 (5): `ReceiptRegistry`, `RevenueSplit`, `CascadeController`, `PaymentChannel`, `DemoToken` (CEP-18), with tests |
+| `contracts` | Odra 2.9.1 (5): `ReceiptRegistry`, `RevenueSplit`, `CascadeController`, `PaymentChannel`, `DemoToken` (CEP-18), with tests |
 | `examples/wrap-third-party` | Wrapping the official `server-everything` MCP server as paid, on testnet, with your own keys |
 | `tools/e2e` | The self-hosted x402 facilitator, plus the end-to-end demos (real settlement on Casper testnet and mainnet) |
 | `registry` | MCP Registry listing for the `casper-defi-data` server (testnet) |
