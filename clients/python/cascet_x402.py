@@ -142,6 +142,14 @@ VALID_AFTER_SKEW_SECONDS = 600
 #: `maxTimeoutSeconds` a server asks for (a hostile 402 could ask for years).
 #: The TS client's `maxAuthorizationSeconds` default.
 MAX_VALIDITY_SECONDS = 900
+#: Longest EIP-712 domain name (`extra.name`) an `accepts` entry may carry,
+#: counted in UTF-16 code units as the TS client counts it (String.length), so
+#: both clients refuse the same entries: the bound CasCet's self-hosted
+#: facilitator puts on a token name it pins. Real tokens use a few characters.
+MAX_TOKEN_NAME_LENGTH = 100
+#: Longest EIP-712 domain version (`extra.version`), counted the same way: the
+#: facilitator's bound for a pinned version. Tokens use "1".
+MAX_TOKEN_VERSION_LENGTH = 20
 
 # ---- token authorization styles (same names and values as @cascet/core) ----
 #: How a token's `transfer_with_authorization` takes the amount. Both styles
@@ -534,9 +542,26 @@ def is_hosted_facilitator_url(url: str) -> bool:
     return host == HOSTED_FACILITATOR_HOST
 
 
-def _nonempty_text(value: Any) -> bool:
+def _domain_field_problem(extra: Mapping[str, Any], field: str, max_length: int) -> Optional[str]:
+    """Why `extra[field]` cannot be signed over as part of the token's EIP-712 domain, or None.
+
+    The TS client's checks, in the same order and words.
+    """
+    label = f"extra.{field}"
+    if field not in extra:
+        return f"{label} is missing"
+    value = extra[field]
+    if not isinstance(value, str):
+        return f"{label} must be a string; got {value!r}"
+    if value == "":
+        return f"{label} is empty"
     # A lone surrogate (valid in JSON, "\ud800") has no UTF-8 form, so it cannot be hashed into the domain.
-    return isinstance(value, str) and value != "" and not _SURROGATE_RE.search(value)
+    if _SURROGATE_RE.search(value):
+        return f"{label} contains lone UTF-16 surrogates, which have no UTF-8 form to sign over"
+    length = len(value.encode("utf-16-le")) // 2  # UTF-16 code units, as JavaScript's String.length
+    if length > max_length:
+        return f"{label} is {length} characters long, above this client's {max_length}-character limit"
+    return None
 
 
 def _max_timeout_seconds(value: Any) -> int:
@@ -553,7 +578,8 @@ def validate_requirements(requirements: Mapping[str, Any]) -> None:
     Raises ProtocolError (a ValueError) naming the bad field. These are the
     checks the TS scheme and the facilitator apply, done before anything is
     signed, plus the TS client's: an `extra.authorizationStyle` it does not
-    know is refused.
+    know is refused, and so is an `extra.name` or `extra.version` longer than
+    MAX_TOKEN_NAME_LENGTH or MAX_TOKEN_VERSION_LENGTH.
     """
     if not isinstance(requirements, Mapping):
         raise ProtocolError("payment requirements must be a JSON object")
@@ -576,11 +602,13 @@ def validate_requirements(requirements: Mapping[str, Any]) -> None:
         raise ProtocolError(f"asset must be the 64-hex CEP-18 contract package hash{hint}, got {asset!r}")
     parse_amount(requirements.get("amount"))
     extra = requirements.get("extra")
-    if not isinstance(extra, Mapping) or not _nonempty_text(extra.get("name")) or not _nonempty_text(extra.get("version")):
-        raise ProtocolError(
-            "extra.name and extra.version (the token's EIP-712 domain) must be non-empty strings "
-            "(without lone UTF-16 surrogates)"
-        )
+    if not isinstance(extra, Mapping):
+        extra = {}
+    problem = _domain_field_problem(extra, "name", MAX_TOKEN_NAME_LENGTH) or _domain_field_problem(
+        extra, "version", MAX_TOKEN_VERSION_LENGTH
+    )
+    if problem is not None:
+        raise ProtocolError(f"malformed EIP-712 domain: {problem}")
     authorization_style(requirements)
     if "maxTimeoutSeconds" in requirements:
         _max_timeout_seconds(requirements["maxTimeoutSeconds"])

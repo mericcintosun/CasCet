@@ -273,6 +273,8 @@ describe("SpendPolicy.authorize", () => {
       [{ name: "", version: "1" }, "extra.name is empty"],
       [{ name: "Wrapped \ud800CSPR", version: "1" }, "extra.name contains lone UTF-16 surrogates, which have no UTF-8 form to sign over"],
       [{ name: "x".repeat(101), version: "1" }, "extra.name is 101 characters long, above this client's 100-character limit"],
+      // UTF-16 code units, as the Python client counts them too: a character outside the BMP counts twice.
+      [{ name: "\u{1FA99}".repeat(51), version: "1" }, "extra.name is 102 characters long, above this client's 100-character limit"],
       [{ name: NAME }, "extra.version is missing"],
       [{ name: NAME, version: 1 }, "extra.version must be a string; got 1"],
       [{ name: NAME, version: "" }, "extra.version is empty"],
@@ -299,6 +301,7 @@ describe("SpendPolicy.authorize", () => {
       { name: "C", version: "1.0.0" },
       // Non-ASCII, and a surrogate pair (one code point, two UTF-16 code units).
       { name: "Jeton été \u{1FA99}", version: "2" },
+      { name: "\u{1FA99}".repeat(50), version: "1" },
     ]) {
       assert.equal(policy.check(requirements({ extra })).ok, true, JSON.stringify(extra));
     }
