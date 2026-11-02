@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { createCasperRpc, isNoSuchTransaction, isValueNotFound, RpcNodeError, RpcTransportError, type RpcFetch } from "./casper-rpc.js";
 import * as fx from "./testing/rpc-fixtures.js";
+import { hangingFetch } from "./testing/rpc-replay.js";
 
 const respond = (status: number, body: string): RpcFetch => async () => ({ ok: status >= 200 && status < 300, status, text: async () => body });
 
@@ -41,13 +42,7 @@ describe("casper-rpc error classification", () => {
       [respond(200, "42"), "invalid-response"],
       [respond(200, JSON.stringify({ jsonrpc: "2.0", id: 1 })), "invalid-response"],
       [async () => Promise.reject(new TypeError("fetch failed")), "network"],
-      [
-        (_url, init) =>
-          new Promise((_resolve, reject) => {
-            init.signal.addEventListener("abort", () => reject(init.signal.reason));
-          }),
-        "timeout",
-      ],
+      [hangingFetch(), "timeout"],
     ];
     for (const [fetchImpl, kind] of cases) {
       const rpc = createCasperRpc("http://rpc.invalid", { fetchImpl, timeoutMs: 20 });
@@ -58,10 +53,7 @@ describe("casper-rpc error classification", () => {
   });
 
   test("a per-call timeout can only shorten the client's timeout", async () => {
-    const hang: RpcFetch = (_url, init) =>
-      new Promise((_resolve, reject) => {
-        init.signal.addEventListener("abort", () => reject(init.signal.reason));
-      });
+    const hang = hangingFetch();
     const rpc = createCasperRpc("http://rpc.invalid", { fetchImpl: hang, timeoutMs: 5_000 });
     const started = Date.now();
     const err = await rpc.call("query_global_state", {}, { timeoutMs: 30 }).catch(e => e);
