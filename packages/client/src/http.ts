@@ -88,22 +88,129 @@ export function settleOnAbort<T>(promise: Promise<T>, signal: AbortSignal): Prom
   });
 }
 
+/** A deadline joined with a caller's signal; see {@link startDeadline}. */
+export interface Deadline {
+  /** Aborts when the deadline passes (with the timeout error) or the caller's signal aborts (with its reason). */
+  readonly signal: AbortSignal;
+  /** True once the deadline itself has passed. */
+  readonly expired: boolean;
+  /** Stop the timer, once the call (its body included) is over. */
+  clear(): void;
+}
+
+/**
+ * A deadline of `timeoutMs` joined with `callerSignal`, aborting with
+ * `timeoutError()`. Its timer holds the deadline and the joined signal until
+ * it fires or is cleared. The timer of AbortSignal.timeout() holds its signal
+ * only weakly, and on Node 22 and 23 AbortSignal.any() does not keep it either,
+ * so once the frame that created it returned, a garbage collection could make
+ * the deadline never fire. Like AbortSignal.timeout()'s, the timer is unref'd.
+ */
+export function startDeadline(timeoutMs: number, callerSignal: AbortSignal | undefined, timeoutError: () => Error): Deadline {
+  const deadline = new AbortController();
+  const signal = callerSignal ? anySignal([callerSignal, deadline.signal]) : deadline.signal;
+  const timer = setTimeout(() => {
+    if (!signal.aborted) deadline.abort(timeoutError());
+  }, timeoutMs);
+  timer.unref();
+  return {
+    signal,
+    get expired() {
+      return deadline.signal.aborted;
+    },
+    clear: () => clearTimeout(timer),
+  };
+}
+
+/**
+ * `response`, with a body that ends when `signal` aborts: the read in progress
+ * fails with the signal's reason, and the body is cancelled at its source,
+ * which closes the connection. The signal alone may never reach the body: on
+ * Node 22 and 23, undici's fetch can stop following it once the headers are
+ * in (a garbage collection takes the Request it built, the only link from the
+ * signal to the request), and a fetch can lose it in other ways too (see
+ * {@link settleOnAbort}). The body would then be read for as long as the
+ * server keeps the connection open. `done` runs once, when the body has been
+ * read, has failed or was cancelled, or when `signal` aborted.
+ */
+export function bindBody(response: Response, signal: AbortSignal, done: () => void = () => undefined): Response {
+  const source = response.body;
+  if (!source || source.locked) {
+    done();
+    return response;
+  }
+  let finished = false;
+  let control: ReadableStreamDefaultController<Uint8Array> | undefined;
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    signal.removeEventListener("abort", onAbort);
+    done();
+  };
+  const onAbort = (): void => {
+    if (finished) return;
+    control?.error(signal.reason);
+    void reader.cancel(signal.reason).catch(() => undefined);
+    finish();
+  };
+  const body = new ReadableStream<Uint8Array>(
+    {
+      start: controller => {
+        control = controller;
+      },
+      pull: async controller => {
+        const chunk = await reader.read().catch((err: unknown) => {
+          finish();
+          throw err;
+        });
+        if (finished) return; // aborted meanwhile: the stream is already errored
+        if (chunk.done) {
+          finish();
+          controller.close();
+        } else {
+          controller.enqueue(chunk.value);
+        }
+      },
+      cancel: reason => {
+        finish();
+        return reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  let bound: Response;
+  try {
+    bound = new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  } catch {
+    // A status text the Response constructor refuses (it takes no character above U+00FF).
+    bound = new Response(body, { status: response.status, headers: response.headers });
+  }
+  // Locked before returning: nothing refers to `response` from here on, and undici cancels the body
+  // of a Response that is collected while its body is still unlocked.
+  const reader = source.getReader();
+  if (signal.aborted) onAbort();
+  else signal.addEventListener("abort", onAbort, { once: true });
+  return bound;
+}
+
 /**
  * Bound every call of `fetchImpl` by a deadline of `timeoutMs`, combined with
- * any signal the caller passed. The deadline also covers reading the body,
- * since the signal stays attached to the response stream, and it ends the
- * call even when `fetchImpl` loses the abort (see {@link settleOnAbort}).
+ * any signal the caller passed. The deadline also covers reading the body
+ * (see {@link bindBody}), and it ends the call even when `fetchImpl` loses the
+ * abort (see {@link settleOnAbort}).
  */
 export function withDeadline(fetchImpl: FetchLike, timeoutMs: number): FetchLike {
   return async (input, init) => {
-    const deadline = AbortSignal.timeout(timeoutMs);
     const callerSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
-    const signal = callerSignal ? anySignal([callerSignal, deadline]) : deadline;
+    const timedOut = `request to ${urlOf(input)} timed out after ${timeoutMs} ms`;
+    const deadline = startDeadline(timeoutMs, callerSignal ?? undefined, () => new RequestTimeoutError(timedOut));
+    const { signal } = deadline;
     try {
-      return await settleOnAbort(fetchImpl(input, { ...init, signal }), signal);
+      return bindBody(await settleOnAbort(fetchImpl(input, { ...init, signal }), signal), signal, deadline.clear);
     } catch (err) {
-      if (deadline.aborted && !callerSignal?.aborted && !(err instanceof RequestTimeoutError)) {
-        throw new RequestTimeoutError(`request to ${urlOf(input)} timed out after ${timeoutMs} ms`, { cause: err });
+      deadline.clear();
+      if (deadline.expired && !callerSignal?.aborted && !(err instanceof RequestTimeoutError)) {
+        throw new RequestTimeoutError(timedOut, { cause: err });
       }
       throw err;
     }
