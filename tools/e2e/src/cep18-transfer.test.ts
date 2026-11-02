@@ -8,6 +8,7 @@ import {
   DEFAULT_TRANSFER_GAS_MOTES,
   expectedTransferGasMotes,
   RECORDED_TRANSFER_CONSUMED_MOTES,
+  transferChecks,
 } from "./cep18-transfer.js";
 import { cep18TransferResult } from "./gas-fixtures.js";
 import { expectedNetMotes } from "./gas-report.js";
@@ -52,6 +53,51 @@ describe("fund-token: CEP-18 transfer", () => {
       () => buildCep18Transfer("hash-abc", hash, 1n, { initiatorPublicKey: recorded.payload.initiator_addr.PublicKey, chainName: "casper-test", paymentMotes: 1n }),
       /64-hex contract package hash/,
     );
+  });
+
+  describe("checks before --send", () => {
+    const CSPR = 1_000_000_000n;
+    const show = (units: bigint) => `${units} units`;
+    const base = { amountRaw: 5n, signerMotes: 10n * CSPR, gasLimitMotes: DEFAULT_TRANSFER_GAS_MOTES, skipBalanceCheck: false, show };
+
+    test("a covered amount and gas limit pass", () => {
+      assert.deepEqual(transferChecks({ ...base, signerTokens: { units: 5n } }), { problems: [], warnings: [] });
+    });
+
+    test("a known shortfall refuses, with or without --skip-balance-check", () => {
+      for (const skipBalanceCheck of [false, true]) {
+        const { problems, warnings } = transferChecks({ ...base, skipBalanceCheck, signerTokens: { units: 4n } });
+        assert.deepEqual(problems, ["the signer holds 4 units, less than the 5 units to send"]);
+        assert.deepEqual(warnings, []);
+      }
+    });
+
+    test("an unreadable token balance refuses (fail closed): a short balance would revert and burn the gas limit", () => {
+      const { problems, warnings } = transferChecks({ ...base, signerTokens: { error: "socket hang up" } });
+      assert.deepEqual(problems, [
+        "cannot read the signer's token balance (socket hang up); re-run, or pass --skip-balance-check for a token without an Odra `balances` dictionary",
+      ]);
+      assert.deepEqual(warnings, []);
+    });
+
+    test("--skip-balance-check sends without a readable token balance, with a warning", () => {
+      const { problems, warnings } = transferChecks({
+        ...base,
+        skipBalanceCheck: true,
+        signerTokens: { error: "hash-ab… has no `balances` dictionary" },
+      });
+      assert.deepEqual(problems, []);
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0]!, /^cannot read the signer's token balance \(hash-ab… has no `balances` dictionary\); sending anyway \(--skip-balance-check\)/);
+    });
+
+    test("the signer must hold the gas limit in CSPR", () => {
+      const { problems } = transferChecks({ ...base, signerMotes: 4_999_999_999n, signerTokens: { error: "x" } });
+      assert.deepEqual(problems, [
+        "cannot read the signer's token balance (x); re-run, or pass --skip-balance-check for a token without an Odra `balances` dictionary",
+        "the signer holds 4.999999999 CSPR, less than the 5 CSPR gas limit",
+      ]);
+    });
   });
 
   test("estimates the gas cost from the recorded consumption", () => {

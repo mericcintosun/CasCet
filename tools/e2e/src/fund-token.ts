@@ -8,6 +8,8 @@ import {
   expectedTransferGasMotes,
   MAX_TRANSFER_GAS_MOTES,
   MIN_TRANSFER_GAS_MOTES,
+  transferChecks,
+  type TokenBalanceRead,
 } from "./cep18-transfer.js";
 import { normalizeAccountHash } from "./facilitator-roles.js";
 import { formatCostTable, readTransactionReport } from "./gas-report.js";
@@ -41,11 +43,14 @@ import { hasEntryPoint, readTokenBalance, readTokenInfo } from "./token-info.js"
  * `amount` is in whole tokens ("10", "0.5") at the token's on-chain decimals,
  * or in raw units with --raw. Dry run by default: it reads the chain
  * (read-only) and prints what it would send; nothing is signed or sent
- * without --send. Testnet only.
+ * without --send, and --send refuses while a check fails (a transfer the
+ * signer's balance does not cover reverts and burns its whole gas limit).
+ * Testnet only.
  */
 
 const USAGE = `usage: pnpm --filter @cascet/e2e fund-token <token-package-hash> <recipient-account-hash> <amount>
                                             [--raw] [--send] [--gas-cspr <limit>] [--key <pem>] [--key-algo ed25519|secp256k1]
+                                            [--skip-balance-check]
 
   <token-package-hash>      CEP-18 package, e.g. cb65a928… (CasCet X402 Token) or 3d80df21… (Wrapped CSPR)
   <recipient-account-hash>  the buyer: "00" + 64 hex, account-hash-<hex> or 64 hex (never a public key)
@@ -54,6 +59,8 @@ const USAGE = `usage: pnpm --filter @cascet/e2e fund-token <token-package-hash> 
   --gas-cspr                gas limit in CSPR (default ${formatAmount(DEFAULT_TRANSFER_GAS_MOTES, CSPR_DECIMALS)})
   --key                     signer PEM, absolute path (default: contracts/keys/deployer_secret_key.pem)
   --key-algo                ed25519 (default) or secp256k1
+  --skip-balance-check      send even when the signer's token balance cannot be read (a token without an
+                            Odra \`balances\` dictionary); a balance that is read and too low still refuses
 
 Testnet only. CASCET_RPC_URL selects the node (default: the public testnet node).`;
 
@@ -84,7 +91,7 @@ function recipientArg(value: string): string {
 }
 
 async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<number> {
-  const cli = parseCli(argv, { booleans: ["send", "raw", "help"], values: ["gas-cspr", "key", "key-algo", "network"] });
+  const cli = parseCli(argv, { booleans: ["send", "raw", "help", "skip-balance-check"], values: ["gas-cspr", "key", "key-algo", "network"] });
   if (cli.flags.has("help")) {
     console.log(USAGE);
     return 0;
@@ -131,14 +138,14 @@ async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<number> {
   const shown = (units: bigint) =>
     token.decimals !== undefined ? `${formatAmount(units, token.decimals)} ${token.symbol ?? "tokens"}` : `${units} raw units`;
 
-  // Balances: an unreadable token balance only warns (non-Odra layouts), a known shortfall refuses.
-  const tokenBalance = (account: string) =>
+  // Balances: a known shortfall refuses, and so does an unreadable signer balance unless --skip-balance-check.
+  const tokenBalance = (account: string): Promise<TokenBalanceRead> =>
     readTokenBalance(rpc, token, account).then(
       units => ({ units }),
       (err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }),
     );
   const [senderTokens, recipientTokens] = await Promise.all([tokenBalance(sender), tokenBalance(recipient)]);
-  const balanceText = (b: { units: bigint } | { error: string }) => ("units" in b ? shown(b.units) : "unknown token balance");
+  const balanceText = (b: TokenBalanceRead) => ("units" in b ? shown(b.units) : "unknown token balance");
   let csprMotes: bigint;
   try {
     csprMotes = await readCsprBalance(rpc, sender);
@@ -146,14 +153,15 @@ async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<number> {
     throw new Error(`cannot read the signer's CSPR balance (${err instanceof Error ? err.message : String(err)})`);
   }
 
-  const problems: string[] = [];
-  if ("units" in senderTokens && senderTokens.units < amountRaw) {
-    problems.push(`the signer holds ${shown(senderTokens.units)}, less than the ${shown(amountRaw)} to send`);
-  }
-  if ("error" in senderTokens) console.warn(`${TAG} warning: cannot read the signer's token balance (${senderTokens.error})`);
-  if (csprMotes < gasLimitMotes) {
-    problems.push(`the signer holds ${formatAmount(csprMotes, CSPR_DECIMALS)} CSPR, less than the ${formatAmount(gasLimitMotes, CSPR_DECIMALS)} CSPR gas limit`);
-  }
+  const { problems, warnings } = transferChecks({
+    signerTokens: senderTokens,
+    amountRaw,
+    signerMotes: csprMotes,
+    gasLimitMotes,
+    skipBalanceCheck: cli.flags.has("skip-balance-check"),
+    show: shown,
+  });
+  for (const warning of warnings) console.warn(`${TAG} warning: ${warning}`);
 
   console.log(`\nTransfer ${shown(amountRaw)} (${token.name ?? `hash-${packageHash}`}) on Casper testnet${send ? "" : " (DRY RUN)"}\n`);
   console.log(

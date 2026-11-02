@@ -1,4 +1,5 @@
 import casperSdk from "casper-js-sdk";
+import { CSPR_DECIMALS, formatAmount } from "./amounts.js";
 import { expectedNetMotes } from "./gas-report.js";
 
 const { Args, CLValue, ContractCallBuilder, Key, PublicKey, Timestamp } = casperSdk;
@@ -66,4 +67,57 @@ export function buildCep18Transfer(packageHash: string, recipientAccountHash: st
 /** Expected gas cost of a transfer with `limitMotes`, from the recorded consumption. */
 export function expectedTransferGasMotes(limitMotes: bigint): bigint {
   return expectedNetMotes(limitMotes, RECORDED_TRANSFER_CONSUMED_MOTES);
+}
+
+/** A token balance as fund-token read it: the raw units, or why they could not be read. */
+export type TokenBalanceRead = { units: bigint } | { error: string };
+
+export interface TransferCheckInput {
+  /** The signer's token balance. */
+  signerTokens: TokenBalanceRead;
+  /** Raw units to send. */
+  amountRaw: bigint;
+  /** The signer's CSPR (motes): it pays the gas limit up front. */
+  signerMotes: bigint;
+  gasLimitMotes: bigint;
+  /** `--skip-balance-check`: send even when the signer's token balance cannot be read. */
+  skipBalanceCheck: boolean;
+  /** Token units as text, e.g. "5 WCSPR". */
+  show: (units: bigint) => string;
+}
+
+/**
+ * What stops fund-token from sending (`problems`; `--send` refuses while there
+ * is one) and what it only warns about. Fails closed: a transfer the signer's
+ * balance does not cover reverts and burns its whole gas limit, so a token
+ * balance that cannot be read (an RPC error, or a token without an Odra
+ * `balances` dictionary) is a problem unless `--skip-balance-check` is given.
+ * A balance that was read and is short is always a problem.
+ */
+export function transferChecks(input: TransferCheckInput): { problems: string[]; warnings: string[] } {
+  const problems: string[] = [];
+  const warnings: string[] = [];
+  const tokens = input.signerTokens;
+  if ("units" in tokens) {
+    if (tokens.units < input.amountRaw) {
+      problems.push(`the signer holds ${input.show(tokens.units)}, less than the ${input.show(input.amountRaw)} to send`);
+    }
+  } else if (input.skipBalanceCheck) {
+    warnings.push(
+      `cannot read the signer's token balance (${tokens.error}); sending anyway (--skip-balance-check): ` +
+        "a balance below the amount reverts the transfer and burns its whole gas limit",
+    );
+  } else {
+    problems.push(
+      `cannot read the signer's token balance (${tokens.error}); re-run, or pass --skip-balance-check ` +
+        "for a token without an Odra `balances` dictionary",
+    );
+  }
+  if (input.signerMotes < input.gasLimitMotes) {
+    problems.push(
+      `the signer holds ${formatAmount(input.signerMotes, CSPR_DECIMALS)} CSPR, ` +
+        `less than the ${formatAmount(input.gasLimitMotes, CSPR_DECIMALS)} CSPR gas limit`,
+    );
+  }
+  return { problems, warnings };
 }
