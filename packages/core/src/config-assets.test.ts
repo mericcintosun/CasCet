@@ -196,6 +196,17 @@ describe("config assets: validation", () => {
     assert.match(issuesOf({ asset: wcsprAsset, facilitators: { "bad name": { url: DEFAULT_SELF_HOSTED_FACILITATOR_URL } } }).join("\n"), /^facilitators\.bad name: /m);
   });
 
+  it("names the naming rule for a bad facilitator name, beside the config's other problems", () => {
+    const rule = 'facilitator names are 1-64 letters, digits, ".", "_" or "-", starting with a letter or digit';
+    for (const name of ["self hosted", "_self", "s".repeat(65)]) {
+      const issues = issuesOf({ asset: wcsprAsset, facilitators: { [name]: { url: DEFAULT_SELF_HOSTED_FACILITATOR_URL } } });
+      assert.deepEqual(issues, [`facilitators.${name}: ${rule}`], name);
+    }
+    const both = issuesOf({ asset: wcsprAsset, facilitators: { "self hosted": { url: DEFAULT_SELF_HOSTED_FACILITATOR_URL }, ok: { url: "nope" } } });
+    assert.deepEqual(both.sort(), [`facilitators.ok.url: Invalid URL`, `facilitators.self hosted: ${rule}`]);
+    assert.equal(parse({ asset: wcsprAsset, facilitators: { "self.hosted_2-b": { url: DEFAULT_SELF_HOSTED_FACILITATOR_URL } } }).success, true);
+  });
+
   it("throws for a hand-built config whose asset names no known facilitator", () => {
     assert.throws(() => facilitatorFor({ facilitators: {} }, { id: "x", facilitator: "gone" }), /unknown facilitator "gone"/);
   });

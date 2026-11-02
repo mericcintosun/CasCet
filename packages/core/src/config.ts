@@ -73,6 +73,7 @@ const packageHashSchema = z
 const ASSET_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 /** Names of the entries of `facilitators`. */
 const FACILITATOR_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const FACILITATOR_NAME_RULE = 'facilitator names are 1-64 letters, digits, ".", "_" or "-", starting with a letter or digit';
 /** The longest delay setTimeout accepts. */
 const MAX_TIMER_MS = 2_147_483_647;
 
@@ -252,10 +253,10 @@ const rawConfigSchema = z.object({
   facilitator: defaultFacilitatorSchema,
   /** More facilitators, by name, for assets that set `facilitator: "<name>"`. */
   facilitators: z
-    .record(
-      z.string().regex(FACILITATOR_NAME, 'facilitator names are 1-64 letters, digits, ".", "_" or "-"'),
-      facilitatorSchema,
-    )
+    .record(z.string().regex(FACILITATOR_NAME, FACILITATOR_NAME_RULE), facilitatorSchema, {
+      // zod reports a bad key as "Invalid key in record" and nests the rule; say the rule itself.
+      error: issue => (issue.code === "invalid_key" ? FACILITATOR_NAME_RULE : undefined),
+    })
     .default({}),
   pricing: z.object({
     /**
