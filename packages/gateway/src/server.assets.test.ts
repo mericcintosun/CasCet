@@ -14,12 +14,13 @@ import {
 } from "@x402/core/server";
 import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { ExactCasperScheme } from "@x402/casper/exact/client";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_FACILITATOR_URL, type CascetConfig } from "@cascet/core";
 import type { PreemptionQuery, SettlementPreemptionChecker } from "./preemption.js";
 import { startGateway } from "./server.js";
 import { startFakeFacilitator, type FakeFacilitator, type Reply } from "./testing/fake-facilitator.js";
 import { startFakeNode, u256Response, wcsprBalanceCall, wcsprNodeRoutes, wcsprNonceCall } from "./testing/fake-node.js";
-import { createFakeUpstream } from "./testing/fake-upstream.js";
+import { createFakeUpstream, type FakeTool } from "./testing/fake-upstream.js";
 import {
   callPaid,
   challengeOf,
@@ -37,8 +38,10 @@ import {
   WCSPR_PRICE_RAW,
   WCSPR_SETTLE_TX,
   WCSPR_TOKEN,
+  type RpcResponse,
   type TwoAssetHarness,
 } from "./testing/harness.js";
+import { ReceiptStore } from "./store.js";
 
 const CASPER_SETTLE_FAILED = "invalid_exact_casper_facilitator_settle_failed";
 
@@ -646,26 +649,39 @@ describe("x402 2.29 flow hooks", () => {
     }
   });
 
-  it("fails closed when the facilitators ask for x402's upfront flow: nothing is verified, settled or run", async () => {
+  it("fails closed when the facilitators ask for x402's upfront flow: it does not start, naming each facilitator, its asset and the flow; nothing is verified, settled or run", async () => {
     // @x402/casper copies a facilitator's extension values into the requirements; "upfront" would
-    // make x402 skip verify and settle before the gateway's checks. The CasCet scheme refuses it.
+    // make x402 skip verify and settle before the gateway's checks. The CasCet scheme refuses it, and
+    // x402 would refuse every paid call with a generic error, so the gateway refuses to start instead.
     const askForUpfront = (facilitator: FakeFacilitator) => {
       facilitator.onSupported = () => ({
         json: { kinds: [{ x402Version: 2, scheme: "exact", network: "casper:casper-test", extra: { paymentFlow: "upfront" } }], extensions: ["paymentFlow"], signers: {} },
       });
     };
-    const onFacilitators = ({ legacy, cep }: { legacy: FakeFacilitator; cep: FakeFacilitator }) => {
-      askForUpfront(legacy);
-      askForUpfront(cep);
-    };
-    await withTwoAssets({ onFacilitators }, async h => {
-      const res = await h.rpc("tools/call", { name: "paid_tool", arguments: {} });
-      assert.equal(res.status, 502);
-      assert.match(res.body.error?.message ?? "", /nothing was charged/);
-      assert.equal(res.headers.get("payment-required"), null);
-      assert.deepEqual([...work(h.legacy.calls), ...work(h.cep.calls)], []);
-      assert.equal(h.upstream.calls.length, 0);
-    });
+    const legacy = await startFakeFacilitator({ label: "legacy" });
+    const cep = await startFakeFacilitator({ label: "cep" });
+    askForUpfront(legacy);
+    askForUpfront(cep);
+    const upstream = createFakeUpstream({ tools: [{ name: "paid_tool" }] });
+    const refused = (facilitator: string, url: string, asset: string, hash: string) =>
+      `facilitator "${facilitator}" (${url}) advertises payment flow "upfront" for x402 v2 "exact" payments on casper:casper-test, ` +
+      `which asset "${asset}" (${hash}) needs: CasCet supports only the "authorization" flow (verify before the tool runs, ` +
+      `settle after the gateway's own checks), so x402 would refuse every paid call in that asset`;
+    try {
+      await assert.rejects(
+        startGateway(twoAssetConfig(legacy.url, cep.url), { createUpstreamTransport: () => upstream.createTransport(), preemptionChecker: null }),
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.equal(err.message, `${refused("self", legacy.url, "cascet", LEGACY_TOKEN)}; ${refused("default", cep.url, "wcspr", WCSPR_TOKEN)}`);
+          return true;
+        },
+      );
+      assert.deepEqual([...legacy.calls, ...cep.calls].map(call => call.op), ["supported", "supported"], "only asked for /supported");
+      assert.equal(upstream.connections, 0, "the upstream is not started either");
+    } finally {
+      await legacy.close();
+      await cep.close();
+    }
   });
 
   it("never settles twice: a before-handler settlement x402 hands over is passed back, and x402 echoes it", async () => {
@@ -761,19 +777,32 @@ describe("pricing and discovery documents list every token", () => {
   });
 });
 
+/** What the in-memory hosted facilitator answers instead of its default (undefined keeps the default). */
+type HostedReply = { status?: number; json?: unknown; raw?: string } | undefined;
+
+/** Scripted parts of a hosted gateway: its upstream's tools, and the hosted facilitator's answers by path. */
+interface HostedScript {
+  tools?: FakeTool[];
+  answer?: (path: string, body: HostedBody | undefined) => HostedReply | Promise<HostedReply>;
+}
+
 describe("the hosted facilitator", () => {
   /**
    * A gateway whose Wrapped CSPR is settled by the hosted facilitator (played in
    * memory: nothing reaches the real host) and whose legacy token is settled by
    * a local fake facilitator.
    */
-  async function hostedGateway(input: Record<string, unknown> = {}) {
+  async function hostedGateway(input: Record<string, unknown> = {}, script: HostedScript = {}) {
     const hosted: Array<{ path: string; authorization: string | null; body?: HostedBody }> = [];
     const facilitatorFetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));
       if (url.origin !== DEFAULT_FACILITATOR_URL) return fetch(input, init);
       const body = typeof init?.body === "string" ? (JSON.parse(init.body) as HostedBody) : undefined;
       hosted.push({ path: url.pathname, authorization: new Headers(init?.headers).get("authorization"), body });
+      const reply = await script.answer?.(url.pathname, body);
+      if (reply) {
+        return new Response(reply.raw ?? JSON.stringify(reply.json), { status: reply.status ?? 200, headers: { "content-type": "application/json" } });
+      }
       const json =
         url.pathname === "/supported"
           ? {
@@ -787,7 +816,7 @@ describe("the hosted facilitator", () => {
       return new Response(JSON.stringify(json), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
     const legacy = await startFakeFacilitator({ label: "legacy", settleTx: LEGACY_SETTLE_TX });
-    const upstream = createFakeUpstream({ tools: [{ name: "paid_tool" }] });
+    const upstream = createFakeUpstream({ tools: script.tools ?? [{ name: "paid_tool" }] });
     const dir = mkdtempSync(join(tmpdir(), "cascet-gateway-test-"));
     const cfg = twoAssetConfig(legacy.url, DEFAULT_FACILITATOR_URL, {
       facilitator: { url: DEFAULT_FACILITATOR_URL, apiKey: "cspr-cloud-key" },
@@ -810,6 +839,7 @@ describe("the hosted facilitator", () => {
     return {
       hosted,
       legacy,
+      upstream,
       h: {
         rpc: (method: string, params?: Record<string, unknown>, headers?: Record<string, string>) => rpcCall(url, method, params, headers),
         base: url.replace(/\/mcp$/, ""),
@@ -916,6 +946,271 @@ describe("the hosted facilitator", () => {
     );
     assert.deepEqual(contacted, []);
     assert.equal(upstream.connections, 0, "the upstream is not started either");
+  });
+
+  describe("counts the payments in flight of a payer whose balance funds one payment", () => {
+    const IN_FLIGHT_REASON = "insufficient_funds: insufficient balance once 1 in-flight payment is counted";
+    const ok = (): CallToolResult => ({ content: [{ type: "text", text: "ok" }] });
+    const refusedInFlight = (res: RpcResponse) => assert.deepEqual([res.status, res.body.error?.message], [402, `payment rejected: ${IN_FLIGHT_REASON}`]);
+    const expired = { json: { success: false, errorReason: "invalid_exact_casper_facilitator_expired", transaction: "", network: "casper:casper-test" } };
+    const settleFirst = { pricing: { tools: { paid_tool: { price: "$0.01", settleBeforeExecute: true } } } };
+
+    /**
+     * A hosted gateway that preflights Wrapped CSPR payments on a node where the payer's
+     * balance funds exactly one payment. `pay()` presents a new payment of that payer. The
+     * script gets `whileInFlight`: called at some stage of the first payment's call, it
+     * presents one more payment of the payer right then (once) and keeps its answer in `during`.
+     */
+    async function fundsOne(script: (whileInFlight: () => Promise<void>) => HostedScript = () => ({}), input: Record<string, unknown> = {}) {
+      const node = await startFakeNode(wcsprNodeRoutes({ balances: { [PAYER]: BigInt(WCSPR_PRICE_RAW) } }));
+      const during: RpcResponse[] = [];
+      let pay: (() => Promise<RpcResponse>) | undefined;
+      let presented = false;
+      const whileInFlight = async (): Promise<void> => {
+        if (presented || !pay) return;
+        presented = true;
+        during.push(await pay());
+      };
+      let gateway: Awaited<ReturnType<typeof hostedGateway>>;
+      try {
+        gateway = await hostedGateway({ settlement: { nodeUrl: node.url }, ...input }, script(whileInFlight));
+      } catch (err) {
+        await node.close();
+        throw err;
+      }
+      const close = async () => {
+        await gateway.close();
+        await node.close();
+      };
+      try {
+        const { accepted } = await payInAsset(gateway.h, "paid_tool", WCSPR_TOKEN);
+        pay = () => callPaid(gateway.h, "paid_tool", paymentHeader(accepted).header);
+        return { ...gateway, during, pay, close };
+      } catch (err) {
+        await close();
+        throw err;
+      }
+    }
+
+    /** A script answer that runs `first` on the first call to `path` and keeps the default otherwise. */
+    const onFirst = (path: string, first: () => Promise<HostedReply>): HostedScript["answer"] => {
+      let calls = 0;
+      return at => (at === path && ++calls === 1 ? first() : undefined);
+    };
+    /** paid_tool, whose first run is `first`; every later run answers "ok". */
+    const toolFirst = (first: () => Promise<CallToolResult>): FakeTool[] => {
+      let runs = 0;
+      return [{ name: "paid_tool", handler: () => (++runs === 1 ? first() : ok()) }];
+    };
+
+    it("lets exactly one of two concurrent payments through, and refuses the other naming the payment in flight", async () => {
+      // The payment that passes the preflight first waits at the hosted /verify until the other one is
+      // answered, 2 s at most: without in-flight counting both would pass and the test would fail, not hang.
+      let open = (): void => {};
+      const gate = new Promise<void>(resolve => {
+        open = resolve;
+        setTimeout(resolve, 2_000).unref();
+      });
+      const g = await fundsOne(() => ({ answer: async path => (path === "/verify" ? gate.then(() => undefined) : undefined) }));
+      try {
+        const calls = [g.pay(), g.pay()];
+        for (const call of calls) void call.then(open, open);
+        const results = await Promise.all(calls);
+        assert.deepEqual(results.map(res => res.status).sort(), [200, 402]);
+        const refused = results.find(res => res.status === 402);
+        assert.ok(refused);
+        refusedInFlight(refused);
+        assert.equal(challengeOf(refused).error, IN_FLIGHT_REASON, "the 402 challenge names it too");
+        assert.deepEqual(
+          g.hosted.filter(call => call.path !== "/supported").map(call => call.path),
+          ["/verify", "/settle"],
+          "only one payment reached the hosted facilitator",
+        );
+        assert.equal(g.upstream.calls.length, 1, "and only one tool ran");
+        assert.deepEqual((await receipts(g.h)).map(receipt => receipt.status), ["settled"]);
+      } finally {
+        await g.close();
+      }
+    });
+
+    const endings: Array<{
+      name: string;
+      input?: Record<string, unknown>;
+      script: (whileInFlight: () => Promise<void>) => HostedScript;
+      /** How the first payment's call ends. */
+      first: (res: RpcResponse) => void;
+      /** What the payment presented during that call gets: refused as in flight unless said otherwise. */
+      during?: (res: RpcResponse) => void;
+    }> = [
+      {
+        name: "the hosted facilitator refuses it at /verify",
+        script: whileInFlight => ({
+          answer: onFirst("/verify", async () => {
+            await whileInFlight();
+            return { json: { isValid: false, invalidReason: "invalid_exact_casper_payload_signature" } };
+          }),
+        }),
+        first: res => assert.deepEqual([res.status, res.body.error?.message], [402, "payment rejected: invalid_exact_casper_payload_signature"]),
+      },
+      {
+        name: "the hosted /verify fails",
+        script: whileInFlight => ({
+          answer: onFirst("/verify", async () => {
+            await whileInFlight();
+            return { status: 500, raw: "verify exploded" };
+          }),
+        }),
+        first: res => assert.deepEqual([res.status, res.body.error?.message], [402, "payment rejected: facilitator verify failed with HTTP 500: verify exploded"]),
+      },
+      {
+        name: "its tool throws (not charged)",
+        script: whileInFlight => ({
+          tools: toolFirst(async () => {
+            await whileInFlight();
+            throw new Error("upstream exploded");
+          }),
+        }),
+        first: res => assert.match(res.body.error?.message ?? "", /^upstream tool failed \(not charged\): .*upstream exploded/),
+      },
+      {
+        name: "its tool returns an error (not charged)",
+        script: whileInFlight => ({
+          tools: toolFirst(async () => {
+            await whileInFlight();
+            return { isError: true, content: [{ type: "text", text: "nope" }] };
+          }),
+        }),
+        first: res => assert.deepEqual([res.status, res.body.result?.isError], [200, true]),
+      },
+      {
+        name: "its tool times out (not charged)",
+        input: { timeouts: { upstreamMs: 1_000 } },
+        script: whileInFlight => ({
+          tools: toolFirst(async () => {
+            await whileInFlight();
+            return new Promise<CallToolResult>(() => {});
+          }),
+        }),
+        first: res => assert.equal(res.body.error?.message, "upstream tool timed out (not charged)"),
+      },
+      {
+        name: "it settled",
+        script: whileInFlight => ({ answer: onFirst("/settle", async () => (await whileInFlight(), undefined)) }),
+        first: res => assert.deepEqual([res.status, res.body.result?.content?.[0]?.text], [200, "ok:paid_tool"]),
+      },
+      {
+        name: "its settlement failed",
+        script: whileInFlight => ({ answer: onFirst("/settle", async () => (await whileInFlight(), expired)) }),
+        first: res => assert.deepEqual([res.status, res.body.error?.message], [402, "payment settlement failed: invalid_exact_casper_facilitator_expired"]),
+      },
+      {
+        name: "its settlement outcome is unknown",
+        script: whileInFlight => ({ answer: onFirst("/settle", async () => (await whileInFlight(), { status: 502, raw: "<html>Bad Gateway</html>" })) }),
+        first: res => assert.deepEqual([res.status, res.body.error?.code], [200, -32003]),
+      },
+      {
+        name: "its settlement failed before its tool would run (settleBeforeExecute)",
+        input: settleFirst,
+        script: whileInFlight => ({ answer: onFirst("/settle", async () => (await whileInFlight(), expired)) }),
+        first: res => assert.deepEqual([res.status, res.body.error?.message], [402, "payment settlement failed: invalid_exact_casper_facilitator_expired"]),
+      },
+      {
+        name: "it settled before its tool runs (settleBeforeExecute), already while the tool runs",
+        input: settleFirst,
+        script: whileInFlight => ({
+          tools: toolFirst(async () => {
+            await whileInFlight();
+            return ok();
+          }),
+        }),
+        first: res => assert.deepEqual([res.status, res.body.result?.content?.[0]?.text], [200, "ok"]),
+        during: res => assert.equal(res.status, 200, `settled, so no longer in flight: ${JSON.stringify(res.body)}`),
+      },
+    ];
+
+    for (const ending of endings) {
+      it(`releases the payment when ${ending.name}`, async () => {
+        const g = await fundsOne(ending.script, ending.input);
+        try {
+          ending.first(await g.pay());
+          assert.equal(g.during.length, 1, "a payment was presented while the first one was in flight");
+          (ending.during ?? refusedInFlight)(g.during[0]!);
+          const next = await g.pay();
+          assert.equal(next.status, 200, `the next payment passes once the call ended: ${JSON.stringify(next.body)}`);
+        } finally {
+          await g.close();
+        }
+      });
+    }
+
+    it("releases the payment when the gateway refuses it after verification, or x402 throws after the preflight", async () => {
+      const original = x402HTTPResourceServer.prototype.processHTTPRequest;
+      let whileInFlight = async (): Promise<void> => {};
+      let next: "tamper" | "throw" | undefined;
+      const patched = mock.method(
+        x402HTTPResourceServer.prototype,
+        "processHTTPRequest",
+        async function (this: x402HTTPResourceServer, ...args: Parameters<typeof original>) {
+          const result = await original.apply(this, args);
+          const step = next;
+          if (step === undefined || result.type !== "payment-verified") return result;
+          next = undefined;
+          // The preflight let this payment through: it is in flight now.
+          await whileInFlight();
+          if (step === "throw") throw new Error("x402 failed after the preflight");
+          return { ...result, paymentRequirements: { ...result.paymentRequirements, amount: "1" } };
+        },
+      );
+      try {
+        for (const [step, status, message] of [
+          ["tamper", 402, "payment rejected: verified payment amount does not equal the configured price"],
+          ["throw", 502, "payment verification failed: the facilitator gave an unusable answer; nothing was charged"],
+        ] as const) {
+          next = step;
+          const g = await fundsOne(probe => {
+            whileInFlight = probe;
+            return {};
+          });
+          try {
+            const first = await g.pay();
+            assert.deepEqual([first.status, first.body.error?.message], [status, message]);
+            assert.equal(g.during.length, 1, step);
+            refusedInFlight(g.during[0]!);
+            assert.equal((await g.pay()).status, 200, step);
+          } finally {
+            await g.close();
+          }
+        }
+      } finally {
+        patched.mock.restore();
+      }
+    });
+
+    it("releases the payment when its authorization cannot be recorded (write-ahead failure)", async () => {
+      const append = ReceiptStore.prototype.appendAuthorization;
+      let fail = true;
+      const patched = mock.method(ReceiptStore.prototype, "appendAuthorization", function (this: ReceiptStore, ...args: Parameters<typeof append>) {
+        if (!fail) return append.apply(this, args);
+        fail = false;
+        throw new Error("disk full");
+      });
+      try {
+        const g = await fundsOne(whileInFlight => ({ answer: onFirst("/verify", async () => (await whileInFlight(), undefined)) }));
+        try {
+          const first = await g.pay();
+          assert.deepEqual(
+            [first.status, first.body.error?.message],
+            [503, "gateway cannot record payments right now; the tool was not run and nothing was charged"],
+          );
+          refusedInFlight(g.during[0]!);
+          assert.equal((await g.pay()).status, 200);
+        } finally {
+          await g.close();
+        }
+      } finally {
+        patched.mock.restore();
+      }
+    });
   });
 });
 

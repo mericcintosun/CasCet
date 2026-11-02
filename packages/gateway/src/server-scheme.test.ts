@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { x402HTTPResourceServer, x402ResourceServer, type FacilitatorClient, type HTTPAdapter } from "@x402/core/server";
 import type { Network, PaymentRequired } from "@x402/core/types";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
-import { CASCET_PAYMENT_FLOWS, CascetCasperServerScheme } from "./server-scheme.js";
+import { advertisedPaymentFlow, CASCET_PAYMENT_FLOWS, CascetCasperServerScheme } from "./server-scheme.js";
 
 const NETWORK = "casper:casper-test" as Network;
 const ASSET = "22".repeat(32);
@@ -42,6 +42,12 @@ async function challenge(extra?: Record<string, unknown>, from: FacilitatorClien
   assert.ok(header, "a 402 challenge");
   return decodePaymentRequiredHeader(header);
 }
+
+/** A facilitator whose /supported lists `extensions` and puts `extra` on its kind. */
+const advertising = (extra: Record<string, unknown>, extensions: string[]): FacilitatorClient => ({
+  ...facilitator,
+  getSupported: async () => ({ kinds: [{ x402Version: 2, scheme: "exact", network: NETWORK, extra }], extensions, signers: {} }),
+});
 
 describe("CascetCasperServerScheme (@x402/core 2.29 SchemeNetworkServer)", () => {
   it("declares the members 2.29 requires: no on-wire transfer method, and the authorization flow only", () => {
@@ -89,12 +95,6 @@ describe("CascetCasperServerScheme (@x402/core 2.29 SchemeNetworkServer)", () =>
     await assert.rejects(challenge({ paymentFlow: "escrow" }), /does not support paymentFlow "escrow"/);
   });
 
-  /** A facilitator whose /supported lists `extensions` and puts `extra` on its kind. */
-  const advertising = (extra: Record<string, unknown>, extensions: string[]): FacilitatorClient => ({
-    ...facilitator,
-    getSupported: async () => ({ kinds: [{ x402Version: 2, scheme: "exact", network: NETWORK, extra }], extensions, signers: {} }),
-  });
-
   it("fails closed when a facilitator's extension asks for a settle-before-handler flow or another transfer method", async () => {
     // @x402/casper copies supportedKind.extra[key] into the requirements for every extension key.
     await assert.rejects(challenge(undefined, advertising({ paymentFlow: "upfront" }, ["paymentFlow"])), /does not support paymentFlow "upfront"/);
@@ -108,5 +108,72 @@ describe("CascetCasperServerScheme (@x402/core 2.29 SchemeNetworkServer)", () =>
     const extra = { name: "Evil Token", version: "2", symbol: "EVIL", decimals: "0", authorizationStyle: "legacy-amount", feePayer: "ff".repeat(32) };
     const paymentRequired = await challenge({ authorizationStyle: "cep3009-value" }, advertising(extra, Object.keys(extra)));
     assert.deepEqual(paymentRequired.accepts[0]?.extra, { ...EXTRA, authorizationStyle: "cep3009-value", feePayer: "ff".repeat(32) });
+  });
+});
+
+describe("a facilitator's advertised payment flow (checked at startup)", () => {
+  const kind = (extra?: Record<string, unknown>) => ({ x402Version: 2, scheme: "exact", network: NETWORK, ...(extra ? { extra } : {}) });
+
+  it("reads what @x402/casper would copy: the reserved flow fields the facilitator lists as extensions and puts on its kind", () => {
+    const extra = { paymentFlow: "upfront", assetTransferMethod: "permit", feePayer: "aa" };
+    assert.deepEqual(advertisedPaymentFlow(kind(extra), ["paymentFlow", "assetTransferMethod", "feePayer"]), {
+      paymentFlow: "upfront",
+      assetTransferMethod: "permit",
+    });
+    assert.deepEqual(advertisedPaymentFlow(kind(extra), ["feePayer"]), {}, "not an extension: never copied");
+    assert.deepEqual(advertisedPaymentFlow(kind({ feePayer: "aa" }), ["paymentFlow"]), {}, "an extension without a value");
+    assert.deepEqual(advertisedPaymentFlow(kind(), ["paymentFlow"]), {});
+  });
+
+  it("names a flow or transfer method the CasCet scheme refuses, and passes the authorization flow", () => {
+    const s = scheme();
+    const flow = (paymentFlow: unknown) => s.unsupportedFacilitatorFlow(kind({ paymentFlow }), ["paymentFlow"]);
+    for (const refused of ["upfront", "escrow", "batch"]) {
+      assert.deepEqual(flow(refused), {
+        advertised: `payment flow "${refused}"`,
+        supported: `CasCet supports only the "authorization" flow (verify before the tool runs, settle after the gateway's own checks)`,
+      });
+    }
+    assert.equal(flow(7)?.advertised, "payment flow 7");
+    assert.equal(flow("authorization"), undefined);
+    assert.equal(flow(null), undefined, "null means the default flow to x402");
+    assert.equal(s.unsupportedFacilitatorFlow(kind({ paymentFlow: "upfront" }), []), undefined, "not an extension: x402 never sees it");
+    assert.equal(s.unsupportedFacilitatorFlow(kind(), ["paymentFlow"]), undefined);
+
+    const method = (extra: Record<string, unknown>) => s.unsupportedFacilitatorFlow(kind(extra), ["assetTransferMethod", "paymentFlow"]);
+    assert.deepEqual(method({ assetTransferMethod: "permit" }), {
+      advertised: 'asset transfer method "permit"',
+      supported: `the CasCet scheme has no asset transfer method on the wire (only x402's "default")`,
+    });
+    assert.equal(method({ assetTransferMethod: "default", paymentFlow: "upfront" })?.advertised, 'payment flow "upfront"');
+    assert.equal(method({ assetTransferMethod: "default" }), undefined);
+  });
+
+  it("keeps the advertised value out of the message when it is long or carries control characters", () => {
+    const refused = scheme().unsupportedFacilitatorFlow(kind({ paymentFlow: `up\r\nfront${"x".repeat(200)}` }), ["paymentFlow"]);
+    assert.ok(refused);
+    assert.doesNotMatch(refused.advertised, /[\r\n]/);
+    assert.ok(refused.advertised.length < 100, refused.advertised);
+  });
+
+  it("refuses exactly what x402 refuses on every paid call", async () => {
+    const cases: Array<[Record<string, unknown>, string[]]> = [
+      [{ paymentFlow: "upfront" }, ["paymentFlow"]],
+      [{ paymentFlow: "escrow" }, ["paymentFlow"]],
+      [{ paymentFlow: "upfront" }, []],
+      [{ paymentFlow: "authorization" }, ["paymentFlow"]],
+      [{ paymentFlow: null }, ["paymentFlow"]],
+      [{ assetTransferMethod: "permit" }, ["assetTransferMethod"]],
+      [{ assetTransferMethod: "default" }, ["assetTransferMethod"]],
+      [{ feePayer: "aa" }, ["feePayer"]],
+    ];
+    for (const [extra, extensions] of cases) {
+      const startup = scheme().unsupportedFacilitatorFlow(kind(extra), extensions);
+      const perCall = await challenge(undefined, advertising(extra, extensions)).then(
+        () => undefined,
+        (err: unknown) => (err instanceof Error ? err.message : String(err)),
+      );
+      assert.equal(startup !== undefined, perCall !== undefined, `${JSON.stringify(extra)} ${JSON.stringify(extensions)}: ${perCall}`);
+    }
   });
 });

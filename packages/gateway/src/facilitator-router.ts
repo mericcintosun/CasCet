@@ -39,6 +39,14 @@ export interface AssetRoutingOptions {
   maxPendingSettlements?: number;
 }
 
+/**
+ * Why the gateway cannot take the payments of `route` that its facilitator
+ * describes with `kind` (one kind of the facilitator's own /supported answer,
+ * which lists `extensions`), or undefined when it can. The reason is the whole
+ * message: it names the facilitator and the asset itself.
+ */
+export type SupportedKindCheck = (route: AssetRoute, kind: SupportedKind, extensions: readonly string[]) => string | undefined;
+
 /** The `errorReason` of a settlement that was broadcast and whose outcome is not known yet. */
 export const SETTLEMENT_PENDING = "settlement_pending";
 
@@ -223,22 +231,36 @@ export class AssetRoutingFacilitatorClient implements FacilitatorClient {
 
   /**
    * Startup check: the facilitator of every asset supports x402 `scheme`
-   * payments of `x402Version` on that asset's network. Uses the answers of the
-   * last getSupported() call (x402 makes one when it initializes) and fetches
-   * them when there are none. Throws one error naming every gap.
+   * payments of `x402Version` on that asset's network and, with `refuse`,
+   * describes none of them in a way the gateway refuses (every such kind of
+   * its answer goes through `refuse`). Uses the answers of the last
+   * getSupported() call (x402 makes one when it initializes) and fetches them
+   * when there are none. Throws one error naming every gap.
+   *
+   * Each facilitator is checked on its own answer, not on the merged one x402
+   * sees: a gap names the facilitator and its asset, and a facilitator is
+   * refused even when the merge happens to hide what it advertises (another
+   * facilitator lacks the extension, or describes the kind differently).
    */
-  async assertCoverage(x402Version = 2, scheme = "exact"): Promise<void> {
+  async assertCoverage(x402Version = 2, scheme = "exact", refuse?: SupportedKindCheck): Promise<void> {
     this.supportedByFacilitator ??= await this.fetchSupported();
     const answers = this.supportedByFacilitator;
     const gaps: string[] = [];
     for (const route of this.routes.values()) {
-      const kinds = answers.get(route.facilitator)?.kinds ?? [];
-      const covered = kinds.some(kind => kind.x402Version === x402Version && kind.scheme === scheme && kind.network === route.network);
-      if (!covered) {
+      const answer = answers.get(route.facilitator);
+      const kinds = (answer?.kinds ?? []).filter(
+        kind => kind.x402Version === x402Version && kind.scheme === scheme && kind.network === route.network,
+      );
+      if (kinds.length === 0) {
         gaps.push(
           `${route.label} does not support x402 v${x402Version} "${scheme}" payments on ${route.network}, ` +
             `which asset ${normalizePackageHash(route.asset)} needs`,
         );
+        continue;
+      }
+      for (const kind of kinds) {
+        const problem = refuse?.(route, kind, answer?.extensions ?? []);
+        if (problem !== undefined && !gaps.includes(problem)) gaps.push(problem);
       }
     }
     if (gaps.length > 0) throw new Error(gaps.join("; "));

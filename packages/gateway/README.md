@@ -92,9 +92,11 @@ official Wrapped CSPR (cep3009-value, settled by the hosted facilitator):
 - Verify and settle go to the facilitator of the token the buyer paid in
   (x402 itself would pick one facilitator per network). A payment in a token
   the tool does not accept is refused before any facilitator is asked.
-- Startup fails when a facilitator does not answer `/supported` or does not
-  support x402 v2 `exact` payments on the gateway's network, and when a price
-  rounds to zero units of one of its tokens.
+- Startup fails when a facilitator does not answer `/supported`, does not
+  support x402 v2 `exact` payments on the gateway's network, or asks for a
+  payment flow the gateway does not support (see *Payment flow*), and when a
+  price rounds to zero units of one of its tokens. Each facilitator's own
+  answer is checked, and the error names the facilitator and the asset.
 - The hosted facilitator gets the raw access key, and requirements without
   CasCet's own `extra.authorizationStyle` (no facilitator needs it; buyers
   still see it). With a node configured, the gateway preflights its payments
@@ -124,13 +126,31 @@ asset the hosted facilitator settles against the token's on-chain state
 before the facilitator verifies it, as CasCet's self-hosted facilitator does
 for its own assets: the token's `transfer_with_authorization` takes the
 configured style's argument, the nonce is unused, the token's `name` is the
-signed EIP-712 name, and the payer's balance covers the price. A payment that
+signed EIP-712 name, and the payer's balance covers the price plus the
+payer's other payments in flight in that token (below). A payment that
 fails a check gets a 402 naming it (`nonce_already_used`,
 `insufficient_funds`, `authorization_style_mismatch`,
 `token_domain_mismatch`, `unsupported_asset`). When the node cannot be read
 within 5 s the payment is refused with `preflight_unavailable` (fail closed:
 nothing was charged and the buyer may retry). Without a node the gateway
 warns at startup that this preflight is off.
+
+Payments in flight count against the balance, because the balance a payment
+is checked against does not show the payer's payments that have not settled
+yet. A payment that passes the preflight reserves its amount for its payer
+and token until its call ends: when its settlement finishes (settled, failed
+or unknown; with `settleBeforeExecute`, before the tool runs), or when the
+call ends without one (the facilitator or the gateway refused it, the tool
+failed or timed out, anything threw). Of two concurrent payments that one
+balance funds, only one passes; the other gets `insufficient_funds:
+insufficient balance once 1 in-flight payment is counted` and nothing runs
+for it. A reservation that is somehow never released stops counting 2
+minutes after its authorization's `validBefore`, when the authorization can
+no longer execute. The gateway tracks at most 10 000 payments in flight and
+refuses new ones beyond that (`preflight_unavailable: too many payments in
+flight; retry later`) rather than forget one. Like the replay guard, this is
+per gateway process: gateways that share a payer and a token do not see each
+other's payments.
 
 ## Payment flow
 
@@ -161,9 +181,14 @@ warns at startup that this preflight is off.
    effects or that buy from other paid tools. A tool that fails after
    settlement is not refunded (the receipt notes it). x402's own
    settle-before-handler flows (`extra.paymentFlow` `upfront` or `escrow`)
-   are refused, whether a route or a facilitator's `/supported` extensions ask
-   for them: x402 would settle before the gateway's checks and write-ahead
-   record. Use `settleBeforeExecute` instead.
+   are refused: x402 would settle before the gateway's checks and write-ahead
+   record. Use `settleBeforeExecute` instead. A facilitator whose `/supported`
+   answer asks for such a flow (its kind's `extra.paymentFlow`, through the
+   `paymentFlow` extension), or for an asset transfer method
+   (`assetTransferMethod`), would make x402 refuse every paid call in its
+   assets, so the gateway refuses to start instead, with an error that names
+   the facilitator, the asset and the advertised flow. Nothing is verified,
+   settled or run.
 4. Settlement outcomes:
    - settled: the result, with `_meta.cascet.paymentId` and the
      `X-CASCET-PAYMENT-ID` / `PAYMENT-RESPONSE` headers;

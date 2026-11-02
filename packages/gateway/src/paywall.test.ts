@@ -13,6 +13,7 @@ import {
   unmatchedConfiguredTools,
   type PaymentRail,
 } from "./paywall.js";
+import { InFlightPayments } from "./in-flight.js";
 import { ASSET, PAY_TO, PRICE_RAW, testConfig } from "./testing/harness.js";
 
 const unusedFacilitator: FacilitatorClient = {
@@ -28,6 +29,7 @@ function rail(): PaymentRail {
     payTo: PAY_TO,
     assets: testConfig().assets,
     preflightAssets: [],
+    inFlight: new InFlightPayments(),
     maxTimeoutSeconds: 300,
   };
 }

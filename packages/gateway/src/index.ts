@@ -33,14 +33,33 @@ export {
   UnroutedAssetError,
   type AssetRoute,
   type AssetRoutingOptions,
+  type SupportedKindCheck,
 } from "./facilitator-router.js";
-export { CASCET_PAYMENT_FLOWS, CascetCasperServerScheme, type ServerSchemeAsset } from "./server-scheme.js";
+export {
+  advertisedPaymentFlow,
+  CASCET_PAYMENT_FLOWS,
+  CascetCasperServerScheme,
+  type ServerSchemeAsset,
+  type UnsupportedFlow,
+} from "./server-scheme.js";
 export {
   HOSTED_PREFLIGHT_DEADLINE_MS,
   hostedPreflightHook,
+  insufficientFundsInFlight,
   PreflightReason,
   type HostedPreflightOptions,
 } from "./hosted-preflight.js";
+export {
+  IN_FLIGHT_MARGIN_MS,
+  InFlightPayments,
+  paymentHoldOf,
+  withPaymentHold,
+  type InFlightOptions,
+  type InFlightPayment,
+  type InFlightTotal,
+  type PaymentHold,
+  type ReserveOutcome,
+} from "./in-flight.js";
 export {
   connectUpstream,
   createUpstreamTransport,

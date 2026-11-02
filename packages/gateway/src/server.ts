@@ -31,6 +31,7 @@ import { Anchorer, chainNameForNetwork, createCasperAnchorChain, type AnchorChai
 import { normalizeAccountAddress, parseCasperAuthorization, paymentAssetOf, type CasperAuthorization } from "./authorization.js";
 import { buildDiscovery } from "./discovery.js";
 import { classifySettleFailure, SettlementIndeterminateError } from "./facilitator.js";
+import { withPaymentHold, type PaymentHold } from "./in-flight.js";
 import {
   clip,
   isJsonRpcId,
@@ -178,6 +179,18 @@ interface SettleOutcome {
 /** x402's answer for a payment that matched a route and passed the facilitator's verify. */
 type VerifiedPayment = Extract<HTTPProcessResult, { type: "payment-verified" }>;
 
+/** A tools/call of a priced tool, before its payment is checked. */
+interface PaidRequest {
+  id: JsonRpcId;
+  name: string;
+  args: Record<string, unknown>;
+  policy: PaidToolPolicy;
+  table: ToolTable;
+  started: number;
+  /** Where the preflight reserves the call's payment while it is in flight; released when the call ends. */
+  hold: PaymentHold;
+}
+
 /** Everything about one verified paid call. */
 interface PaidCall {
   id: JsonRpcId;
@@ -193,6 +206,8 @@ interface PaidCall {
   paymentId: string;
   parentId?: string;
   started: number;
+  /** The payment's in-flight reservation (see PaidRequest.hold), released once its settlement finished. */
+  hold: PaymentHold;
 }
 
 /** Start a paid MCP gateway in front of the configured upstream server. */
@@ -502,8 +517,21 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     }
   }
 
-  /** Settle a verified payment and classify the outcome. */
+  /**
+   * Settle a verified payment and classify the outcome. Once that is known
+   * (settled, failed or unknown), the payment no longer counts as in flight:
+   * its reservation is released before the tool runs (settleBeforeExecute)
+   * and before the receipt is written.
+   */
   async function settle(call: PaidCall): Promise<SettleOutcome> {
+    try {
+      return await settleAndClassify(call);
+    } finally {
+      call.hold.release();
+    }
+  }
+
+  async function settleAndClassify(call: PaidCall): Promise<SettleOutcome> {
     let result;
     try {
       // CASCET_PAYMENT_FLOWS refuses every flow that settles before the handler, so x402 hands over
@@ -796,12 +824,33 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       return;
     }
 
-    const context: HTTPRequestContext = {
-      adapter: expressAdapter(req),
-      path: snapshot.routeFor(name),
-      method: "POST",
-      paymentHeader: req.get(HEADER_PAYMENT_SIGNATURE) ?? undefined,
-    };
+    // However a paid call ends (its settlement, a refusal, a cancellation, an upstream error or
+    // timeout, a throw), the payment the preflight reserved for it is no longer in flight.
+    const hold = rail.inFlight.open();
+    try {
+      await handlePaidCall(req, res, { id, name, args, policy, table: snapshot, started, hold });
+    } finally {
+      hold.release();
+    }
+  }
+
+  /**
+   * A paid tool call: the gateway's local checks, x402's verification (with the
+   * hosted preflight, which reserves the payment on the call's hold), the
+   * write-ahead record, then the tool and the settlement in the configured order.
+   */
+  async function handlePaidCall(req: Request, res: Response, paid: PaidRequest): Promise<void> {
+    const { id, name, args, policy, table: snapshot, started, hold } = paid;
+    // x402 hands this context to its hooks: that is how the preflight finds the call's hold.
+    const context: HTTPRequestContext = withPaymentHold(
+      {
+        adapter: expressAdapter(req),
+        path: snapshot.routeFor(name),
+        method: "POST",
+        paymentHeader: req.get(HEADER_PAYMENT_SIGNATURE) ?? undefined,
+      },
+      hold,
+    );
     if (!snapshot.http.requiresPayment(context)) {
       log.error(`[x402] priced tool ${logSafe(name, 80)} has no payment route; refusing to run it for free`);
       res.status(500).json(rpcError(id, RPC_INTERNAL_ERROR, "gateway pricing is inconsistent; the tool was not run and nothing was charged"));
@@ -917,6 +966,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       paymentId,
       parentId: parentIdOf(req),
       started,
+      hold,
     };
     if (policy.settleBeforeExecute) await settleThenExecute(req, res, call);
     else await executeThenSettle(req, res, call);
@@ -1159,7 +1209,10 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   log.info(`    on-chain settlement check: ${preemption ? "on" : "off (set settlement.nodeUrl to enable)"}`);
   const hosted = rail.assets.filter(asset => isHostedFacilitatorUrl(facilitatorFor(cfg, asset).url)).map(asset => asset.id);
   if (rail.preflightAssets.length > 0) {
-    log.info(`    on-chain preflight of hosted-facilitator payments (nonce, balance, token ABI and name): on for ${logSafe(hosted.join(", "), 200)}`);
+    log.info(
+      `    on-chain preflight of hosted-facilitator payments (nonce, balance with the payer's payments in flight, token ABI and name): ` +
+        `on for ${logSafe(hosted.join(", "), 200)}`,
+    );
   } else if (hosted.length > 0) {
     log.warn(
       `    on-chain preflight of hosted-facilitator payments: off for ${logSafe(hosted.join(", "), 200)} (set settlement.nodeUrl to enable); ` +

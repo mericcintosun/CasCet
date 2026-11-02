@@ -182,6 +182,69 @@ describe("AssetRoutingFacilitatorClient /supported", () => {
     await router.assertCoverage();
     assert.deepEqual([...legacy.ops(), ...cep.ops()], ["supported", "supported"]);
   });
+
+  it("assertCoverage refuses what a facilitator's own answer advertises, even when the merged answer x402 sees hides it", async () => {
+    const upfront: SupportedResponse = { ...supportedOn(NETWORK, { paymentFlow: "upfront" }), extensions: ["paymentFlow"] };
+    const legacy = recorder("legacy", upfront);
+    const cep = recorder("cep");
+    const router = new AssetRoutingFacilitatorClient([
+      { network: NETWORK, asset: `hash-${LEGACY}`, facilitator: legacy.client, label: 'facilitator "self" (http://127.0.0.1:4501)' },
+      { network: NETWORK, asset: WCSPR, facilitator: cep.client, label: 'facilitator "default" (https://x402-facilitator.cspr.cloud)' },
+    ]);
+    // The other facilitator lists no extension and describes the kind differently: x402 alone would not see the flow.
+    const merged = await router.getSupported();
+    assert.deepEqual([merged.extensions, merged.kinds[0]?.extra], [[], undefined]);
+
+    const checked: Array<[string, unknown, readonly string[]]> = [];
+    await assert.rejects(
+      router.assertCoverage(2, "exact", (route, kind, extensions) => {
+        checked.push([route.label, kind.extra, extensions]);
+        return kind.extra?.paymentFlow === "upfront" ? `${route.label} asks for "upfront", which asset ${route.asset} needs` : undefined;
+      }),
+      new RegExp(`^Error: facilitator "self" \\(http://127\\.0\\.0\\.1:4501\\) asks for "upfront", which asset hash-${LEGACY} needs$`),
+    );
+    assert.deepEqual(checked, [
+      ['facilitator "self" (http://127.0.0.1:4501)', { paymentFlow: "upfront" }, ["paymentFlow"]],
+      ['facilitator "default" (https://x402-facilitator.cspr.cloud)', undefined, []],
+    ]);
+    assert.deepEqual([...legacy.ops(), ...cep.ops()], ["supported", "supported"], "no second /supported round");
+  });
+
+  it("assertCoverage checks every kind a route is paid with, and only those, and reports refusals with coverage gaps", async () => {
+    const answer = (network: string): SupportedResponse => ({
+      kinds: [
+        { x402Version: 2, scheme: "exact", network: network as Network, extra: { paymentFlow: "upfront" } },
+        { x402Version: 2, scheme: "exact", network: network as Network, extra: { paymentFlow: "escrow" } },
+        { x402Version: 1, scheme: "exact", network: network as Network, extra: { paymentFlow: "v1" } },
+        { x402Version: 2, scheme: "upto", network: network as Network, extra: { paymentFlow: "upto" } },
+      ],
+      extensions: ["paymentFlow"],
+      signers: {},
+    });
+    const covering = recorder("covering", answer(NETWORK));
+    const elsewhere = recorder("elsewhere", answer("casper:casper"));
+    const router = new AssetRoutingFacilitatorClient([
+      { network: NETWORK, asset: WCSPR, facilitator: covering.client, label: "covering" },
+      { network: NETWORK, asset: LEGACY, facilitator: elsewhere.client, label: "elsewhere" },
+    ]);
+    const flows: unknown[] = [];
+    await assert.rejects(
+      router.assertCoverage(2, "exact", (route, kind) => {
+        flows.push(kind.extra?.paymentFlow);
+        return `${route.label} refuses ${String(kind.extra?.paymentFlow)}`;
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.deepEqual(err.message.split("; "), [
+          "covering refuses upfront",
+          "covering refuses escrow",
+          `elsewhere does not support x402 v2 "exact" payments on ${NETWORK}, which asset ${LEGACY} needs`,
+        ]);
+        return true;
+      },
+    );
+    assert.deepEqual(flows, ["upfront", "escrow"], "only the v2 exact kinds on the route's network");
+  });
 });
 
 describe("mergeSupported", () => {
