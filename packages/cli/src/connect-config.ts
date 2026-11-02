@@ -45,8 +45,9 @@ export const CONNECT_USAGE =
  * on-chain settlement, and a deadline that fires after the payment was sent
  * leaves the call paid but unanswered. With its default timeouts a gateway
  * answers a paid call within 185 s (longestPaidCallMs: 5 s hosted preflight,
- * 15 s verify, 60 s tool, 90 s settle, 15 s on-chain check); this leaves 15 s
- * for the network.
+ * 15 s verify, 60 s tool, 90 s settle, 15 s on-chain check), or 190 s when one
+ * of its tools settles before it runs (plus the upstream ping before that
+ * settlement, at most 5 s); this leaves at least 10 s for the network.
  */
 export const DEFAULT_CONNECT_TIMEOUT_MS = 200_000;
 
