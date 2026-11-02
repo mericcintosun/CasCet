@@ -1,9 +1,10 @@
 import { DEFAULT_FACILITATOR_URL, normalizePackageHash, type AuthorizationStyle } from "@cascet/core";
+import type { CasperRpc } from "@cascet/gateway";
 import { formatCspr } from "./amounts.js";
 import { NETWORKS } from "./facilitator-env.js";
 import { normalizePayTo } from "./facilitator-core.js";
 import { SETTLEABLE_STYLES } from "./settlement.js";
-import { parseCli, UsageError } from "./testnet-tx.js";
+import { parseCli, readCsprBalance, UsageError } from "./testnet-tx.js";
 import { TESTNET_WCSPR } from "./wcspr.js";
 
 /**
@@ -228,15 +229,80 @@ export function hostedFeePayerProblem(feePayer: string, balanceMotes: bigint, mi
   );
 }
 
+/** The `fetch` that reads GET /supported (injected in tests). */
+export type SupportedFetch = (input: string, init: { signal: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+
 /** GET /supported of the hosted facilitator (no authentication), with a timeout. */
 export async function fetchHostedSupported(
   url: string = HOSTED_FACILITATOR_URL,
-  opts: { timeoutMs?: number; fetchImpl?: (input: string, init: { signal: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }> } = {},
+  opts: { timeoutMs?: number; fetchImpl?: SupportedFetch } = {},
 ): Promise<unknown> {
   const doFetch = opts.fetchImpl ?? ((input, init) => fetch(input, init));
   const response = await doFetch(`${url.replace(/\/+$/, "")}/supported`, { signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000) });
   if (!response.ok) throw new Error(`GET /supported answered HTTP ${response.status}`);
   return response.json();
+}
+
+/** The hosted facilitator cannot settle now, or demo-real cannot tell: it stops before anyone signs. */
+export class HostedPreflightError extends Error {
+  override name = "HostedPreflightError";
+}
+
+export interface HostedPreflightDeps {
+  /** Read-only node RPC: the fee payer's CSPR balance. */
+  rpc: CasperRpc;
+  /** The hosted facilitator. Default {@link HOSTED_FACILITATOR_URL}. */
+  url?: string;
+  /** `fetch` for GET /supported (tests). */
+  fetchImpl?: SupportedFetch;
+  /** Timeout of GET /supported. Default 10 s. */
+  timeoutMs?: number;
+}
+
+/** The hosted facilitator's testnet fee payer, checked. */
+export interface HostedFeePayerCheck {
+  feePayer: string;
+  balanceMotes: bigint;
+}
+
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Read-only, before anyone signs: the hosted facilitator names a testnet fee
+ * payer in GET /supported, and that fee payer holds enough CSPR to submit a
+ * settle ({@link hostedFeePayerProblem}). Fails closed: it throws
+ * {@link HostedPreflightError} when /supported or the balance cannot be read,
+ * when no testnet fee payer is listed, and when the balance is short. A buyer
+ * who signs anyway would only get "payment settlement failed", with an
+ * authorization that stays valid until it expires.
+ */
+export async function hostedPreflight(deps: HostedPreflightDeps): Promise<HostedFeePayerCheck> {
+  const network = "casper:casper-test";
+  let supported: unknown;
+  try {
+    supported = await fetchHostedSupported(deps.url ?? HOSTED_FACILITATOR_URL, {
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+      ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
+    });
+  } catch (err) {
+    throw new HostedPreflightError(
+      `cannot read the hosted facilitator's /supported (${errorText(err)}), so its testnet fee payer is unchecked; not paying`,
+    );
+  }
+  const feePayer = hostedFeePayer(supported, network);
+  if (!feePayer) throw new HostedPreflightError(`the hosted facilitator lists no fee payer for ${network} in /supported; not paying`);
+  let balanceMotes: bigint;
+  try {
+    balanceMotes = await readCsprBalance(deps.rpc, feePayer);
+  } catch (err) {
+    throw new HostedPreflightError(
+      `cannot read the CSPR balance of the hosted facilitator's testnet fee payer (account-hash-${feePayer.slice(0, 8)}…): ` +
+        `${errorText(err)}; not paying`,
+    );
+  }
+  const problem = hostedFeePayerProblem(feePayer, balanceMotes);
+  if (problem) throw new HostedPreflightError(problem);
+  return { feePayer, balanceMotes };
 }
 
 /** How to fund the buyer with the demo token (printed when its balance is too low). */

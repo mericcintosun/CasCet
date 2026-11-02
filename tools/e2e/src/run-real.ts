@@ -12,11 +12,9 @@ import { formatAmount, formatCspr } from "./amounts.js";
 import {
   assertAssetAllowed,
   demoSeller,
-  fetchHostedSupported,
   fundingHint,
   HOSTED_FACILITATOR_URL,
-  hostedFeePayer,
-  hostedFeePayerProblem,
+  hostedPreflight,
   resolveDemoMode,
   selfHostedEnv,
   type DemoMode,
@@ -33,7 +31,6 @@ import {
 } from "./gas-report.js";
 import { accountHashOfKeyFile } from "./key-file.js";
 import { startRealFacilitator, type RealFacilitatorHandle } from "./real-facilitator.js";
-import { readCsprBalance } from "./testnet-tx.js";
 
 /**
  * REAL x402 settlement on Casper Testnet — no mock facilitator.
@@ -54,13 +51,14 @@ import { readCsprBalance } from "./testnet-tx.js";
  * Refused combinations: legacy + hosted (the hosted facilitator sends `value`, the legacy token
  * reverts with User error 64658), and wcspr + self until the self-hosted facilitator settles
  * cep3009-value tokens (SELF_HOSTED_SETTLE_STYLES). A hosted run first checks (read-only) that the
- * hosted testnet fee payer can pay a settle: on 2026-11-01 it held 2.145 CSPR, below the 2.5 CSPR a
- * settle needs, so hosted testnet settles fail until MAKE refills it.
+ * hosted testnet fee payer can pay a settle, and stops when it cannot tell (/supported or the
+ * balance unreadable): on 2026-11-01 it held 2.145 CSPR, below the 2.5 CSPR a settle needs, so
+ * hosted testnet settles fail until MAKE refills it.
  *
- * Before paying it checks (read-only) the token's ABI, name and chain and the buyer's balance.
- * After the settle it waits for the receipt's anchor and reads the settle and anchor transactions
- * back (read-only RPC): consumed gas, refund and net cost per transaction, and a gas limit
- * suggested from the measurement (ceil(1.3 × consumed)).
+ * There is no dry run: before paying it checks (read-only) the token's ABI, name and chain and
+ * the buyer's balance, then the buyer signs and pays. After the settle it waits for the receipt's
+ * anchor and reads the settle and anchor transactions back (read-only RPC): consumed gas, refund
+ * and net cost per transaction, and a gas limit suggested from the measurement (ceil(1.3 × consumed)).
  *
  * Keys come from the environment (same variables as the standalone facilitator, see
  * src/facilitator-env.ts); on testnet they default to the deployer key so the demo runs as before:
@@ -111,29 +109,6 @@ async function receiptById(id: string): Promise<ReceiptJson | undefined> {
 }
 
 const TX_HASH = /^[0-9a-f]{64}$/i;
-
-/** Read-only: the hosted facilitator names a testnet fee payer that can pay for a settle. */
-async function hostedPreflight(rpc: ReturnType<typeof createCasperRpc>): Promise<void> {
-  let supported: unknown;
-  try {
-    supported = await fetchHostedSupported(HOSTED_FACILITATOR_URL);
-  } catch (err) {
-    console.warn(`[demo] warning: cannot read the hosted facilitator's /supported (${message(err)}); fee-payer check skipped`);
-    return;
-  }
-  const feePayer = hostedFeePayer(supported, "casper:casper-test");
-  if (!feePayer) throw new Error("the hosted facilitator lists no fee payer for casper:casper-test in /supported");
-  let balance: bigint;
-  try {
-    balance = await readCsprBalance(rpc, feePayer);
-  } catch (err) {
-    console.warn(`[demo] warning: cannot read the hosted fee payer's balance (${message(err)}); fee-payer check skipped`);
-    return;
-  }
-  const problem = hostedFeePayerProblem(feePayer, balance);
-  if (problem) throw new Error(problem);
-  console.log(`[demo] hosted fee payer account-hash-${feePayer.slice(0, 8)}… holds ${formatCspr(balance, 3)} CSPR`);
-}
 
 /** Wait until the receipt is anchored (or anchoring gave up); a failed anchor's hash comes from the anchorer's last error. */
 async function waitForAnchor(gateway: RunningGateway, paymentId: string): Promise<{ hash?: string; note: string }> {
@@ -190,7 +165,9 @@ async function main(): Promise<number> {
     }
   } else {
     seller = demoSeller(process.env);
-    await hostedPreflight(rpc);
+    // Fail closed: an underfunded or unreadable fee payer stops the run before anyone signs.
+    const { feePayer, balanceMotes } = await hostedPreflight({ rpc });
+    console.log(`[demo] hosted fee payer account-hash-${feePayer.slice(0, 8)}… holds ${formatCspr(balanceMotes, 3)} CSPR`);
   }
 
   // --- read-only checks before anyone signs: the token is what the demo expects, the buyer can pay ---

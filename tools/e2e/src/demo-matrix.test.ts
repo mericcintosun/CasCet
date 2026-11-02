@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { cascetConfigSchema, facilitatorAuthorization, facilitatorFor, usdPriceToTokenUnits } from "@cascet/core";
+import { createCasperRpc } from "@cascet/gateway";
 import {
   assertAssetAllowed,
   DemoConfigError,
@@ -11,12 +12,16 @@ import {
   HOSTED_MIN_FEE_PAYER_MOTES,
   hostedFeePayer,
   hostedFeePayerProblem,
+  hostedPreflight,
+  HostedPreflightError,
   resolveDemoMode,
   SELF_HOSTED_SETTLE_STYLES,
   selfHostedEnv,
   TESTNET_DEMO_ASSETS,
+  type SupportedFetch,
 } from "./demo-matrix.js";
 import { SETTLEABLE_STYLES } from "./settlement.js";
+import { replayFetch, rpcError, rpcResult, type Replay } from "./test-helpers.js";
 
 /** GET https://x402-facilitator.cspr.cloud/supported, recorded 2026-11-01 (no authentication needed). */
 const hostedSupported = {
@@ -183,4 +188,72 @@ describe("demo-real: hosted facilitator preflight", () => {
       /HTTP 503/,
     );
   });
+
+  describe("hostedPreflight: fails closed before anyone signs", () => {
+    const feePayer = "81d557c9dcaadea97c34d79bf7b6af07aa9d760e5dd1aabf78a45fb39e072c3a";
+    const supportedOk: SupportedFetch = async () => ({ ok: true, status: 200, json: async () => hostedSupported });
+    const node = (balance: Replay, calls: string[] = []) =>
+      createCasperRpc("http://node.test/rpc", { fetchImpl: replayFetch({ query_balance: balance }, calls) });
+
+    test("a funded fee payer passes, read from /supported and query_balance", async () => {
+      const calls: string[] = [];
+      const seen: string[] = [];
+      const check = await hostedPreflight({
+        rpc: node(rpcResult({ api_version: "2.0.0", balance: "9976860000000" }), calls),
+        fetchImpl: async url => {
+          seen.push(url);
+          return { ok: true, status: 200, json: async () => hostedSupported };
+        },
+      });
+      assert.deepEqual(check, { feePayer, balanceMotes: 9_976_860_000_000n });
+      assert.deepEqual(seen, ["https://x402-facilitator.cspr.cloud/supported"]);
+      assert.deepEqual(calls, ["query_balance"]);
+      const exactly = await hostedPreflight({ rpc: node(rpcResult({ balance: String(HOSTED_MIN_FEE_PAYER_MOTES) })), fetchImpl: supportedOk });
+      assert.equal(exactly.balanceMotes, HOSTED_MIN_FEE_PAYER_MOTES);
+    });
+
+    test("an underfunded fee payer (2.145 CSPR on 2026-11-01) stops the run", async () => {
+      await assert.rejects(
+        hostedPreflight({ rpc: node(rpcResult({ balance: "2145235542" })), fetchImpl: supportedOk }),
+        (err: unknown) =>
+          err instanceof HostedPreflightError &&
+          /holds 2\.145 CSPR, less than the 2\.500 CSPR a settle needs, so hosted testnet settles fail until MAKE refills it/.test(err.message),
+      );
+    });
+
+    test("an unreadable /supported stops the run (no fee-payer check is skipped)", async () => {
+      const calls: string[] = [];
+      for (const fetchImpl of [
+        (async () => ({ ok: false, status: 503, json: async () => ({}) })) as SupportedFetch,
+        (async () => Promise.reject(new Error("getaddrinfo ENOTFOUND x402-facilitator.cspr.cloud"))) as SupportedFetch,
+        (async () => ({ ok: true, status: 200, json: async () => Promise.reject(new SyntaxError("Unexpected token <")) })) as SupportedFetch,
+      ]) {
+        await assert.rejects(
+          hostedPreflight({ rpc: node(rpcResult({ balance: "9976860000000" }), calls), fetchImpl }),
+          (err: unknown) => err instanceof HostedPreflightError && /^cannot read the hosted facilitator's \/supported \(.+\), so its testnet fee payer is unchecked; not paying$/.test(err.message),
+        );
+      }
+      assert.deepEqual(calls, [], "no balance read without a fee payer");
+    });
+
+    test("a /supported without a testnet fee payer stops the run", async () => {
+      const mainnetOnly = { kinds: hostedSupported.kinds.filter(k => k.network === "casper:casper") };
+      await assert.rejects(
+        hostedPreflight({ rpc: node(rpcResult({ balance: "1" })), fetchImpl: async () => ({ ok: true, status: 200, json: async () => mainnetOnly }) }),
+        (err: unknown) => err instanceof HostedPreflightError && /lists no fee payer for casper:casper-test/.test(err.message),
+      );
+    });
+
+    test("an unreadable balance stops the run (RPC error, transport failure, malformed answer)", async () => {
+      for (const balance of [rpcError(-32003, "Query failed", "purse not found"), new Error("socket hang up"), rpcResult({})] as Replay[]) {
+        await assert.rejects(
+          hostedPreflight({ rpc: node(balance), fetchImpl: supportedOk }),
+          (err: unknown) =>
+            err instanceof HostedPreflightError &&
+            /^cannot read the CSPR balance of the hosted facilitator's testnet fee payer \(account-hash-81d557c9…\): .+; not paying$/.test(err.message),
+        );
+      }
+    });
+  });
 });
+
