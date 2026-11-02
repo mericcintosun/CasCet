@@ -330,7 +330,8 @@ export interface PaymentClientOptions {
  *   policy accepts none of its options;
  * - hooks that reserve the budget before signing (the binding decision,
  *   atomic with selection), report the payment after signing and give the
- *   reservation back when signing fails.
+ *   reservation back when signing fails, or when a before-payment hook
+ *   registered later aborts or throws.
  *
  * It registers no payment-response hook: @x402/fetch 2.29 would sign a second
  * payment when one reports `{ recovered: true }`.
@@ -355,9 +356,26 @@ class PolicyCheckedClient extends x402Client {
   override async createPaymentPayload(paymentRequired: PaymentRequired): Promise<PaymentPayload> {
     // No await before x402's own call: the check, x402's selection and the before-payment hook that
     // reserves the budget run in one synchronous step, so no concurrent payment comes in between.
-    return super.createPaymentPayload(checkedPaymentRequired(this.spendPolicy, paymentRequired));
+    // Each payment gets its own copy of the 402, by which releaseUnsettled finds its reservation.
+    const checked = { ...checkedPaymentRequired(this.spendPolicy, paymentRequired) };
+    try {
+      return await super.createPaymentPayload(checked);
+    } catch (err) {
+      // Set only while the payment's after and failure hooks have not run.
+      releaseUnsettled.get(checked)?.();
+      throw err;
+    }
   }
 }
+
+/**
+ * Gives back the budget reserved for a payment whose after and failure hooks
+ * never ran, by the 402 x402 was handed for it. @x402/core 2.29 runs the
+ * before-payment hooks outside the part of payment creation that has failure
+ * hooks: when a hook registered after CasCet's aborts or throws, nothing else
+ * gives back what CasCet's hook reserved.
+ */
+const releaseUnsettled = new WeakMap<object, () => void>();
 
 /**
  * A 402 checked the way {@link createPayingFetch} checks the 402s it receives:
@@ -416,10 +434,17 @@ function configurePaymentClient(client: x402Client, opts: PaymentClientOptions):
       // and then nothing is signed.
       const decision = policy.authorize(ctx.selectedRequirements);
       if (!decision.ok) return { abort: true as const, reason: decision.reason };
-      reservations.add(ctx.selectedRequirements, decision);
+      const { paymentRequired, selectedRequirements } = ctx;
+      reservations.add(selectedRequirements, decision);
+      releaseUnsettled.set(paymentRequired, () => {
+        releaseUnsettled.delete(paymentRequired);
+        const reserved = reservations.take(selectedRequirements);
+        if (reserved) policy.release(reserved.asset, reserved.amount);
+      });
       return undefined;
     })
     .onAfterPaymentCreation(async ctx => {
+      releaseUnsettled.delete(ctx.paymentRequired);
       const reserved = reservations.take(ctx.selectedRequirements);
       if (!reserved || !onPayment) return;
       // What this client knows about the token comes before the gateway's label.
@@ -438,6 +463,7 @@ function configurePaymentClient(client: x402Client, opts: PaymentClientOptions):
     })
     .onPaymentCreationFailure(async ctx => {
       // Signing failed after the budget was reserved; no authorization exists, so give it back.
+      releaseUnsettled.delete(ctx.paymentRequired);
       const reserved = reservations.take(ctx.selectedRequirements);
       if (reserved) policy.release(reserved.asset, reserved.amount);
       return undefined;

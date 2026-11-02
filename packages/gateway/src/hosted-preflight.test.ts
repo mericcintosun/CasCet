@@ -7,7 +7,7 @@ import { HOSTED_PREFLIGHT_DEADLINE_MS, hostedPreflightHook, insufficientFundsInF
 import { IN_FLIGHT_MARGIN_MS, InFlightPayments, withPaymentHold, type PaymentHold } from "./in-flight.js";
 import { WCSPR_TESTNET, wcsprNodeRoutes, wcsprNonceCall, wcsprRequirements } from "./testing/fake-node.js";
 import * as fx from "./testing/rpc-fixtures.js";
-import { replayFetch, type Replay } from "./testing/rpc-replay.js";
+import { hangingFetch, replayFetch, type Replay } from "./testing/rpc-replay.js";
 import { TokenProbe } from "./token-probe.js";
 
 const NETWORK = "casper:casper-test";
@@ -114,10 +114,8 @@ describe("on-chain preflight of payments the hosted facilitator settles", () => 
     const broken: RpcFetch = async () => ({ ok: true, status: 200, text: async () => "<html>" });
     assert.equal((await preflight({ fetchImpl: broken }).run())?.reason, PreflightReason.preflightUnavailable);
 
-    const hangs: RpcFetch = (_url, init) =>
-      new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason as Error)));
     const started = Date.now();
-    assert.deepEqual(await preflight({ fetchImpl: hangs, deadlineMs: 200 }).run(), {
+    assert.deepEqual(await preflight({ fetchImpl: hangingFetch(), deadlineMs: 200 }).run(), {
       abort: true,
       reason: PreflightReason.preflightUnavailable,
       message: "could not read the token state; retry later",

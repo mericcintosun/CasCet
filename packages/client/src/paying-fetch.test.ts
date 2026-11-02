@@ -1071,6 +1071,43 @@ describe("createPaymentClient", () => {
     assert.deepEqual(policy.spentByAsset(), {}, "the reservation was given back");
   });
 
+  it("gives the reservation back when a before-payment hook registered later aborts or throws, which signs nothing", async () => {
+    const policy = new SpendPolicy({ allowedAssets: [WCSPR], maxPerCallRaw: "400", maxSessionRaw: "800" });
+    const payments: PaymentInfo[] = [];
+    let signed = 0;
+    const countingSigner = {
+      ...signer,
+      signEIP712: async (digest: Uint8Array): Promise<Uint8Array> => {
+        signed++;
+        return signer.signEIP712(digest);
+      },
+    };
+    const client = createPaymentClient({ policy, signer: countingSigner, onPayment: info => payments.push(info), log: () => undefined });
+    // A confirmation step, as @x402/core suggests for interactive approval. x402 runs it after CasCet's hook reserved
+    // the budget, and an abort or throw there skips the failure hooks that give a reservation back.
+    const declined = { ...challenge(wcsprOption()), resource: { url: "http://127.0.0.1/declined", description: "", mimeType: "" } };
+    let crash = false;
+    client.onBeforePaymentCreation(async ctx => {
+      if (crash) throw new Error("the confirmation dialog crashed");
+      return ctx.paymentRequired.resource?.url === declined.resource.url ? { abort: true as const, reason: "the user declined" } : undefined;
+    });
+    await assert.rejects(client.createPaymentPayload(declined), /^Error: Payment creation aborted: the user declined$/);
+    assert.deepEqual(policy.spentByAsset(), {}, "the declined payment's reservation was given back");
+    crash = true;
+    await assert.rejects(client.createPaymentPayload(challenge(wcsprOption())), /^Error: the confirmation dialog crashed$/);
+    assert.deepEqual(policy.spentByAsset(), {}, "so was the reservation of the payment whose confirmation threw");
+    crash = false;
+
+    // A declined payment next to an identical one that is paid: one reservation is given back, the other kept.
+    const results = await Promise.allSettled([client.createPaymentPayload(declined), client.createPaymentPayload(challenge(wcsprOption()))]);
+    assert.deepEqual(results.map(result => result.status), ["rejected", "fulfilled"]);
+    assert.deepEqual(policy.spentByAsset(), { [WCSPR]: "400" });
+    assert.deepEqual(payments, [
+      { amountRaw: "400", payTo: SELLER, network: "casper:casper-test", asset: WCSPR, authorizationStyle: "cep3009-value" },
+    ]);
+    assert.equal(signed, 1);
+  });
+
   it("logs, and does not fail the payment, when onPayment throws", async () => {
     const lines: string[] = [];
     const client = createPaymentClient({

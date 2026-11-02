@@ -101,6 +101,16 @@ function testnetReader(extra: Record<string, unknown> = {}, calls: string[] = []
   return new TokenProbe(rpc, { now: clock.now, cacheTtlMs: 60_000 });
 }
 
+/**
+ * An indeterminate failure: a TokenStateError but not a TokenUnsupportedError. That subclass is a final
+ * verdict (unsupported_asset), while an indeterminate read must end in preflight_unavailable (retry later).
+ */
+function indeterminate(err: unknown): true {
+  assert.ok(err instanceof TokenStateError, `expected a TokenStateError, got ${String(err)}`);
+  assert.ok(!(err instanceof TokenUnsupportedError), `classified as unsupported: ${err.message}`);
+  return true;
+}
+
 describe("TokenProbe (recorded RPC fixtures)", () => {
   test("reads the testnet payer's balance, a used nonce and the token name", async () => {
     const reader = testnetReader();
@@ -141,7 +151,7 @@ describe("TokenProbe (recorded RPC fixtures)", () => {
     );
   });
 
-  test("any other RPC failure is indeterminate and throws TokenStateError", async () => {
+  test("any other RPC failure is indeterminate: a TokenStateError, never TokenUnsupportedError", async () => {
     const usedSeed = namedKey(fx.testnetContractResponse, "used_nonces");
     const addr = dictionaryAddress(usedSeed, usedNonceItemKey(PAYER, TESTNET_NONCE));
     for (const failure of [
@@ -150,7 +160,7 @@ describe("TokenProbe (recorded RPC fixtures)", () => {
       new Error("ECONNRESET"),
     ]) {
       const reader = testnetReader({ [`query_global_state ${addr}`]: failure });
-      await assert.rejects(reader.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE), TokenStateError);
+      await assert.rejects(reader.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE), indeterminate);
     }
   });
 
@@ -164,13 +174,13 @@ describe("TokenProbe (recorded RPC fixtures)", () => {
 
     const calls: string[] = [];
     const down = testnetReader({ [`query_global_state ${addr}`]: new Error("ECONNREFUSED") }, calls);
-    await assert.rejects(down.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE), TokenStateError);
+    await assert.rejects(down.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE), indeterminate);
     assert.equal(calls.filter(c => c.endsWith(addr)).length, 2, "exactly one retry");
 
     // An answer from the node (here: a JSON-RPC error) is final and not retried.
     const answered: string[] = [];
     const failing = testnetReader({ [`query_global_state ${addr}`]: rpcError(-32003, "Query failed", "state root hash not available") }, answered);
-    await assert.rejects(failing.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE), TokenStateError);
+    await assert.rejects(failing.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE), indeterminate);
     assert.equal(answered.filter(c => c.endsWith(addr)).length, 1);
   });
 
@@ -254,7 +264,7 @@ describe("TokenProbe deadline (one budget per preflight)", () => {
     const clock = new FakeClock(1_000_000);
     const { rpc, calls } = clockedRpc(clock, key => (key === nonceAddr() ? { delayMs: 9_700, fail: true } : {}));
     const reader = new TokenProbe(rpc, { now: clock.now });
-    await assert.rejects(reader.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE, { deadlineMs: 1_000_000 + 10_000 }), TokenStateError);
+    await assert.rejects(reader.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE, { deadlineMs: 1_000_000 + 10_000 }), indeterminate);
     assert.equal(calls.filter(c => c.key === nonceAddr()).length, 1, `no retry with less than ${MIN_RETRY_BUDGET_MS} ms left`);
 
     const late = clockedRpc(clock);
