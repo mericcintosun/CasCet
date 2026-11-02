@@ -45,7 +45,7 @@ describe("authorization styles", () => {
 
   it("never settles a legacy token with @x402/casper's 2.5 CSPR default gas limit", () => {
     assert.equal(DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE["legacy-amount"], 4_000_000_000);
-    assert.equal(DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE["cep3009-value"], 3_500_000_000);
+    assert.equal(DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE["cep3009-value"], 2_500_000_000);
     assert.ok(DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE["legacy-amount"] > 2_700_000_000, "above the measured ~2.70 CSPR");
     assert.ok(Object.isFrozen(DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE));
   });

@@ -90,7 +90,7 @@ export const TOKEN_STATE_CACHE_MS = 5 * 60_000;
  *     (cached) and refuses payments when the token's ABI no longer matches its
  *     pinned style or its domain can no longer be checked;
  *   - gives every asset its own gas limit (default per style: 4 CSPR for
- *     `legacy-amount`, 3.5 CSPR for `cep3009-value`), never below the style's
+ *     `legacy-amount`, 2.5 CSPR for `cep3009-value`), never below the style's
  *     measured consumption;
  *   - refuses authorizations that are not valid yet, or that expire too soon
  *     to be settled in time (default 20 s; casper-x402 alone accepts 6 s, less
@@ -135,7 +135,7 @@ export interface RealFacilitatorOptions {
   /**
    * Gas limit (motes) of a settle of every asset without its own
    * (`assets[].paymentMotes`). Default per style: 4 CSPR for legacy-amount,
-   * 3.5 CSPR for cep3009-value. Never below the style's minimum (3 CSPR and
+   * 2.5 CSPR for cep3009-value. Never below the style's minimum (3 CSPR and
    * 1.5 CSPR); without an asset allowlist, at least 3 CSPR.
    */
   paymentMotes?: number;

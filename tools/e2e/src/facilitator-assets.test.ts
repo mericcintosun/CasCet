@@ -115,7 +115,7 @@ describe("resolving assets against the chain (recorded testnet answers)", () => 
       network: NETWORK,
       probe: recordedProbe({ [`query_global_state hash-${OTHER}`]: pkg }),
     });
-    assert.deepEqual(policy, { asset: OTHER, style: "cep3009-value", name: "Wrapped CSPR", version: "1", paymentMotes: 3_500_000_000n });
+    assert.deepEqual(policy, { asset: OTHER, style: "cep3009-value", name: "Wrapped CSPR", version: "1", paymentMotes: 2_500_000_000n });
   });
 
   test("refuses a configured style, name or chain the token contradicts", async () => {
@@ -203,7 +203,7 @@ describe("resolving assets against the chain (recorded testnet answers)", () => 
   test("without the preflight, the pinned style and name are used as they are", async () => {
     const plans: AssetPlan[] = planAssets([{ packageHash: WCSPR, name: "Wrapped CSPR" }], { network: NETWORK, preflight: false });
     assert.deepEqual(await resolveAssetPolicies(plans, { network: NETWORK }), [
-      { asset: WCSPR, style: "cep3009-value", name: "Wrapped CSPR", version: "1", paymentMotes: 3_500_000_000n },
+      { asset: WCSPR, style: "cep3009-value", name: "Wrapped CSPR", version: "1", paymentMotes: 2_500_000_000n },
     ]);
   });
 });

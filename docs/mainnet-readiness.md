@@ -128,7 +128,7 @@ pnpm --filter @cascet/e2e facilitator
 | `CASCET_ALLOWED_ASSETS` | the CasCet x402 token | comma list of package hashes; each is settled in the style its on-chain ABI shows |
 | `CASCET_ASSET_STYLES` | none | optional `<package hash>=<legacy-amount\|cep3009-value>` list; the chain must agree (start-up and every payment); a style CasCet knows to be wrong (its own token as `cep3009-value`, Wrapped CSPR as `legacy-amount`) is refused even with the preflight off |
 | `CASCET_ASSET_NAMES` | the names CasCet knows, else the on-chain name | optional `<package hash>=<EIP-712 name>` list of pinned domain names; required for a token without an on-chain `name` |
-| `CASCET_SETTLE_PAYMENT_MOTES` | per style: `4000000000` (4 CSPR) for `amount` tokens, `3500000000` (3.5 CSPR) for `value` tokens | gas limit per settle of every asset without its own; at least 3 CSPR (`amount`) or 1.5 CSPR (`value`), at most 100 CSPR |
+| `CASCET_SETTLE_PAYMENT_MOTES` | per style: `4000000000` (4 CSPR) for `amount` tokens, `2500000000` (2.5 CSPR) for `value` tokens | gas limit per settle of every asset without its own; at least 3 CSPR (`amount`) or 1.5 CSPR (`value`), at most 100 CSPR |
 | `CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET` | none | optional `<package hash>=<motes>` list of per-asset gas limits |
 | `CASCET_DAILY_GAS_CAP_MOTES` | `500000000000` (500 CSPR) | sponsored gas per UTC day |
 | `CASCET_SETTLE_WAIT_MS` | `60000` | how long `/settle` waits for execution before answering "pending"; keep it below the gateway's `timeouts.settleMs` (90 s) |
@@ -233,8 +233,8 @@ puts settles in wasm lane 5 (40 transactions per block) instead of lane 4 (2 per
 block). Never set the limit below the measured consumption: a settle that runs out
 of gas reverts and **burns the whole limit**. The facilitator refuses limits below
 3 CSPR for `amount` tokens. CEP-3009 (`value`) tokens such as Wrapped CSPR default
-to 3.5 CSPR until CasCet's own settles are measured on testnet (the hosted
-facilitator's Wrapped CSPR settle consumed 1.13 CSPR), and are refused below
+to 2.5 CSPR (CasCet's own Wrapped CSPR settles consumed 1.117–1.118 CSPR on
+testnet on 2026-11-02, the hosted facilitator's 1.13 CSPR), and are refused below
 1.5 CSPR; every asset can have its own limit
 (`CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET`), and the daily cap counts each settle at
 its own asset's limit.
@@ -398,9 +398,10 @@ contain, then rotate, then review what was signed. The ReceiptRegistry is
   its payload hash matches settled testnet tx `04e54a95…` (`amount`) and the
   hosted facilitator's testnet tx `9fe35eed…` (`value`) byte for byte, and the
   signature check uses @x402/casper's EIP-712 digest. Rehearse one testnet settle
-  before the next mainnet one, and a few testnet Wrapped CSPR settles (none has
-  been run by CasCet yet) to measure the `value` style's gas before lowering its
-  3.5 CSPR default.
+  before the next mainnet one. Three testnet Wrapped CSPR settles through the
+  self-hosted facilitator (2026-11-02: `fd667f19…`, `660784c8…`, `43bba5ed…`)
+  consumed 1.117–1.118 CSPR each, which set the `value` style's default to
+  2.5 CSPR; no mainnet Wrapped CSPR settle has run yet.
 - **D3** (add per-IP rate limiting / body caps on the dashboard) and **D4** (return generic error messages, log details server-side). Low.
 - **C5** revenue-split floor-division dust (≤ payee_count base units) is stranded — negligible at 9 decimals.
 

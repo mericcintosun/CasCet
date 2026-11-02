@@ -490,7 +490,7 @@ describe("authorization styles", () => {
     assert.equal(r.body.success, true);
     assert.deepEqual(
       open.chain.builds.map(b => [b.style, b.paymentMotes]),
-      [["cep3009-value", 3_500_000_000n]],
+      [["cep3009-value", 2_500_000_000n]],
       "the style's default gas limit",
     );
 

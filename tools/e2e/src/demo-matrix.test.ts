@@ -278,7 +278,7 @@ describe("demo-real: configured gas limits next to the measured suggestions", ()
     assert.equal(demoConfiguredLimit({ kind: "settle", style: "legacy-amount" }, legacySelf, limits), 4_200_000_000n);
     const unset = { anchorGasMotes: 2_500_000_000, settlePaymentMotes: undefined };
     assert.equal(demoConfiguredLimit({ kind: "settle", style: "legacy-amount" }, legacySelf, unset), 4_000_000_000n);
-    assert.equal(demoConfiguredLimit({ kind: "settle" }, wcsprSelf, { anchorGasMotes: 1 }), 3_500_000_000n);
+    assert.equal(demoConfiguredLimit({ kind: "settle" }, wcsprSelf, { anchorGasMotes: 1 }), 2_500_000_000n);
   });
 
   test("hosted settles: none (the hosted facilitator picks its own limit); other kinds: none", () => {

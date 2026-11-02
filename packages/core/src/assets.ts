@@ -73,11 +73,17 @@ export function defaultAuthorizationStyle(packageHash: string): AuthorizationSty
  * the limit is a measured consumption plus headroom, never a library default:
  *
  * - `legacy-amount`: 4 CSPR. Measured consumption about 2.70 CSPR (testnet and
- *   mainnet), so @x402/casper's 2.5 CSPR default would run out of gas.
- * - `cep3009-value`: 3.5 CSPR until measured on testnet with CasCet's own
- *   settlement (the hosted facilitator's Wrapped CSPR settle consumed 1.13 CSPR).
+ *   mainnet; testnet tx 2b031102… consumed 2.69 CSPR), so @x402/casper's
+ *   2.5 CSPR default would run out of gas.
+ * - `cep3009-value`: 2.5 CSPR. CasCet's own Wrapped CSPR settles consumed
+ *   1.117–1.118 CSPR on testnet on 2026-11-02 (tx fd667f19…, 660784c8…,
+ *   43bba5ed…, the first one also creating the payee's balance entry), and the
+ *   hosted facilitator's 1.13 CSPR. 2.5 CSPR is about 2.2 × that and the limit
+ *   the hosted facilitator sets for the same call; ceil(1.3 × max) would be
+ *   1.46 CSPR, but a revert loses the payment and burns the whole limit, while
+ *   the lower limit would save only about 0.25 CSPR per settle.
  */
 export const DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE: Readonly<Record<AuthorizationStyle, number>> = Object.freeze({
   "legacy-amount": 4_000_000_000,
-  "cep3009-value": 3_500_000_000,
+  "cep3009-value": 2_500_000_000,
 });

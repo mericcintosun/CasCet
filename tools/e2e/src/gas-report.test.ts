@@ -287,7 +287,7 @@ describe("measured gas: report and suggestions", () => {
   });
 
   test("knows the default limits it compares against", () => {
-    assert.equal(defaultLimitFor({ kind: "settle", style: "cep3009-value" }), 3_500_000_000n);
+    assert.equal(defaultLimitFor({ kind: "settle", style: "cep3009-value" }), 2_500_000_000n);
     assert.equal(defaultLimitFor({ kind: "settle", style: "legacy-amount" }), 4_000_000_000n);
     assert.equal(defaultLimitFor({ kind: "settle" }), undefined);
     assert.equal(defaultLimitFor({ kind: "wrap" }), undefined);

@@ -871,12 +871,15 @@ describe("startRealFacilitator end to end against a local fake node (no network)
   });
 
   test("both styles side by side: Wrapped CSPR settles with `value`, its own package and gas limit; CasCet's token with `amount`", async () => {
-    const fac = await start({ assets: [{ packageHash: `hash-${TOKEN_PKG}` }, { packageHash: WCSPR_PKG }] });
+    const fac = await start({
+      assets: [{ packageHash: `hash-${TOKEN_PKG}` }, { packageHash: WCSPR_PKG, paymentMotes: 3_000_000_000 }],
+    });
     try {
-      // Read on-chain at start-up: each asset's ABI style and EIP-712 name, pinned; default gas limit per style.
+      // Read on-chain at start-up: each asset's ABI style and EIP-712 name, pinned; the legacy token gets its
+      // style's default gas limit, Wrapped CSPR its own (3 CSPR, neither its style's default nor @x402/casper's).
       assert.deepEqual(fac.assets, [
         { asset: TOKEN_PKG, style: "legacy-amount", name: "CasCet X402 Token", version: "1", paymentMotes: 4_000_000_000n },
-        { asset: WCSPR_PKG, style: "cep3009-value", name: "Wrapped CSPR", version: "1", paymentMotes: 3_500_000_000n },
+        { asset: WCSPR_PKG, style: "cep3009-value", name: "Wrapped CSPR", version: "1", paymentMotes: 3_000_000_000n },
       ]);
 
       const value = await signedByBuyer(wcsprRequirements());
@@ -891,7 +894,7 @@ describe("startRealFacilitator end to end against a local fake node (no network)
       const payload = tx.Version1["payload"];
       assert.equal(payload.fields.target.Stored.id.ByPackageHash.addr, WCSPR_PKG);
       assert.equal(payload.fields.entry_point.Custom, "transfer_with_authorization");
-      assert.equal(payload.pricing_mode.PaymentLimited.payment_amount, 3_500_000_000, "Wrapped CSPR's own limit, never @x402/casper's 2.5 CSPR");
+      assert.equal(payload.pricing_mode.PaymentLimited.payment_amount, 3_000_000_000, "Wrapped CSPR's own limit");
       assert.deepEqual(
         (payload.fields.args.Named as Array<[string]>).map(([n]) => n),
         ["from", "to", "value", "valid_after", "valid_before", "nonce", "public_key", "signature"],

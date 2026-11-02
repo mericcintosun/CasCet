@@ -35,7 +35,7 @@ import type { RealFacilitatorOptions } from "./real-facilitator.js";
  *                                 (default: the names CasCet knows; with the preflight on, the on-chain names).
  *                                 Required for a token without an on-chain `name`
  *   CASCET_SETTLE_PAYMENT_MOTES   gas limit per settle for every asset without its own (default per style:
- *                                 4_000_000_000 for legacy-amount, 3_500_000_000 for cep3009-value)
+ *                                 4_000_000_000 for legacy-amount, 2_500_000_000 for cep3009-value)
  *   CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET
  *                                 optional `<package hash>=<motes>` comma list: per-asset gas limits
  *   CASCET_DAILY_GAS_CAP_MOTES    sponsored gas per UTC day, all assets together (default 500 CSPR)

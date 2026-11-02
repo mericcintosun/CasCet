@@ -56,9 +56,9 @@ export interface FacilitatorAssetOptions {
  * and revert, burning the whole limit:
  *  - `legacy-amount`: 3 CSPR. Settles of CasCet's token consumed 2.68–2.71 CSPR
  *    (mainnet tx 2c66141c…, testnet tx 04e54a95…).
- *  - `cep3009-value`: 1.5 CSPR, about 1.3 × the 1.13 CSPR a Wrapped CSPR settle
- *    of the hosted facilitator consumed on testnet. The default stays at
- *    3.5 CSPR until CasCet's own settles are measured.
+ *  - `cep3009-value`: 1.5 CSPR, about 1.3 × the 1.12–1.13 CSPR Wrapped CSPR
+ *    settles consumed on testnet (CasCet's own and the hosted facilitator's).
+ *    The default is 2.5 CSPR (DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE).
  */
 export const MIN_SETTLE_PAYMENT_MOTES_BY_STYLE: Readonly<Record<AuthorizationStyle, number>> = Object.freeze({
   "legacy-amount": 3_000_000_000,

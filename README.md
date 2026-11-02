@@ -305,7 +305,7 @@ facilitator settles only payments to `CASCET_SELLER_ACCOUNT_HASH` in the tokens 
 `CASCET_ALLOWED_ASSETS` (default: CasCet's x402 token); at start-up it reads each
 token's ABI and pins the style it settles it with. `CASCET_SETTLE_PAYMENT_MOTES`
 sets the gas limit per settlement (default per style: 4 CSPR for `amount`
-tokens, 3.5 CSPR for `value` tokens). For mainnet (`CASCET_NET=mainnet`) it also
+tokens, 2.5 CSPR for `value` tokens). For mainnet (`CASCET_NET=mainnet`) it also
 requires a bearer token in
 `CASCET_FACILITATOR_TOKEN` of at least 32 characters (`openssl rand -hex 32`;
 put the same value into `facilitator.apiKey`) and a state file in
@@ -323,7 +323,7 @@ with real funds.
 | `CASCET_SELLER_ACCOUNT_HASH` | testnet: the demo seller; mainnet: the deployer account | comma-separated `payTo` accounts it settles to |
 | `CASCET_OWNER_ACCOUNT_HASH` | none (mainnet: the deployer is always added) | owner accounts the fee payer must not be |
 | `CASCET_ALLOWED_ASSETS` | CasCet's x402 token | comma-separated token package hashes it settles |
-| `CASCET_SETTLE_PAYMENT_MOTES` | 4 CSPR (`amount` tokens), 3.5 CSPR (`value` tokens) | gas limit per settlement |
+| `CASCET_SETTLE_PAYMENT_MOTES` | 4 CSPR (`amount` tokens), 2.5 CSPR (`value` tokens) | gas limit per settlement |
 | `CASCET_FACILITATOR_STATE_FILE` | none (testnet warns) | file that keeps every settlement the facilitator submitted across restarts, so a retried settle never submits a second transaction; required on mainnet (`none` runs without one, with a loud warning); one file per facilitator, on persistent storage, never shared |
 | `CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE` | `600` | requests one client IP (the gateway) may send a minute before authentication; raise it when one gateway sends a lot of traffic |
 | `CASCET_FACILITATOR_HOST` / `PORT` | `127.0.0.1` / `4501` | bind address and port |
