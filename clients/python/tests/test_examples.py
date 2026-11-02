@@ -771,6 +771,13 @@ class GatewaySession(FakeSession):
         pass
 
 
+class TextResponse(GatewayResponse):
+    """A gateway answer whose body is not JSON."""
+
+    def json(self):
+        raise ValueError("not JSON")
+
+
 class TestGatewayExample(unittest.TestCase):
     def setUp(self):
         self.env = {
@@ -809,15 +816,16 @@ class TestGatewayExample(unittest.TestCase):
         session = GatewaySession(
             challenge(make_payment_required(legacy_requirements(), wcspr_requirements(amount="20000000"))), paid
         )
-        code, err = self.run_with(session, argv, env)
+        code, err, _ = self.run_with(session, argv, env)
         return code, session, err
 
     def run_with(self, session, argv, env):
+        """main() over `session`: (exit status, stderr, stdout)."""
         out, err = io.StringIO(), io.StringIO()
         with mock.patch("requests.Session", return_value=session):
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = example_gateway.main(argv, env)
-        return code, err.getvalue()
+        return code, err.getvalue(), out.getvalue()
 
     def test_no_answer_after_the_payment_is_an_unknown_outcome(self):
         # The gateway settles before it answers, so a paid retry that got no answer may still be charged.
@@ -833,7 +841,7 @@ class TestGatewayExample(unittest.TestCase):
         ):
             session = GatewaySession(challenge(make_payment_required(legacy_requirements())), no_answer(error))
             with self.subTest(error=type(error).__name__):
-                code, err = self.run_with(session, [url, "echo"], self.env)
+                code, err, _ = self.run_with(session, [url, "echo"], self.env)
                 self.assertEqual(code, 3, err)
                 self.assertEqual(example_gateway.EXIT_OUTCOME_UNKNOWN, 3)
                 self.assertIn("[python] authorized", err)
@@ -843,10 +851,36 @@ class TestGatewayExample(unittest.TestCase):
                 self.assertIn(x402.HEADER_PAYMENT_SIGNATURE, session.calls[1]["headers"])
         # Before anything was signed, a timeout is a plain failure.
         session = GatewaySession(no_answer(requests.exceptions.Timeout(f"request to {url} did not complete")))
-        code, err = self.run_with(session, [url, "echo"], self.env)
+        code, err, _ = self.run_with(session, [url, "echo"], self.env)
         self.assertEqual(code, 1, err)
         self.assertIn("did not answer in time", err)
         self.assertNotIn("may still settle", err)
+
+    def test_text_from_the_gateway_is_escaped(self):
+        # A hostile gateway must not clear the terminal, fake a line ("settled: tx=...") or reorder the output.
+        hostile = "\x1b[2J\x1b[H[python] settled: tx=" + "ee" * 32 + "\u202e\u2028\x85\x9b\x7f"
+        escaped = "\\x1b[2J\\x1b[H[python] settled: tx=" + "ee" * 32 + "\\u202e\\u2028\\x85\\x9b\\x7f"
+        settlement = {"success": True, "transaction": hostile, "network": TESTNET, "payer": hostile}
+        header = base64.b64encode(json.dumps(settlement).encode()).decode()
+        not_json = TextResponse(200, {"PAYMENT-RESPONSE": header, x402.HEADER_CASCET_PAYMENT_ID: hostile})
+        not_json.text = hostile
+        redirect = GatewayResponse(307, {"Location": hostile})
+        redirect.is_redirect = True
+        url = "https://gateway.test/mcp"
+        rejected = make_payment_required(legacy_requirements(), error=hostile)
+        paid_and_rejected = GatewayResponse(402, {"PAYMENT-REQUIRED": x402._b64_json_encode(rejected)}, body={})
+        for name, session in (
+            ("settled, with a body that is not JSON", GatewaySession(challenge(make_payment_required(legacy_requirements())), not_json)),
+            ("the paid retry answered 402", GatewaySession(challenge(make_payment_required(legacy_requirements())), paid_and_rejected)),
+            ("a redirect", GatewaySession(redirect)),
+        ):
+            with self.subTest(name):
+                code, err, out = self.run_with(session, [url, "echo"], self.env)
+                printed = out + err
+                self.assertEqual(code, 1, printed)
+                self.assertIn(escaped, printed)
+                for raw in ("\x1b", "\u202e", "\u2028", "\x85", "\x9b", "\x7f"):
+                    self.assertNotIn(raw, printed)
 
     def test_the_default_deadline_is_long_enough_for_a_settlement(self):
         code, session, err = self.run_main(["https://gateway.test/mcp", "echo"], self.env)
