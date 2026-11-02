@@ -344,12 +344,38 @@ function refuse(reason: string): SpendDecision {
   return { ok: false, reason };
 }
 
+/**
+ * Escape the control characters (C0, DEL, C1), line and paragraph separators
+ * and bidirectional-text controls of gateway-supplied text as `\uXXXX`, so that
+ * it cannot fake lines or reorder text in logs and messages.
+ */
+export function escapeControlCharacters(text: string): string {
+  let escaped = "";
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    const control =
+      code <= 0x1f ||
+      (code >= 0x7f && code <= 0x9f) ||
+      code === 0x200e ||
+      code === 0x200f ||
+      (code >= 0x2028 && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069);
+    escaped += control ? `\\u${code.toString(16).padStart(4, "0")}` : char;
+  }
+  return escaped;
+}
+
+/**
+ * A value quoted for a message, as JSON: a gateway supplies many of them, so
+ * strings are shortened and what JSON leaves raw (DEL, C1, separators,
+ * bidirectional-text controls) is escaped too.
+ */
 function show(value: unknown): string {
-  if (typeof value === "string") return JSON.stringify(value.length > 80 ? `${value.slice(0, 77)}...` : value);
+  if (typeof value === "string") return escapeControlCharacters(JSON.stringify(value.length > 80 ? `${value.slice(0, 77)}...` : value));
   if (typeof value === "bigint") return `${value}n`;
   try {
-    return JSON.stringify(value) ?? String(value);
+    return escapeControlCharacters(JSON.stringify(value) ?? String(value));
   } catch {
-    return String(value);
+    return escapeControlCharacters(String(value));
   }
 }

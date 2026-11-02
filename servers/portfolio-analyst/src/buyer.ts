@@ -58,6 +58,12 @@ export function paymentLog(log: (line: string) => void) {
  * because the cascade parent id is per call; CASCET_MAX_SESSION therefore caps
  * what ONE analysis may spend, and the server's spend ledger enforces
  * CASCET_MAX_TOTAL across analyses.
+ *
+ * Each purchase may take as long as CASCET_TIMEOUT_MS: the paying fetch and
+ * the MCP client get it as their own deadline, which is otherwise the
+ * client's 30 s. A paid purchase cut off earlier would still settle, and its
+ * data would be lost. The analysis signal still ends every purchase at the
+ * analysis deadline.
  */
 export async function createDataBuyer(cfg: AnalystConfig, ctx: BuyerContext): Promise<DataBuyer> {
   const sessionCap = minRaw(optionalRaw(cfg.maxSessionRaw), optionalRaw(ctx.maxSessionRaw));
@@ -70,8 +76,11 @@ export async function createDataBuyer(cfg: AnalystConfig, ctx: BuyerContext): Pr
     budget: { maxPerCallRaw: cfg.maxPerCallRaw, maxSessionRaw: sessionCap?.toString() },
     parentId: ctx.parentId,
     onPayment: paymentLog(ctx.log),
+    timeoutMs: cfg.timeoutMs,
   });
-  const client = new PaidMcpHttpClient(cfg.dataGatewayUrl, withAbortSignal(paying.fetch, ctx.signal));
+  const client = new PaidMcpHttpClient(cfg.dataGatewayUrl, withAbortSignal(paying.fetch, ctx.signal), {
+    timeoutMs: cfg.timeoutMs,
+  });
   return {
     callTool: (name, args) => client.callTool(name, args),
     spentRaw: () => paying.spentRaw(),

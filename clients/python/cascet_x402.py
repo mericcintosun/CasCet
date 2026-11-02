@@ -79,6 +79,7 @@ __all__ = [
     "NETWORK_CASPER_TESTNET",
     "DEFAULT_NETWORKS",
     "DEFAULT_TIMEOUT_SECONDS",
+    "DEFAULT_ENV_TIMEOUT_SECONDS",
     "MAX_VALIDITY_SECONDS",
     "HEADER_PAYMENT_SIGNATURE",
     "HEADER_PAYMENT_REQUIRED",
@@ -133,6 +134,10 @@ DEFAULT_NETWORKS: Tuple[str, ...] = (NETWORK_CASPER_TESTNET,)
 #: Deadline for one PayingClient call (first request, 402, signing, paid retry
 #: and reading the response), the TypeScript client's `timeoutMs: 30000`.
 DEFAULT_TIMEOUT_SECONDS = 30.0
+#: The deadline PayingClient.from_env uses without CASCET_TIMEOUT_MS, as
+#: `cascet connect` does: a paid call includes the on-chain settlement, and a
+#: call given up after its payment was sent may still settle, unanswered.
+DEFAULT_ENV_TIMEOUT_SECONDS = 200.0
 #: By default validAfter is back-dated by this much to tolerate clock skew, as
 #: @make-software/casper-x402 1.0.0 did. @x402/casper 2.29, the TypeScript
 #: client since the 2.29 migration, signs validAfter 0: pass valid_after=0 to
@@ -1026,6 +1031,23 @@ def _is_loopback_host(host: Optional[str]) -> bool:
         return False
 
 
+def _direct_proxies(url: str) -> Optional[Dict[str, None]]:
+    """
+    requests' `proxies` for a plain http:// URL to this machine: none at all,
+    or None (requests' default) for any other URL. Plain http:// is safe only
+    while the request stays on this machine, and a proxy from the environment
+    (HTTP_PROXY, ALL_PROXY) would carry it, payment included, to another
+    machine in cleartext. A new dict each time: requests adds the
+    environment's other entries to the one it gets.
+    """
+    try:
+        parts = urlsplit(url)
+        loopback_http = parts.scheme.lower() == "http" and _is_loopback_host(parts.hostname)
+    except ValueError:  # requests reports a malformed URL itself
+        return None
+    return {"http": None, "https": None, "all": None} if loopback_http else None
+
+
 #: A deadline in seconds for a whole PayingClient call, or None for no deadline.
 Timeout = Optional[float]
 
@@ -1229,11 +1251,15 @@ class PayingClient:
       hold the call past the deadline. None disables it. A call that times
       out after the paid retry was sent may still settle.
     * `allow_insecure_http`: pay over plain http:// to a non-loopback host only
-      when this is True.
+      when this is True. Plain http:// to this machine is always reached
+      directly, never through a proxy from the environment (HTTP_PROXY,
+      ALL_PROXY) or the session, unless a call passes `proxies` itself.
     * `parent_id`: sent as x-cascet-parent-id so a cascade's receipts link up.
     * `on_payment`: called with {amount_raw, pay_to, asset, network} after each
       authorization is signed and encoded, before it is sent, plus
-      authorization_style when the 402 advertised one. An exception it raises
+      authorization_style: the style this client knows for the token
+      (known_authorization_style), else the one the 402 advertised, if any.
+      An exception it raises
       is reported as a RuntimeWarning and does not stop the payment.
     * `session`: a requests.Session (or compatible object honoring
       `allow_redirects=False` and `stream=True`); one is created by default.
@@ -1330,7 +1356,9 @@ class PayingClient:
           order of preference (legacy-amount, cep3009-value).
         * CASCET_MAX_PER_CALL, CASCET_MAX_SESSION: raw token units (> 0),
           required unless CASCET_ALLOW_UNLIMITED_BUDGET is 1, true or yes.
-        * CASCET_TIMEOUT_MS: deadline per call in milliseconds (default 30000).
+        * CASCET_TIMEOUT_MS: deadline per call in milliseconds (default
+          200000, as for `cascet connect`: see DEFAULT_ENV_TIMEOUT_SECONDS;
+          the constructor's own default is 30 s).
 
         Every value is validated here, and an error names its variable.
         Keyword arguments go to PayingClient and take precedence over the
@@ -1389,9 +1417,11 @@ class PayingClient:
         if timeout_ms is not None:
             if not re.fullmatch(r"[0-9]{1,10}", timeout_ms) or not 0 < int(timeout_ms) <= 2_147_483_647:
                 raise ValueError(
-                    f'CASCET_TIMEOUT_MS must be a whole number of milliseconds (e.g. 30000); got "{timeout_ms}"'
+                    f'CASCET_TIMEOUT_MS must be a whole number of milliseconds (e.g. 200000); got "{timeout_ms}"'
                 )
             kwargs.setdefault("timeout", int(timeout_ms) / 1000)
+        else:
+            kwargs.setdefault("timeout", DEFAULT_ENV_TIMEOUT_SECONDS)
 
         options: Dict[str, Any] = {
             "networks": networks or list(DEFAULT_NETWORKS),
@@ -1562,6 +1592,10 @@ class PayingClient:
         headers = dict(kwargs.pop("headers", None) or {})
         if self._parent_id and not _has_header(headers, HEADER_CASCET_PARENT_ID):
             headers[HEADER_CASCET_PARENT_ID] = self._parent_id
+        if "proxies" not in kwargs:
+            direct = _direct_proxies(url)  # plain http:// to this machine never goes through a proxy
+            if direct is not None:
+                kwargs["proxies"] = direct
 
         response = self._send(http, method, url, headers, kwargs, deadline, timeout)
         if response.status_code != 402 or _has_header(headers, HEADER_PAYMENT_SIGNATURE):

@@ -292,6 +292,30 @@ describe("SpendPolicy.authorize", () => {
     assert.deepEqual(policy.spentByAsset(), {}, "refusals reserve nothing");
   });
 
+  it("quotes what the gateway sent with control, separator and bidi characters escaped", () => {
+    const policy = new SpendPolicy();
+    const esc = (code: number): string => "\\" + "u" + code.toString(16).padStart(4, "0");
+    // A line separator, a right-to-left override, C1 NEL and CSI, and DEL: JSON.stringify leaves each raw.
+    const codes = [0x2028, 0x202e, 0x0085, 0x009b, 0x007f];
+    const hostile = `x${codes.map(code => String.fromCharCode(code)).join("")}[cascet] authorized 1 raw units`;
+    const expected = `x${codes.map(esc).join("")}[cascet] authorized 1 raw units`;
+    for (const [overrides, field] of [
+      [{ network: `casper:casper${hostile}` }, "network"],
+      [{ scheme: hostile }, "scheme"],
+      [{ payTo: hostile }, "payTo"],
+      [{ asset: hostile }, "asset"],
+      [{ extra: { name: "Wrapped CSPR", version: "1", authorizationStyle: hostile } }, "authorization style"],
+      [{ extra: { name: [hostile], version: "1" } }, "extra.name"],
+      [{ amount: hostile }, "price"],
+    ] as const) {
+      const decision = policy.check(requirements(overrides));
+      assert.equal(decision.ok, false, field);
+      if (decision.ok) continue;
+      assert.ok(decision.reason.includes(expected), `${field}: ${decision.reason}`);
+      for (const code of codes) assert.ok(!decision.reason.includes(String.fromCharCode(code)), `${field}: U+${code.toString(16)} is escaped`);
+    }
+  });
+
   it("accepts any EIP-712 domain name and version within the bounds", () => {
     assert.equal(MAX_TOKEN_NAME_LENGTH, 100);
     assert.equal(MAX_TOKEN_VERSION_LENGTH, 20);

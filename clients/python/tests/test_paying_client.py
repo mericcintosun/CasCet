@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives import serialization
 from helpers import (
     DELETE, MAINNET, NOW, OTHER_SELLER, OTHER_TOKEN, SELLER, TEST_KEY, TESTNET, TOKEN,
     CaseInsensitive, FakeResponse, FakeSession, LocalServer, challenge, direct_session, drip, make_payment_required,
-    make_requirements, quiet_client, reset_warnings, send, send_challenge, x402,
+    make_requirements, proxy_environment, quiet_client, reset_warnings, send, send_challenge, x402,
 )
 
 OK = FakeResponse(200, {}, body={"jsonrpc": "2.0", "id": 1, "result": {}})
@@ -771,6 +771,33 @@ class TestRealHttp(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             response.close()
 
+    def test_a_gateway_on_this_machine_is_reached_directly_whatever_the_proxy_settings(self):
+        # Plain http:// is paid over only to this machine; through HTTP_PROXY or ALL_PROXY the request and its
+        # PAYMENT-SIGNATURE would reach another machine in cleartext.
+        def app(handler, srv):
+            if handler.headers.get(x402.HEADER_PAYMENT_SIGNATURE) is None:
+                send_challenge(handler)
+            else:
+                send(handler, 200, {"Content-Type": "application/json"}, b'{"result": 1}')
+
+        for variable in ("HTTP_PROXY", "ALL_PROXY"):
+            with self.subTest(variable=variable), \
+                    LocalServer(lambda handler, srv: send(handler, 502, body=b"proxy")) as proxy, \
+                    LocalServer(app) as gateway, \
+                    proxy_environment(proxy.url, variable):
+                with quiet_client() as client:  # its own requests.Session, which reads the environment
+                    response = client.post(gateway.url + "/mcp", json={"jsonrpc": "2.0", "id": 1})
+                self.assertEqual(proxy.requests, [], "nothing reaches the proxy")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(len(gateway.requests), 2)
+                self.assertIsNotNone(gateway.requests[1]["headers"].get(x402.HEADER_PAYMENT_SIGNATURE))
+        # A proxy the caller names for a call is still used.
+        with LocalServer(lambda handler, srv: send(handler, 502, body=b"proxy")) as proxy:
+            with quiet_client(session=direct_session()) as client:
+                response = client.get("http://127.0.0.1:9/mcp", proxies={"http": proxy.url})
+            self.assertEqual(response.status_code, 502)
+            self.assertEqual(len(proxy.requests), 1)
+
 
 class TestFromEnv(unittest.TestCase):
     def setUp(self):
@@ -883,7 +910,9 @@ class TestFromEnv(unittest.TestCase):
         self.assertTrue(1.4 < session.calls[0]["timeout"][0] <= 1.5)
         session = FakeSession(OK)
         self.from_env(self.env, session=session).get("https://gw.test/health")
-        self.assertTrue(29 < session.calls[0]["timeout"][0] <= 30)  # the default
+        # The default is cascet connect's, long enough for a paid call's settlement, not the constructor's 30 s.
+        self.assertTrue(199 < session.calls[0]["timeout"][0] <= 200)
+        self.assertEqual(x402.DEFAULT_ENV_TIMEOUT_SECONDS, 200.0)
         session = FakeSession(OK)
         self.from_env({**self.env, "CASCET_TIMEOUT_MS": "1500"}, session=session, timeout=5).get("https://gw.test/x")
         self.assertTrue(4.5 < session.calls[0]["timeout"][0] <= 5)  # an explicit argument wins

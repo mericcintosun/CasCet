@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { normalizeNetworks } from "@cascet/client";
 import { DEFAULT_TIMEOUT_MS, describeConfig, loadAnalystConfig, normalizeAssetHash, normalizePayTo } from "./config.js";
 
 const ACCOUNT = "881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36";
@@ -167,6 +168,22 @@ describe("loadAnalystConfig", () => {
     const r = loadAnalystConfig({ ...BASE, CASCET_NETWORK: "casper:casper, casper:casper-test" });
     assert.ok(r.ok);
     assert.deepEqual(r.config.networks, ["casper:casper", "casper:casper-test"]);
+  });
+
+  it("refuses at startup a network the paying fetch would refuse in every analysis", () => {
+    // @cascet/client takes at most 32 characters after "casper:" (CAIP-2).
+    for (const length of [33, 40, 63]) {
+      const network = `casper:${"a".repeat(length)}`;
+      assert.ok(
+        problemsOf({ ...BASE, CASCET_NETWORK: `casper:casper-test,${network}` }).some(p => p.startsWith("CASCET_NETWORK:")),
+        `a ${length}-character name must be refused`,
+      );
+      assert.throws(() => normalizeNetworks([network]));
+    }
+    const longest = `casper:${"a".repeat(32)}`;
+    const r = loadAnalystConfig({ ...BASE, CASCET_NETWORK: longest });
+    assert.ok(r.ok, JSON.stringify(r));
+    assert.deepEqual(normalizeNetworks(r.config.networks), [longest]);
   });
 
   it("refuses plain http:// to a remote data gateway unless explicitly allowed", () => {

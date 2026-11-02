@@ -14,8 +14,16 @@ and CASCET_ALLOWED_ASSETS (required unless CASCET_ALLOW_ANY_SELLER=1),
 CASCET_PREFER_STYLES (optional: legacy-amount, cep3009-value in order of
 preference), CASCET_MAX_PER_CALL and CASCET_MAX_SESSION in raw token units
 (required unless CASCET_ALLOW_UNLIMITED_BUDGET=1) and CASCET_TIMEOUT_MS
-(deadline per call, default 30000). The gateway runs the tool and settles the
+(deadline per call, default 200000 as for `cascet connect`: a paid call
+includes the on-chain settlement). The gateway runs the tool and settles the
 payment through its facilitator; the settlement comes back in PAYMENT-RESPONSE.
+
+Exit status: 0 the call succeeded; 1 it did not (a refusal before anything was
+signed, an unreachable gateway, a rejected payment, an error answer); 2 invalid
+options or settings; 3 outcome unknown: the payment was authorized but no
+answer came back (the deadline passed, or the connection broke), and the
+gateway may still settle it. Check the payer's token balance before running
+again then: a re-run signs a new authorization and can pay twice.
 
 To pay in one of the two tokens a CasCet gateway may offer, name it instead of
 its package hash: `--asset legacy` (the CasCet X402 Token, on testnet or
@@ -34,7 +42,7 @@ import argparse
 import json
 import os
 import sys
-from typing import Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import requests
 
@@ -49,6 +57,9 @@ from cascet_x402 import (
     parse_payment_required,
     parse_payment_response,
 )
+
+#: The payment was authorized but no answer came back: the gateway may still settle it.
+EXIT_OUTCOME_UNKNOWN = 3
 
 #: Package hashes of the tokens --asset names, by network.
 ASSETS: Dict[str, Dict[str, str]] = {
@@ -85,6 +96,18 @@ def client_environment(asset: Optional[str], env: Mapping[str, str]) -> Dict[str
     return out
 
 
+def shown(value: Any, limit: int = 300) -> str:
+    """
+    Text from the gateway, fit for the terminal: control characters (C0, DEL,
+    C1), line separators and bidirectional-text controls escaped, and at most
+    `limit` characters, so that it cannot clear the screen, fake a line or
+    reorder what is printed. A value that is not text is shown as its repr.
+    """
+    text = value if isinstance(value, str) else repr(value)
+    text = "".join(ch if ch.isprintable() else ascii(ch)[1:-1] for ch in text)
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
 def on_payment(info: Dict[str, str]) -> None:
     style = f" ({info['authorization_style']})" if "authorization_style" in info else ""
     print(f"[python] authorized {info['amount_raw']} raw units of {info['asset'][:10]}...{style} "
@@ -108,8 +131,14 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
         print(f"arguments must be JSON: {exc}", file=sys.stderr)
         return 2
 
+    authorized: List[Dict[str, str]] = []
+
+    def record_payment(info: Dict[str, str]) -> None:
+        authorized.append(info)
+        on_payment(info)
+
     try:
-        client = PayingClient.from_env(client_environment(args.asset, env), on_payment=on_payment)
+        client = PayingClient.from_env(client_environment(args.asset, env), on_payment=record_payment)
     except (ValueError, OSError, TypeError) as exc:  # TypeError: an encrypted PEM (no password given)
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2
@@ -122,18 +151,28 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
             print(exc, file=sys.stderr)
             return 1
         except ProtocolError as exc:
-            print(f"the gateway sent an invalid x402 challenge: {exc}", file=sys.stderr)
-            return 1
-        except requests.exceptions.Timeout as exc:
-            print(f"gateway at {args.url} did not answer in time: {exc}", file=sys.stderr)
+            print(f"the gateway sent an invalid x402 challenge: {shown(str(exc))}", file=sys.stderr)
             return 1
         except requests.exceptions.RequestException as exc:
-            print(f"gateway unreachable at {args.url}: {exc}", file=sys.stderr)
+            if authorized:
+                # The paid retry may have reached the gateway, which settles the payment before it answers.
+                print(
+                    f"no answer from the gateway at {args.url} after the payment was authorized "
+                    f"({type(exc).__name__}: {shown(str(exc))}). The payment may still settle: check the payer's "
+                    "token balance before running this again, as a re-run signs a new authorization and can pay twice.",
+                    file=sys.stderr,
+                )
+                return EXIT_OUTCOME_UNKNOWN
+            if isinstance(exc, requests.exceptions.Timeout):
+                print(f"gateway at {args.url} did not answer in time: {shown(str(exc))}", file=sys.stderr)
+            else:
+                print(f"gateway unreachable at {args.url}: {shown(str(exc))}", file=sys.stderr)
             return 1
 
+    # Everything below the gateway sent: shown() escapes it before it reaches the terminal.
     if response.is_redirect:
-        print(f"the gateway answered with a redirect to {response.headers.get('location')}; CasCet never follows "
-              "redirects (the payment header must not reach another origin). Use the final gateway URL.",
+        print(f"the gateway answered with a redirect to {shown(response.headers.get('location'))}; CasCet never "
+              "follows redirects (the payment header must not reach another origin). Use the final gateway URL.",
               file=sys.stderr)
         return 1
     if response.status_code == 402:
@@ -141,20 +180,20 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
             reason = parse_payment_required(response).get("error")
         except ProtocolError:
             reason = None
-        print(f"payment rejected by the gateway: {reason or 'no reason given'}", file=sys.stderr)
+        print(f"payment rejected by the gateway: {shown(reason) if reason else 'no reason given'}", file=sys.stderr)
         return 1
     try:
         settlement = parse_payment_response(response)
     except ProtocolError as exc:
-        print(f"invalid PAYMENT-RESPONSE: {exc}", file=sys.stderr)
+        print(f"invalid PAYMENT-RESPONSE: {shown(str(exc))}", file=sys.stderr)
         return 1
     if settlement:
-        print(f"[python] settled: tx={settlement.get('transaction')} payer={settlement.get('payer')} "
-              f"payment-id={response.headers.get(HEADER_CASCET_PAYMENT_ID)}", file=sys.stderr)
+        print(f"[python] settled: tx={shown(settlement.get('transaction'))} payer={shown(settlement.get('payer'))} "
+              f"payment-id={shown(response.headers.get(HEADER_CASCET_PAYMENT_ID))}", file=sys.stderr)
     try:
-        print(json.dumps(response.json(), indent=2))
+        print(json.dumps(response.json(), indent=2))  # ensure_ascii: every control character comes out escaped
     except ValueError:
-        print(f"HTTP {response.status_code}: {response.text[:500]}")
+        print(f"HTTP {response.status_code}: {shown(response.text[:500], 500)}")
         return 1
     return 0 if response.ok else 1
 

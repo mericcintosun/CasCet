@@ -71,23 +71,29 @@ Environment:
                                  account-hash-<hex>); testnet default: the demo
                                  seller; required on mainnet
 
-A key is never sent over plain http:// to a host other than this machine. Each
-key must be one line of 1-256 printable ASCII characters without spaces
-(surrounding whitespace, such as the newline of a key read from a file, is
-dropped); an error about a key names its variable and never shows the value.
+A key is never sent over plain http:// to a host other than this machine, and
+plain http:// to this machine never goes through a proxy (HTTP_PROXY,
+ALL_PROXY). Each key must be one line of 1-256 printable ASCII characters
+without spaces (surrounding whitespace, such as the newline of a key read from
+a file, is dropped); an error about a key names its variable and never shows
+the value.
 
 Exit status:
     0  settled
     1  not settled: a setting or a refusal (before anything is signed), a
        facilitator that could not be reached, or a settle it reports failed
-       (a hosted failure without a transaction hash prints the caution of 3)
+       (a hosted failure this script does not recognize, without a
+       transaction hash, prints the caution of 3)
     2  invalid options
     3  outcome unknown: the request may have reached the facilitator but no
-       answer came back, or the facilitator could not tell whether the
-       transfer executed (settlement_pending, settlement_unknown, or a server
-       error that does not say). The settle may still execute. Check the
-       payer's token balance and the explorer before running again: a re-run
-       signs a new authorization and can pay twice.
+       answer came back (a timeout, a dropped connection, a TLS error other
+       than a certificate that does not verify, an answer that cannot be
+       parsed), or the facilitator could not tell whether the transfer
+       executed (settlement_pending, settlement_unknown, the hosted
+       facilitator's invalid_exact_casper_facilitator_settle_failed other than
+       a revert, or a server error that does not say). The settle may still
+       execute. Check the payer's token balance and the explorer before
+       running again: a re-run signs a new authorization and can pay twice.
 """
 from __future__ import annotations
 
@@ -95,15 +101,17 @@ import argparse
 import ipaddress
 import os
 import re
+import ssl
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 import requests
 import urllib3
+from urllib3.util.ssl_match_hostname import CertificateError
 
 from cascet_x402 import (
     AUTHORIZATION_STYLE_EXTRA_KEY,
@@ -151,9 +159,19 @@ EXIT_OUTCOME_UNKNOWN = 3
 #: submission it cannot confirm (tools/e2e/src/facilitator-core.ts).
 UNKNOWN_OUTCOME_REASONS = frozenset({"settlement_pending", "settlement_unknown"})
 UNKNOWN_SETTLEMENT_STATUSES = frozenset({"pending", "unknown"})
+#: errorReason with which @x402/casper 2.29's facilitator (the hosted facilitator runs it) answers any failure
+#: after it built the transaction, without a transaction hash: signing, submitting it, or waiting for it to
+#: execute ("Timed out waiting for transaction ..."). Only a revert ("transaction execution failed: ...") is final.
+#: Its other invalid_exact_casper_facilitator_* reasons come before anything is submitted.
+HOSTED_SETTLE_FAILED = "invalid_exact_casper_facilitator_settle_failed"
+_HOSTED_REASON_PREFIX = "invalid_exact_casper_facilitator_"
+_REVERTED_RE = re.compile(r"transaction execution failed", re.IGNORECASE)  # used with match: the message starts so
 _TX_HASH_RE = re.compile(r"[0-9a-fA-F]{64}")
 #: A facilitator key: one line of printable ASCII without spaces (used with fullmatch).
 _FACILITATOR_KEY_RE = re.compile(r"[\x21-\x7e]{1,256}")
+#: TLS errors raised only in the handshake, before the request is sent: a certificate that does not verify
+#: (ssl's own check, or urllib3's when it matches the hostname itself).
+_HANDSHAKE_ONLY_ERRORS = (ssl.SSLCertVerificationError, CertificateError)
 
 
 @dataclass(frozen=True)
@@ -322,6 +340,19 @@ def facilitator_headers(url: str, env: Mapping[str, str]) -> Dict[str, str]:
     return {"Authorization": value}
 
 
+def settle_proxies(url: str) -> Optional[Dict[str, None]]:
+    """
+    The `proxies` of the /settle POST to `url`. Plain http:// goes only to
+    this machine, and then never through a proxy: through HTTP_PROXY or
+    ALL_PROXY, the facilitator key and the signed authorization would cross
+    the network in cleartext. None (requests' default) for anything else.
+    """
+    parts = urlsplit(url)
+    if parts.scheme == "http" and _is_loopback(parts.hostname):
+        return {"http": None, "https": None, "all": None}
+    return None
+
+
 def seller_pay_to(value: Optional[str], network: str) -> str:
     """The payee: CASCET_SELLER_ACCOUNT_HASH, or the demo seller on testnet."""
     value = (value or "").strip()
@@ -419,30 +450,50 @@ def settle_request(payment_payload: dict, requirements: dict) -> dict:
     return {"x402Version": X402_VERSION, "paymentPayload": payment_payload, "paymentRequirements": requirements}
 
 
+def _wrapped_errors(exc: BaseException) -> Iterator[BaseException]:
+    """`exc` and every error it wraps: requests and urllib3 keep the original in args[0], `reason` or the chain."""
+    seen = set()
+    pending = [exc]
+    while pending:
+        err = pending.pop()
+        if id(err) in seen:
+            continue
+        seen.add(id(err))
+        yield err
+        for inner in (getattr(err, "reason", None), err.__cause__, err.__context__, err.args[0] if err.args else None):
+            if isinstance(inner, BaseException):
+                pending.append(inner)
+
+
 def request_never_left(exc: requests.RequestException) -> bool:
     """
     Whether `exc` ended the /settle POST before the facilitator could have
-    received it: the connection, the DNS lookup or the TLS handshake failed,
-    or the request was refused while it was being prepared.
+    received it: the connection or the DNS lookup failed, the facilitator's
+    certificate did not verify, or the request was refused while it was
+    being prepared.
 
-    requests raises a failed connect as ConnectTimeout, as SSLError (TLS
-    handshake), or as a ConnectionError around urllib3's MaxRetryError with a
-    NewConnectionError (connection refused, DNS). A connection dropped or
-    reset after the request went out is a ConnectionError around urllib3's
-    ProtocolError instead, and a slow answer a ReadTimeout. The facilitator
-    may already have broadcast the transfer then, so those, and any other
-    error, leave the outcome unknown.
+    requests raises a failed connect as ConnectTimeout, or as a
+    ConnectionError around urllib3's MaxRetryError with a NewConnectionError
+    (connection refused, DNS), and a certificate that does not verify stops
+    the TLS handshake. Any other error can come after the request went out,
+    when the facilitator may already have broadcast the transfer, so it
+    leaves the outcome unknown: another TLS error (an SSLError, which
+    requests raises the same way while the answer is awaited or read as in
+    the handshake), a connection dropped or reset (a ConnectionError around
+    urllib3's ProtocolError), a slow answer (ReadTimeout), an answer urllib3
+    cannot parse (InvalidHeader, such as a Content-Length with values that
+    disagree).
     """
+    if isinstance(exc, requests.exceptions.SSLError):
+        return any(isinstance(err, _HANDSHAKE_ONLY_ERRORS) for err in _wrapped_errors(exc))
     if isinstance(
         exc,
         (
             requests.exceptions.ConnectTimeout,
-            requests.exceptions.SSLError,
             requests.exceptions.ProxyError,
             requests.exceptions.InvalidURL,
             requests.exceptions.InvalidSchema,
             requests.exceptions.MissingSchema,
-            requests.exceptions.InvalidHeader,
         ),
     ):
         return True
@@ -461,18 +512,45 @@ def settlement_status(data: Any) -> Optional[str]:
     return status if isinstance(status, str) else None
 
 
-def outcome_unknown(status_code: int, data: Any) -> bool:
+def hosted_failure(data: Any) -> Optional[str]:
+    """
+    What an unsuccessful /settle answer of the hosted facilitator says about
+    the transfer, as CasCet's gateway reads it (classifySettleFailure in
+    @cascet/gateway): "unknown" when it was submitted, or may have been, and
+    did not revert (a transaction hash, or HOSTED_SETTLE_FAILED), "failed"
+    for a revert or a reason given before anything is submitted, and None for
+    an answer it does not recognize.
+    """
+    if not isinstance(data, Mapping) or data.get("success") is True:
+        return None
+    reason = data.get("errorReason")
+    message = data.get("errorMessage")
+    reverted = isinstance(message, str) and _REVERTED_RE.match(message) is not None
+    if transaction_hash(data) and not reverted:
+        return "unknown"
+    if reason == HOSTED_SETTLE_FAILED:
+        return "failed" if reverted else "unknown"
+    if isinstance(reason, str) and reason.startswith(_HOSTED_REASON_PREFIX):
+        return "failed"
+    return None
+
+
+def outcome_unknown(status_code: int, data: Any, *, hosted: bool = False) -> bool:
     """
     Whether a /settle answer leaves open whether the transfer executes.
 
     True for settlement_pending / settlement_unknown (as errorReason, or
-    pending / unknown as extra.settlementStatus), and for a server error
-    (5xx, such as a proxy's 502 or 504) that does not say what happened: the
-    facilitator may already have broadcast the transaction.
+    pending / unknown as extra.settlementStatus), for a hosted facilitator's
+    failure that may hide a transfer that still executes (see
+    hosted_failure), and for a server error (5xx, such as a proxy's 502 or
+    504) that does not say what happened: the facilitator may already have
+    broadcast the transaction.
     """
     reason = data.get("errorReason") if isinstance(data, Mapping) else None
     status = settlement_status(data)
     if (isinstance(reason, str) and reason in UNKNOWN_OUTCOME_REASONS) or status in UNKNOWN_SETTLEMENT_STATUSES:
+        return True
+    if hosted and hosted_failure(data) == "unknown":
         return True
     return status_code >= 500 and status is None
 
@@ -546,6 +624,7 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
             headers=settings.headers,
             timeout=SETTLE_TIMEOUT,
             allow_redirects=False,  # never hand the signed authorization (or the key) to another origin
+            proxies=settle_proxies(settings.facilitator_url),
         )
     except requests.RequestException as exc:
         if request_never_left(exc):
@@ -566,7 +645,7 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
         print(f"[python] facilitator response (HTTP {resp.status_code}): {data}")
     tx = transaction_hash(data)
 
-    if outcome_unknown(resp.status_code, data):
+    if outcome_unknown(resp.status_code, data, hosted=hosted):
         if isinstance(data, dict):
             reason = data.get("errorReason") or data.get("error") or settlement_status(data)
             detail = shown(reason) if reason else "no reason given"
@@ -602,9 +681,9 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
     print(f"\n❌ settle failed: {shown(data.get('errorReason'))} — {shown(data.get('errorMessage') or '')}")
     if tx:
         print(f"   tx: {tx}\n   {explorer}{tx}")
-    elif hosted:
-        # @x402/casper 2.29's facilitator answers any failure after the broadcast (such as giving up waiting for
-        # the transaction) with success false and an empty transaction, so this one may still execute.
+    elif hosted and hosted_failure(data) is None:
+        # A failure this script does not recognize: the hosted facilitator names no transaction even for a
+        # transfer it had already broadcast, so this one may still execute.
         print("   The hosted facilitator gives no transaction hash even for a transfer it had already broadcast.")
         print(caution)
     return EXIT_FAILED

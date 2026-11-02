@@ -5,6 +5,8 @@ import type { AddressInfo } from "node:net";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import casperSdk from "casper-js-sdk";
 import { buildTransferWithAuthorizationDigest } from "@x402/casper";
 import { x402Client } from "@x402/core/client";
@@ -26,7 +28,7 @@ import {
   type PaymentInfo,
 } from "./paying-fetch.js";
 import { clientSignerFromPem, createCasperClientScheme } from "./casper-scheme.js";
-import { RequestTimeoutError, ResponseTooLargeError, settleOnAbort, withDeadline } from "./http.js";
+import { bindBody, RequestTimeoutError, ResponseTooLargeError, settleOnAbort, withDeadline } from "./http.js";
 import { SpendPolicy } from "./policy.js";
 
 const { KeyAlgorithm, PrivateKey, PublicKey } = casperSdk;
@@ -75,7 +77,7 @@ function requirement(overrides: Record<string, unknown> = {}): Record<string, un
  * A tiny x402 resource: 402 without PAYMENT-SIGNATURE, 200 with it. /hang never answers; /redirect redirects;
  * /big402 streams a 402 body larger than MAX_402_BODY_BYTES (chunked), /big402-declared declares one;
  * /reject-paid answers 402 to the paid retry too (as a gateway whose verification failed); /slow402 answers
- * its 402 after 600 ms.
+ * its 402 after 600 ms; /stall-body sends a 200 and the start of its body, then nothing more.
  */
 async function startFakeGateway(): Promise<FakeGateway> {
   const hits: Hit[] = [];
@@ -92,6 +94,10 @@ async function startFakeGateway(): Promise<FakeGateway> {
       hits.push(hit);
       res.on("close", () => (hit.closedAt = Date.now()));
       if (path === "/hang") return; // never answer
+      if (path === "/stall-body") {
+        res.writeHead(200, { "content-type": "application/json" }).write('{"jsonrpc":"2.0",'); // and never more
+        return;
+      }
       if (path === "/slow402" && req.headers["payment-signature"] === undefined) {
         setTimeout(() => answer(path), 600);
         return;
@@ -170,16 +176,92 @@ function decodeSignature(header: string): { accepted: Record<string, unknown>; p
   return JSON.parse(Buffer.from(header, "base64").toString("utf8"));
 }
 
+/**
+ * A response body that sends `head` and then stalls, as a gateway that went quiet mid-body; it never ends
+ * on its own and ignores every signal. Like an open connection, it holds the event loop open (for at most
+ * 5 s) until it is cancelled.
+ */
+function stalledBody(head = '{"jsonrpc":"2.0",'): { body: ReadableStream<Uint8Array>; cancelled: () => boolean } {
+  let cancelled = false;
+  let open: NodeJS.Timeout | undefined;
+  const body = new ReadableStream<Uint8Array>({
+    start: controller => {
+      controller.enqueue(new TextEncoder().encode(head));
+      open = setTimeout(() => undefined, 5_000);
+    },
+    cancel: () => {
+      cancelled = true;
+      clearTimeout(open);
+    },
+  });
+  return { body, cancelled: () => cancelled };
+}
+
 describe("settleOnAbort and withDeadline", () => {
   it("end a call at its deadline even when the fetch never settles and ignores its signal", { timeout: 5_000 }, async () => {
-    const never: () => Promise<Response> = () => new Promise<Response>(() => undefined);
+    // Nothing else holds the event loop open, and on Node 22 and 23 node:test cancels a test whose only
+    // pending handle is an unref'd timer (the deadline's), with every test after it in the file.
+    const keepAlive = setTimeout(() => undefined, 1_000);
+    try {
+      const never: () => Promise<Response> = () => new Promise<Response>(() => undefined);
+      const started = Date.now();
+      await assert.rejects(withDeadline(never, 50)("http://127.0.0.1:9/x"), RequestTimeoutError);
+      assert.ok(Date.now() - started < 1_000);
+      const controller = new AbortController();
+      const pending = settleOnAbort(new Promise<string>(() => undefined), controller.signal);
+      controller.abort(new Error("caller gave up"));
+      await assert.rejects(pending, /caller gave up/);
+    } finally {
+      clearTimeout(keepAlive);
+    }
+  });
+
+  it("end the body read at the deadline even when the fetch lost the abort, and cancel the body", { timeout: 5_000 }, async () => {
+    const stalled = stalledBody();
+    const response = await withDeadline(async () => new Response(stalled.body, { status: 200 }), 100)("http://127.0.0.1:9/x");
     const started = Date.now();
-    await assert.rejects(withDeadline(never, 50)("http://127.0.0.1:9/x"), RequestTimeoutError);
+    await assert.rejects(response.text(), (err: Error) => {
+      assert.ok(err instanceof RequestTimeoutError, `expected RequestTimeoutError, got ${err.name}: ${err.message}`);
+      assert.match(err.message, /timed out after 100 ms/);
+      return true;
+    });
     assert.ok(Date.now() - started < 1_000);
+    assert.equal(stalled.cancelled(), true, "the body is cancelled at its source");
+  });
+
+  it("end the body read when the caller's signal aborts", { timeout: 5_000 }, async () => {
+    const stalled = stalledBody();
     const controller = new AbortController();
-    const pending = settleOnAbort(new Promise<string>(() => undefined), controller.signal);
-    controller.abort(new Error("caller gave up"));
-    await assert.rejects(pending, /caller gave up/);
+    const call = withDeadline(async () => new Response(stalled.body, { status: 200 }), 60_000);
+    const response = await call("http://127.0.0.1:9/x", { signal: controller.signal });
+    setTimeout(() => controller.abort(new Error("caller gave up")), 50);
+    await assert.rejects(response.text(), /caller gave up/);
+    assert.equal(stalled.cancelled(), true);
+  });
+
+  it("leave a body read in time as it is, and stop following the signal once it is read", { timeout: 5_000 }, async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start: controller => {
+        controller.enqueue(new TextEncoder().encode("hello "));
+        controller.enqueue(new TextEncoder().encode("world"));
+        controller.close();
+      },
+      cancel: () => void (cancelled = true),
+    });
+    const headers = new Headers({ "content-type": "text/plain", "x-cascet-payment-id": "pay-1" });
+    let done = 0;
+    const controller = new AbortController();
+    const bound = bindBody(new Response(body, { status: 201, statusText: "Created", headers }), controller.signal, () => done++);
+    assert.deepEqual([bound.status, bound.statusText, bound.headers.get("x-cascet-payment-id")], [201, "Created", "pay-1"]);
+    assert.equal(await bound.text(), "hello world");
+    controller.abort(new Error("too late to matter"));
+    assert.equal(done, 1);
+    assert.equal(cancelled, false);
+    // No body, nothing to bind.
+    const empty = new Response(null, { status: 204 });
+    assert.equal(bindBody(empty, new AbortController().signal, () => done++), empty);
+    assert.equal(done, 2);
   });
 
   it("pass the result through, and cancel the body of a response that arrives after the abort", { timeout: 5_000 }, async () => {
@@ -405,15 +487,36 @@ describe("createPayingFetch", () => {
     await assert.rejects(paying.fetchUnpaid!(gateway.url("/hang"), { method: "POST", body: "{}" }), RequestTimeoutError);
   });
 
+  it("ends a stalled body at the deadline through garbage collections", { timeout: 10_000 }, async () => {
+    // On Node 22 and 23, a full collection once the headers were in took the deadline (an
+    // AbortSignal.timeout() that only AbortSignal.any() still referred to) and the Request fetch had
+    // built, and the body was then read for as long as the gateway kept the connection open.
+    setFlagsFromString("--expose-gc");
+    const gc = runInNewContext("gc") as () => void;
+    const paying = await make({ timeoutMs: 300 });
+    for (const call of [paying.fetch, paying.fetchUnpaid!]) {
+      const response = await call(gateway.url("/stall-body"), { method: "POST", body: "{}" });
+      gc();
+      const collecting = setInterval(gc, 20);
+      try {
+        await assert.rejects(response.text(), RequestTimeoutError);
+      } finally {
+        clearInterval(collecting);
+      }
+    }
+  });
+
   describe("when fetch would lose a Request's own abort signal", () => {
     // undici's Request follows its parent's signal through a weak reference, so a garbage collection
     // that collects an intermediate Request cuts the chain. This stand-in cuts it every time: a
-    // Request's own signal is dropped, and only a signal handed to fetch itself still aborts it.
+    // Request's own signal is dropped, and only a signal handed to fetch itself still aborts it. It
+    // hands that signal to the real fetch directly: through another Request it would follow the same
+    // weak chain, which a garbage collection could cut in the test itself.
     let realFetch: typeof fetch;
     beforeEach(() => {
       realFetch = globalThis.fetch;
       globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit) =>
-        realFetch(new Request(input, { signal: init?.signal ?? null }))) as typeof fetch;
+        realFetch(new Request(input, { signal: null }), init?.signal ? { signal: init.signal } : undefined)) as typeof fetch;
     });
     afterEach(() => {
       globalThis.fetch = realFetch;
@@ -427,6 +530,22 @@ describe("createPayingFetch", () => {
         await assert.rejects(call(gateway.url("/hang"), { method: "POST", body: "{}" }), RequestTimeoutError);
         assert.ok(Date.now() - started < 2_000);
         await until(() => gateway.hits[before]?.closedAt !== undefined, 2_000, "the gateway to see the request aborted");
+      }
+    });
+
+    it("ends a stalled body at the deadline and closes its connection, even when fetch lost every abort", { timeout: 10_000 }, async () => {
+      // Every signal dropped, as undici's fetch on Node 22 and 23 drops it from the body once a garbage
+      // collection took the Request it built: only cancelling the body itself can end the read.
+      globalThis.fetch = ((input: Parameters<typeof fetch>[0]) => realFetch(new Request(input, { signal: null }))) as typeof fetch;
+      const paying = await make({ timeoutMs: 200 });
+      for (const call of [paying.fetch, paying.fetchUnpaid!]) {
+        const before = gateway.hits.length;
+        const response = await call(gateway.url("/stall-body"), { method: "POST", body: "{}" });
+        assert.equal(response.status, 200);
+        const started = Date.now();
+        await assert.rejects(response.text(), RequestTimeoutError);
+        assert.ok(Date.now() - started < 2_000);
+        await until(() => gateway.hits[before]?.closedAt !== undefined, 2_000, "the gateway to see the connection closed");
       }
     });
 
@@ -1332,6 +1451,18 @@ describe("refusalReason", () => {
       refusalReason(policy, [requirement({ network: "casper:casper" }), requirement({ network: "casper:casper\nfake" })]) ?? "",
       /^the gateway asks for payment on casper:casper, casper:casper\\nfake, but this client only pays on casper:casper-test/,
     );
+  });
+
+  it("escapes separator, bidi, C1 and DEL characters in the networks it names, as JSON leaves them raw", () => {
+    const esc = (code: number): string => "\\" + "u" + code.toString(16).padStart(4, "0");
+    const codes = [0x2028, 0x202e, 0x2066, 0x0085, 0x009b, 0x007f];
+    const network = `casper:casper${codes.map(code => String.fromCharCode(code)).join("")}fake`;
+    const reason = refusalReason(policy, [requirement({ network })]) ?? "";
+    assert.ok(
+      reason.startsWith(`the gateway asks for payment on casper:casper${codes.map(esc).join("")}fake, but this client only pays on`),
+      reason,
+    );
+    for (const code of codes) assert.ok(!reason.includes(String.fromCharCode(code)), `U+${code.toString(16)} is escaped`);
   });
 });
 

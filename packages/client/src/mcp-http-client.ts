@@ -1,12 +1,13 @@
 import { HEADER_CASCET_PAYMENT_ID } from "@cascet/core";
 import {
-  anySignal,
+  bindBody,
   DEFAULT_MAX_RESPONSE_BYTES,
   DEFAULT_TIMEOUT_MS,
   paymentFailureReason,
   readTextCapped,
   RequestTimeoutError,
   settleOnAbort,
+  startDeadline,
   validateByteLimit,
   validateTimeoutMs,
   type FetchLike,
@@ -77,16 +78,21 @@ export class PaidMcpHttpClient {
     params: Record<string, unknown> | undefined,
     call: McpCallOptions | undefined,
   ): Promise<{ result: unknown; headers: Headers }> {
-    const deadline = AbortSignal.timeout(this.timeoutMs);
-    const signal = call?.signal ? anySignal([call.signal, deadline]) : deadline;
+    const timedOut = `MCP ${method} timed out after ${this.timeoutMs} ms`;
+    const deadline = startDeadline(this.timeoutMs, call?.signal, () => new RequestTimeoutError(timedOut));
+    const { signal } = deadline;
     try {
-      const response = await settleOnAbort(
-        this.fetchImpl(this.mcpUrl, {
-          method: "POST",
-          headers: { "content-type": "application/json", accept: "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId++, method, params }),
+      // The body is read under the same deadline, even if the fetch lost the abort (see bindBody).
+      const response = bindBody(
+        await settleOnAbort(
+          this.fetchImpl(this.mcpUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json" },
+            body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId++, method, params }),
+            signal,
+          }),
           signal,
-        }),
+        ),
         signal,
       );
       const text = await readTextCapped(response, this.maxResponseBytes);
@@ -107,10 +113,12 @@ export class PaidMcpHttpClient {
       }
       return { result: body.result, headers: response.headers };
     } catch (err) {
-      if (deadline.aborted && !call?.signal?.aborted && !(err instanceof RequestTimeoutError)) {
-        throw new RequestTimeoutError(`MCP ${method} timed out after ${this.timeoutMs} ms`, { cause: err });
+      if (deadline.expired && !call?.signal?.aborted && !(err instanceof RequestTimeoutError)) {
+        throw new RequestTimeoutError(timedOut, { cause: err });
       }
       throw err;
+    } finally {
+      deadline.clear();
     }
   }
 

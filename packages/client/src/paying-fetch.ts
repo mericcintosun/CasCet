@@ -26,7 +26,7 @@ import {
   withDeadline,
   type FetchLike,
 } from "./http.js";
-import { normalizePreferStyles, SpendPolicy, type SpendDecision } from "./policy.js";
+import { escapeControlCharacters, normalizePreferStyles, SpendPolicy, type SpendDecision } from "./policy.js";
 
 export type { FetchLike } from "./http.js";
 
@@ -718,27 +718,6 @@ function versionRefusal(version: unknown): string | undefined {
   return `the gateway's 402 uses x402 version ${shown}, but this client pays x402 version ${x402Version} only`;
 }
 
-/**
- * Escape the control characters (C0, DEL, C1), line and paragraph separators
- * and bidirectional-text controls of gateway-supplied text as `\uXXXX`, so that
- * it cannot fake lines or reorder text in logs and messages.
- */
-function escapeControlCharacters(text: string): string {
-  let escaped = "";
-  for (const char of text) {
-    const code = char.codePointAt(0) ?? 0;
-    const control =
-      code <= 0x1f ||
-      (code >= 0x7f && code <= 0x9f) ||
-      code === 0x200e ||
-      code === 0x200f ||
-      (code >= 0x2028 && code <= 0x202e) ||
-      (code >= 0x2066 && code <= 0x2069);
-    escaped += control ? `\\u${code.toString(16).padStart(4, "0")}` : char;
-  }
-  return escaped;
-}
-
 /** Whether a request carries an x402 payment header. */
 function carriesPayment(input: Parameters<typeof fetch>[0], init?: RequestInit): boolean {
   const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
@@ -754,7 +733,7 @@ function networkRefusal(offered: ReadonlyArray<string | undefined>, allowed: rea
   // Names supplied by the gateway: shortened, with control characters escaped.
   const named = offered
     .filter((network): network is string => network !== undefined)
-    .map(network => JSON.stringify(network.slice(0, 64)).slice(1, -1));
+    .map(network => escapeControlCharacters(JSON.stringify(network.slice(0, 64)).slice(1, -1)));
   const asked = [...new Set(named)];
   return (
     `the gateway asks for payment on ${asked.length > 0 ? asked.join(", ") : "a network this client does not pay on"}, ` +

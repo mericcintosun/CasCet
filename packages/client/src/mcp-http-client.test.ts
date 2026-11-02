@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { PaidMcpHttpClient } from "./mcp-http-client.js";
-import { RequestTimeoutError, ResponseTooLargeError } from "./http.js";
+import { RequestTimeoutError, ResponseTooLargeError, type FetchLike } from "./http.js";
 
 describe("PaidMcpHttpClient", () => {
   let server: http.Server;
@@ -55,6 +55,33 @@ describe("PaidMcpHttpClient", () => {
       return true;
     });
     assert.ok(Date.now() - started < 5_000);
+  });
+
+  it("ends a stalled body at its deadline even when the fetch lost the abort", { timeout: 5_000 }, async () => {
+    // A 200 whose body sends its start and then nothing, from a fetch that ignores its signal. Like an
+    // open connection, the body holds the event loop open (for at most 5 s) until it is cancelled.
+    let cancelled = false;
+    let open: NodeJS.Timeout | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start: controller => {
+        controller.enqueue(new TextEncoder().encode('{"jsonrpc":"2.0",'));
+        open = setTimeout(() => undefined, 5_000);
+      },
+      cancel: () => {
+        cancelled = true;
+        clearTimeout(open);
+      },
+    });
+    const lostAbort: FetchLike = async () => new Response(body, { status: 200 });
+    const client = new PaidMcpHttpClient(`${base}/mcp`, lostAbort, { timeoutMs: 100 });
+    const started = Date.now();
+    await assert.rejects(client.callTool("get_data", {}), (err: Error) => {
+      assert.ok(err instanceof RequestTimeoutError, `expected RequestTimeoutError, got ${err.name}: ${err.message}`);
+      assert.match(err.message, /MCP tools\/call timed out after 100 ms/);
+      return true;
+    });
+    assert.ok(Date.now() - started < 1_000);
+    assert.equal(cancelled, true, "the body is cancelled at its source");
   });
 
   it("stops when the caller's signal aborts (cascade parent gave up)", async () => {

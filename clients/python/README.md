@@ -103,9 +103,9 @@ Every refusal raises `PaymentAborted` before anything is signed.
 | Budget | `max_per_call_raw`, `max_session_raw` | Per call, and per asset over the session, in raw units greater than 0. Spend is counted when an authorization is signed and is never refunded. A preferred entry over budget gives way to the next acceptable one. |
 | Validity | `max_authorization_seconds` (default 900) | `validBefore = now + maxTimeoutSeconds`. An entry without a positive whole `maxTimeoutSeconds`, or with one above the limit, is refused, as in the TS client. |
 | Deadline | `timeout` (default 30 s) | One deadline for the whole call: the first request, the 402, signing, the paid retry and reading the response. Same as the TS client's `timeoutMs: 30000`. A gateway that trickles its headers or its body is cut off at the deadline, and nothing is signed after it. `None` disables it. A paid call that times out may still settle. |
-| Transport | `allow_insecure_http` (default `False`) | Refuses to pay over plain `http://` unless the host is loopback. Never follows redirects: a 3xx comes back to the caller unpaid, so `PAYMENT-SIGNATURE`, the parent id and the request body never reach another origin. |
+| Transport | `allow_insecure_http` (default `False`) | Refuses to pay over plain `http://` unless the host is loopback, and reaches a loopback `http://` URL directly, never through a proxy from the environment (`HTTP_PROXY`, `ALL_PROXY`), which would carry the payment to another machine in cleartext. Never follows redirects: a 3xx comes back to the caller unpaid, so `PAYMENT-SIGNATURE`, the parent id and the request body never reach another origin. |
 | Cascade | `parent_id` | Sent as `x-cascet-parent-id`, so downstream receipts join the chain. |
-| Callback | `on_payment` | Called with `{amount_raw, pay_to, asset, network}` once a payment is signed, plus `authorization_style` when the 402 named one. If it raises, the client issues a `RuntimeWarning` and still sends the payment. |
+| Callback | `on_payment` | Called with `{amount_raw, pay_to, asset, network}` once a payment is signed, plus `authorization_style`: the style the client knows for CasCet's x402 tokens and Wrapped CSPR, else the one the 402 advertised, if any. If it raises, the client issues a `RuntimeWarning` and still sends the payment. |
 
 Pass `stream=True` to `request()` to read a large body yourself; the deadline
 then ends when the response headers arrive. The exact cut-off of a dripping
@@ -125,7 +125,7 @@ variable:
 | `CASCET_ALLOWED_PAYTO`, `CASCET_ALLOWED_ASSETS` | Comma lists. Required unless `CASCET_ALLOW_ANY_SELLER` is `1`, `true` or `yes`. Payees are account hashes. |
 | `CASCET_PREFER_STYLES` | Optional comma list of authorization styles in order of preference, e.g. `cep3009-value,legacy-amount`. |
 | `CASCET_MAX_PER_CALL`, `CASCET_MAX_SESSION` | Raw token units, greater than 0. Required unless `CASCET_ALLOW_UNLIMITED_BUDGET` is `1`, `true` or `yes`. |
-| `CASCET_TIMEOUT_MS` | Deadline per call in milliseconds. Default: `30000`. |
+| `CASCET_TIMEOUT_MS` | Deadline per call in milliseconds. Default: `200000`, as for `cascet connect` (the constructor's own default is 30 s): a paid call includes the on-chain settlement, and a call given up after its payment was sent may still settle. |
 
 `CASCET_TOOL_PINS` and `--accept-tool-changes` belong to the stdio bridge of
 `cascet connect` and do not apply here.
@@ -143,6 +143,11 @@ clients/python/venv/bin/python clients/python/example_gateway.py \
 # or, paying in testnet Wrapped CSPR whatever CASCET_ALLOWED_ASSETS says:
 #   clients/python/venv/bin/python clients/python/example_gateway.py --asset wcspr http://127.0.0.1:4402/mcp get_cspr_market_data
 ```
+
+It exits with `3` when the payment was authorized but no answer came back
+(the deadline passed, or the connection broke): the gateway may still settle
+it. Check the payer's token balance before running it again, as a re-run signs
+a new authorization and can pay twice.
 
 To get a seller's payTo from their public key, run
 `clients/python/venv/bin/python clients/python/cascet_x402.py account-hash <public-key>`.
@@ -255,7 +260,8 @@ Settings:
 | `CASCET_SELLER_ACCOUNT_HASH` | The payee. Testnet default: the demo seller. Required on mainnet. |
 
 The script never sends a key over plain `http://` to a host other than this
-machine, and never follows a redirect. Each key must be one line of 1–256
+machine, never sends plain `http://` to this machine through a proxy
+(`HTTP_PROXY`, `ALL_PROXY`), and never follows a redirect. Each key must be one line of 1–256
 printable ASCII characters without spaces (surrounding whitespace, such as the
 newline of a key read from a file, is dropped). An error about a key names its
 variable and never shows the value.
@@ -263,18 +269,24 @@ variable and never shows the value.
 | Exit status | Meaning |
 |---|---|
 | `0` | Settled. The script prints the transaction and its explorer link. |
-| `1` | Not settled: a setting or a refusal (before anything is signed), a facilitator that could not be reached, or a settle the facilitator reports failed (see below for a hosted failure without a transaction hash). |
+| `1` | Not settled: a setting or a refusal (before anything is signed), a facilitator that could not be reached, or a settle the facilitator reports failed (see below for the hosted facilitator's failures). |
 | `2` | Invalid options. |
-| `3` | Outcome unknown. The request may have reached the facilitator but no answer came back (a read timeout, a dropped connection), or the facilitator could not confirm the transfer (`settlement_pending`, `settlement_unknown`, or a server error such as a proxy's 504 that does not say what happened). |
+| `3` | Outcome unknown. The request may have reached the facilitator but no answer came back (a read timeout, a dropped connection, a TLS error other than a certificate that does not verify, an answer that cannot be parsed), or the facilitator could not confirm the transfer (`settlement_pending`, `settlement_unknown`, the hosted facilitator's `invalid_exact_casper_facilitator_settle_failed` other than a revert, or a server error such as a proxy's 504 that does not say what happened). |
 
 After an unknown outcome the settle may still execute. Check the payer's token
 balance and the explorer before you run the script again: a re-run signs a new
 authorization and can pay twice. The script prints the payer's account hash,
 the transaction when the facilitator named one, the authorization's nonce, and
-the time after which the authorization can no longer execute. The hosted
-facilitator answers any failure after the broadcast (for example when it stops
-waiting for the transaction) without a transaction hash, so after a hosted
-failure without one the script prints the same caution.
+the time after which the authorization can no longer execute.
+
+The hosted facilitator answers any failure after it built the transaction
+with `invalid_exact_casper_facilitator_settle_failed` and no transaction hash,
+even when it only stopped waiting for a transfer it had already broadcast. The
+script reads these answers as CasCet's gateway does: unless the message says
+the transaction reverted (`transaction execution failed`), the outcome is
+unknown (exit 3). Its other `invalid_exact_casper_facilitator_*` reasons come
+before anything is submitted (exit 1). A hosted failure the script does not
+recognize, without a transaction hash, exits 1 with the same caution.
 
 ## Tests
 
