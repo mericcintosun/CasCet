@@ -195,12 +195,21 @@ export function demoSeller(env: Env): string {
 }
 
 /**
- * The environment the self-hosted facilitator of a demo run reads: it
- * allowlists the demo token and pins its EIP-712 name unless the operator's
- * own CASCET_ALLOWED_ASSETS / CASCET_TOKEN_NAME say otherwise.
+ * The environment the self-hosted facilitator of a demo run reads: without the
+ * operator's own CASCET_ALLOWED_ASSETS it allowlists the demo token and pins
+ * its EIP-712 name (unless CASCET_TOKEN_NAME says otherwise). The operator's
+ * allowlist is taken as given, with no name added: CASCET_TOKEN_NAME is refused
+ * next to several assets, and the names of both demo tokens are pinned by
+ * default anyway (KNOWN_TOKEN_NAMES). A blank variable counts as unset, as
+ * readFacilitatorEnv reads it.
  */
 export function selfHostedEnv(env: Env, asset: DemoAsset): Env {
-  return { CASCET_ALLOWED_ASSETS: asset.config.packageHash, CASCET_TOKEN_NAME: asset.config.name, ...env };
+  const out: Env = { ...env };
+  if (!env["CASCET_ALLOWED_ASSETS"]?.trim()) {
+    out["CASCET_ALLOWED_ASSETS"] = asset.config.packageHash;
+    if (!env["CASCET_TOKEN_NAME"]?.trim()) out["CASCET_TOKEN_NAME"] = asset.config.name;
+  }
+  return out;
 }
 
 /** Throws when the self-hosted facilitator would refuse the demo token (CASCET_ALLOWED_ASSETS without it). */
