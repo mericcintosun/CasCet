@@ -172,14 +172,21 @@ function decodeSignature(header: string): { accepted: Record<string, unknown>; p
 
 describe("settleOnAbort and withDeadline", () => {
   it("end a call at its deadline even when the fetch never settles and ignores its signal", { timeout: 5_000 }, async () => {
-    const never: () => Promise<Response> = () => new Promise<Response>(() => undefined);
-    const started = Date.now();
-    await assert.rejects(withDeadline(never, 50)("http://127.0.0.1:9/x"), RequestTimeoutError);
-    assert.ok(Date.now() - started < 1_000);
-    const controller = new AbortController();
-    const pending = settleOnAbort(new Promise<string>(() => undefined), controller.signal);
-    controller.abort(new Error("caller gave up"));
-    await assert.rejects(pending, /caller gave up/);
+    // Nothing else holds the event loop open, and on Node 22 and 23 node:test cancels a test whose only
+    // pending handle is an unref'd timer (the deadline's), with every test after it in the file.
+    const keepAlive = setTimeout(() => undefined, 1_000);
+    try {
+      const never: () => Promise<Response> = () => new Promise<Response>(() => undefined);
+      const started = Date.now();
+      await assert.rejects(withDeadline(never, 50)("http://127.0.0.1:9/x"), RequestTimeoutError);
+      assert.ok(Date.now() - started < 1_000);
+      const controller = new AbortController();
+      const pending = settleOnAbort(new Promise<string>(() => undefined), controller.signal);
+      controller.abort(new Error("caller gave up"));
+      await assert.rejects(pending, /caller gave up/);
+    } finally {
+      clearTimeout(keepAlive);
+    }
   });
 
   it("pass the result through, and cancel the body of a response that arrives after the abort", { timeout: 5_000 }, async () => {
