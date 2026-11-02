@@ -37,6 +37,15 @@ import { normalizeAccountAddress } from "./authorization.js";
  * `maxPayments` reservations are live; beyond that new payments are refused,
  * never live reservations forgotten (that would let an unfunded payment
  * through).
+ *
+ * The reservations live in memory. A restarted gateway rebuilds those that
+ * outlive their calls from its receipt log ({@link InFlightPayments.keep}):
+ * every payment in a preflighted token whose receipt says `unknown` counts
+ * again until it expires (its validBefore is in the authorization's
+ * write-ahead record). A receipt does not say whether the on-chain check found
+ * the nonce used, so after a restart such a payment counts again too: in
+ * doubt the gateway holds its amount back rather than let another payment
+ * through on funds it may already have spent.
  */
 
 /** How long after its authorization's validBefore a reservation counts at most (clock skew, inclusion). */
@@ -153,7 +162,7 @@ export class InFlightPayments {
       if (this.reservations.size >= this.maxPayments) return "full";
     }
     const key = paymentKey(payment.network, payment.asset, payment.payer);
-    const reservation: Reservation = { hold, key, amount: payment.amount, expiresAt: payment.validBefore * 1_000 + IN_FLIGHT_MARGIN_MS };
+    const reservation: Reservation = { hold, key, amount: payment.amount, expiresAt: expiresAt(payment) };
     this.reservations.set(hold, reservation);
     let same = this.byPayment.get(key);
     if (!same) {
@@ -162,6 +171,20 @@ export class InFlightPayments {
     }
     same.add(reservation);
     return "reserved";
+  }
+
+  /**
+   * Count `payment` until it expires, with no call of its own: a payment whose
+   * settlement outcome was unknown when an earlier process of this gateway
+   * ended (see the module comment). Nothing is kept for a payment that has
+   * already expired, or while `maxPayments` reservations are live ("full").
+   */
+  keep(payment: InFlightPayment): "kept" | "expired" | "full" {
+    if (expiresAt(payment) <= this.now()) return "expired";
+    const hold = this.open();
+    const reserved = this.reserve(hold, payment);
+    hold.keepUntilExpiry();
+    return reserved === "reserved" ? "kept" : "full";
   }
 
   /** Reservations held (expired ones until they are next seen). */
@@ -191,6 +214,11 @@ export class InFlightPayments {
       if (reservation.expiresAt <= now) this.forget(reservation.hold);
     }
   }
+}
+
+/** When the reservation of `payment` stops counting (ms): its authorization can no longer execute by then. */
+function expiresAt(payment: InFlightPayment): number {
+  return payment.validBefore * 1_000 + IN_FLIGHT_MARGIN_MS;
 }
 
 /** One (network, asset, payer), whatever the spelling of the asset and the payer. */

@@ -855,7 +855,11 @@ describe("the hosted facilitator", () => {
    * memory: nothing reaches the real host) and whose legacy token is settled by
    * a local fake facilitator.
    */
-  async function hostedGateway(input: Record<string, unknown> = {}, script: HostedScript = {}, gatewayOptions: Pick<GatewayOptions, "preemptionChecker"> = {}) {
+  async function hostedGateway(
+    input: Record<string, unknown> = {},
+    script: HostedScript = {},
+    gatewayOptions: Pick<GatewayOptions, "preemptionChecker" | "receiptsPath"> = {},
+  ) {
     const hosted: Array<{ path: string; authorization: string | null; body?: HostedBody }> = [];
     const facilitatorFetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));
@@ -1029,7 +1033,7 @@ describe("the hosted facilitator", () => {
     async function fundsOne(
       script: (whileInFlight: () => Promise<void>) => HostedScript = () => ({}),
       input: Record<string, unknown> = {},
-      gatewayOptions: Pick<GatewayOptions, "preemptionChecker"> = {},
+      gatewayOptions: Pick<GatewayOptions, "preemptionChecker" | "receiptsPath"> = {},
     ) {
       const routes = wcsprNodeRoutes({ balances: { [PAYER]: BigInt(WCSPR_PRICE_RAW) } });
       const node = await startFakeNode(routes);
@@ -1322,6 +1326,43 @@ describe("the hosted facilitator", () => {
           assert.equal(g.upstream.calls.length, 1, `${name}: no tool ran for a payment that balance cannot fund`);
         } finally {
           await g.close();
+        }
+      }
+    });
+
+    it("keeps counting, after a restart, a payment whose settlement outcome was unknown, and nothing else", async () => {
+      // A new gateway process on the same receipt log: the unknown payment's transfer may still execute until its
+      // authorization expires, so it counts again (from its receipt and its write-ahead record).
+      const outcomes: Array<[string, HostedReply, boolean]> = [
+        ["unknown", { status: 502, raw: "<html>Bad Gateway</html>" }, true],
+        ["settled", undefined, false],
+        ["failed", expired, false],
+      ];
+      for (const [name, settle, counts] of outcomes) {
+        const dir = mkdtempSync(join(tmpdir(), "cascet-restart-test-"));
+        const receiptsPath = join(dir, "receipts.jsonl");
+        try {
+          const before = await fundsOne(() => ({ answer: onFirst("/settle", async () => settle) }), {}, { receiptsPath });
+          try {
+            await before.pay();
+            assert.equal((await receipts(before.h))[0]?.status, name);
+          } finally {
+            await before.close();
+          }
+          const after = await fundsOne(() => ({}), {}, { receiptsPath });
+          try {
+            const next = await after.pay();
+            if (counts) {
+              refusedInFlight(next);
+              assert.equal(after.upstream.calls.length, 0, "no tool ran for a payment that balance cannot fund");
+            } else {
+              assert.equal(next.status, 200, `${name}: ${JSON.stringify(next.body)}`);
+            }
+          } finally {
+            await after.close();
+          }
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
         }
       }
     });

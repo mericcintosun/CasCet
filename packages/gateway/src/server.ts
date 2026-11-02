@@ -21,6 +21,7 @@ import {
   HEADER_PAYMENT_SIGNATURE,
   isHostedFacilitatorUrl,
   normalizeOrigin,
+  normalizePackageHash,
   type CascetConfig,
   type PaymentReceipt,
   type ReceiptStatus,
@@ -267,6 +268,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   const pushEvent = makeEventPusher(cfg.eventsUrl);
   const replay = new ReplayGuard();
   seedReplayGuard(replay, store, rail.maxTimeoutSeconds);
+  const keptInFlight = seedInFlight(rail, store);
 
   let table: ToolTable = buildToolTable(cfg, rail, []);
   let listening = false;
@@ -1255,6 +1257,9 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       `    on-chain preflight of hosted-facilitator payments (nonce, balance with the payer's payments in flight, token ABI and name): ` +
         `on for ${logSafe(hosted.join(", "), 200)}`,
     );
+    if (keptInFlight > 0) {
+      log.info(`    payments in flight from before this start (settlement outcome unknown): ${keptInFlight}, counted until they expire`);
+    }
   } else if (hosted.length > 0) {
     log.warn(
       `    on-chain preflight of hosted-facilitator payments: off for ${logSafe(hosted.join(", "), 200)} (set settlement.nodeUrl to enable); ` +
@@ -1337,6 +1342,27 @@ function seedReplayGuard(replay: ReplayGuard, store: ReceiptStore, maxTimeoutSec
     const created = Date.parse(receipt.createdAt);
     if (Number.isFinite(created)) replay.markUsed(replayKey(normalizeAccountAddress(receipt.payer), receipt.nonce), created + horizonMs);
   }
+}
+
+/**
+ * After a restart, keep counting in flight the preflighted payments whose settlement outcome was unknown: their
+ * transfers may still execute until their authorizations expire (see in-flight.ts). Their receipts give the payer,
+ * token and amount, their write-ahead records the validBefore. Returns how many count.
+ */
+function seedInFlight(rail: PaymentRail, store: ReceiptStore): number {
+  const preflighted = new Set(rail.preflightAssets.map(asset => asset.packageHash));
+  if (preflighted.size === 0) return 0;
+  const validBefore = new Map(store.authorizations().map(record => [record.paymentId, record.validBefore]));
+  let kept = 0;
+  for (const receipt of store.list()) {
+    const until = validBefore.get(receipt.id);
+    if (receipt.status !== "unknown" || until === undefined || receipt.network !== rail.network) continue;
+    const { asset, payer, amountRaw } = receipt;
+    if (typeof asset !== "string" || !preflighted.has(normalizePackageHash(asset)) || typeof payer !== "string") continue;
+    if (typeof amountRaw !== "string" || !/^\d{1,78}$/.test(amountRaw)) continue;
+    if (rail.inFlight.keep({ network: rail.network, asset, payer, amount: BigInt(amountRaw), validBefore: until }) === "kept") kept++;
+  }
+  return kept;
 }
 
 function paymentRequiredOf(headers: Record<string, string>): PaymentRequired | undefined {

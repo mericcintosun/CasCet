@@ -98,6 +98,20 @@ describe("InFlightPayments", () => {
     assert.equal(IN_FLIGHT_MARGIN_MS, 120_000);
   });
 
+  it("keeps a payment with no call of its own until it expires (an unknown payment from before a restart), unless it already expired", () => {
+    let now = 0;
+    const inFlight = new InFlightPayments({ maxPayments: 2, now: () => now });
+    assert.equal(inFlight.keep(payment()), "kept");
+    assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER), { count: 1, amount: 100n });
+    assert.equal(inFlight.keep(payment({ payer: OTHER_PAYER, validBefore: VALID_BEFORE * 10 })), "kept");
+    assert.equal(inFlight.keep(payment({ amount: 7n, validBefore: VALID_BEFORE * 10 })), "full", "never by forgetting a live one");
+    assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER), { count: 1, amount: 100n });
+    now = VALID_BEFORE * 1_000 + IN_FLIGHT_MARGIN_MS;
+    assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER), none, "until it expires");
+    assert.equal(inFlight.keep(payment()), "expired", "an expired one is not kept at all");
+    assert.equal(inFlight.size, 1);
+  });
+
   it("bounds its memory: when full it makes room from expired reservations, else refuses rather than forget a live one", () => {
     let now = 0;
     const inFlight = new InFlightPayments({ maxPayments: 2, now: () => now });

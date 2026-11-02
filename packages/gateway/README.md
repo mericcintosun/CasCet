@@ -165,8 +165,11 @@ reservation that is somehow never released stops counting 2 minutes after
 its authorization's `validBefore`, when the authorization can no longer
 execute. The gateway tracks at most 10 000 payments in flight and refuses
 new ones beyond that (`preflight_unavailable: too many payments in flight;
-retry later`) rather than forget one. Like the replay guard, this is per
-gateway process: gateways that share a payer and a token do not see each
+retry later`) rather than forget one. After a restart the gateway counts
+again, until they expire, the payments its receipt log records as `unknown`
+in a preflighted token (a receipt does not say whether the on-chain check
+found the nonce used, so those count again too). Like the replay guard, this
+is per gateway: gateways that share a payer and a token do not see each
 other's payments.
 
 ## Payment flow
