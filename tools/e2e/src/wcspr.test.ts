@@ -9,6 +9,8 @@ import {
   DEFAULT_WRAP_GAS_MOTES,
   estimateWrapConsumedMotes,
   formatWrapPlan,
+  MIN_WRAP_GAS_MOTES,
+  minWrapGasMotes,
   planWrap,
   RECORDED_DEPOSIT_CONSUMED_MOTES,
   TESTNET_WCSPR,
@@ -53,10 +55,25 @@ describe("WCSPR wrap: expected cost", () => {
     assert.equal(planWrap(CSPR, DEFAULT_WRAP_GAS_MOTES, undefined).estimatedConsumedMotes, estimateWrapConsumedMotes(false));
   });
 
-  test("refuses a zero wrap and a limit below the estimated consumption", () => {
+  test("refuses a zero wrap and a limit below 1.3 × the estimated consumption", () => {
     assert.throws(() => planWrap(0n, DEFAULT_WRAP_GAS_MOTES, true), /more than 0 CSPR/);
-    assert.throws(() => planWrap(CSPR, 4n * CSPR, false), /below the estimated consumption of 4\.19 CSPR/);
+    assert.throws(
+      () => planWrap(CSPR, 4n * CSPR, false),
+      /a gas limit of 4\.00 CSPR is below 5\.45 CSPR, 1\.3 × the estimated consumption of 4\.19 CSPR/,
+    );
+    // Above the estimate (4.19 CSPR) but within the headroom: an out-of-gas revert would burn all of it.
+    assert.throws(() => planWrap(CSPR, 5n * CSPR, false), /below 5\.45 CSPR/);
+    assert.throws(() => planWrap(CSPR, 5_440_000_000n, undefined), /below 5\.45 CSPR/, "an unknown cargo purse counts as missing");
+    assert.doesNotThrow(() => planWrap(CSPR, 5_450_000_000n, false));
     assert.doesNotThrow(() => planWrap(CSPR, 4n * CSPR, true));
+  });
+
+  test("the smallest limit is ceil(1.3 × estimate) to 0.01 CSPR; afterwards the 2.5 CSPR floor of --gas-cspr governs", () => {
+    assert.equal(minWrapGasMotes(false), 5_450_000_000n);
+    assert.equal(minWrapGasMotes(undefined), 5_450_000_000n);
+    assert.equal(minWrapGasMotes(true), 1_940_000_000n);
+    assert.ok(minWrapGasMotes(true) < MIN_WRAP_GAS_MOTES);
+    assert.ok(DEFAULT_WRAP_GAS_MOTES > minWrapGasMotes(false), "the default limit passes for a first wrap");
   });
 
   test("prints the expected cost", () => {

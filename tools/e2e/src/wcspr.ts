@@ -1,5 +1,5 @@
 import { CSPR_DECIMALS, formatAmount, formatCspr } from "./amounts.js";
-import { expectedNetMotes, expectedRefundMotes } from "./gas-report.js";
+import { expectedNetMotes, expectedRefundMotes, suggestGasLimitMotes } from "./gas-report.js";
 import { buildProxySession, type ProxySessionOptions } from "./odra-proxy.js";
 
 /**
@@ -41,6 +41,11 @@ export const CARGO_PURSE_SETUP_MOTES = 2_700_000_000n;
  * `--gas-cspr` to use a tighter limit for later wraps.
  */
 export const DEFAULT_WRAP_GAS_MOTES = 10_000_000_000n;
+/**
+ * Bounds of `--gas-cspr`. The 2.5 CSPR floor is CasCet policy, not a node rule
+ * (Casper requires a minimum initiator balance, not a minimum limit); the plan
+ * also refuses a limit below 1.3 × the estimated consumption ({@link minWrapGasMotes}).
+ */
 export const MIN_WRAP_GAS_MOTES = 2_500_000_000n;
 export const MAX_WRAP_GAS_MOTES = 100_000_000_000n;
 
@@ -67,16 +72,29 @@ export interface WrapPlan {
 }
 
 /**
- * The expected cost of wrapping `depositMotes`. Refuses a gas limit below the
- * estimated consumption: such a wrap would most likely revert and burn it.
+ * The smallest gas limit a wrap may use: 1.3 × the estimated consumption,
+ * rounded up to 0.01 CSPR (the headroom rule of every measured limit,
+ * gas-report.ts). The estimate itself is not measured for Odra 2.9.1's proxy,
+ * and a wrap that runs out of gas reverts and burns its whole limit. 5.45 CSPR
+ * for an account's first wrap, 1.94 CSPR afterwards (MIN_WRAP_GAS_MOTES then
+ * governs).
+ */
+export function minWrapGasMotes(hasCargoPurse: boolean | undefined): bigint {
+  return suggestGasLimitMotes([estimateWrapConsumedMotes(hasCargoPurse ?? false)]);
+}
+
+/**
+ * The expected cost of wrapping `depositMotes`. Refuses a gas limit below
+ * {@link minWrapGasMotes}: such a wrap could revert and burn it.
  */
 export function planWrap(depositMotes: bigint, gasLimitMotes: bigint, hasCargoPurse: boolean | undefined): WrapPlan {
   if (depositMotes <= 0n) throw new Error("the amount to wrap must be more than 0 CSPR");
   const estimatedConsumedMotes = estimateWrapConsumedMotes(hasCargoPurse ?? false);
-  if (gasLimitMotes < estimatedConsumedMotes) {
+  const minimum = minWrapGasMotes(hasCargoPurse);
+  if (gasLimitMotes < minimum) {
     throw new Error(
-      `a gas limit of ${formatCspr(gasLimitMotes, 2)} CSPR is below the estimated consumption of ${formatCspr(estimatedConsumedMotes, 2)} CSPR; ` +
-        "a wrap that runs out of gas reverts and burns its whole limit",
+      `a gas limit of ${formatCspr(gasLimitMotes, 2)} CSPR is below ${formatCspr(minimum, 2)} CSPR, 1.3 × the estimated consumption ` +
+        `of ${formatCspr(estimatedConsumedMotes, 2)} CSPR; a wrap that runs out of gas reverts and burns its whole limit`,
     );
   }
   const estimatedRefundMotes = expectedRefundMotes(gasLimitMotes, estimatedConsumedMotes);
