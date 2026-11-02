@@ -174,7 +174,8 @@ pnpm --filter @cascet/e2e demo-real-mainnet    # MAINNET, real funds
 writes to. On mainnet that file must be a dedicated payer key, created and
 stored separately (never a `gen-keys` output) and funded with a small float
 only. Read [`mainnet-readiness.md`](mainnet-readiness.md) for the facilitator's
-keys and limits before the mainnet run.
+keys, limits and state file (`CASCET_FACILITATOR_STATE_FILE`, required on
+mainnet) before the mainnet run.
 
 Expected: the agent pays from its on-chain balance of the x402 token; the
 self-hosted facilitator verifies and settles; the receipt is anchored on-chain.
