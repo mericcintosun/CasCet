@@ -17,11 +17,27 @@ export const RAW_AMOUNT_PATTERN = /^[0-9]{1,40}$/;
  */
 export const DEFAULT_MAX_AUTHORIZATION_SECONDS = 900;
 
+/**
+ * Longest EIP-712 domain name (`extra.name`) a payment option may carry, in
+ * UTF-16 code units (String.length): the bound CasCet's self-hosted facilitator
+ * puts on a token name it pins. Real tokens use a few characters ("Wrapped CSPR").
+ */
+export const MAX_TOKEN_NAME_LENGTH = 100;
+
+/**
+ * Longest EIP-712 domain version (`extra.version`) a payment option may carry,
+ * counted as {@link MAX_TOKEN_NAME_LENGTH} is: the self-hosted facilitator's
+ * bound for a pinned version. Tokens use "1".
+ */
+export const MAX_TOKEN_VERSION_LENGTH = 20;
+
 /** CAIP-2 id in the casper namespace; the reference charset is [-_a-zA-Z0-9]{1,32}. No wildcards. */
 const CASPER_NETWORK = /^casper:[-_a-zA-Z0-9]{1,32}$/;
 /** Serialized Casper Key as the exact scheme uses it: "00" account hash or "01" contract package. */
 const SERIALIZED_KEY = /^(00|01)[0-9a-f]{64}$/;
 const PACKAGE_HASH = /^[0-9a-f]{64}$/;
+/** A UTF-16 surrogate that is not half of a pair: with the u flag, a pair reads as one code point. */
+const LONE_SURROGATE = /\p{Surrogate}/u;
 
 /**
  * Why a "01" payee (a contract package such as a RevenueSplit, or a public key
@@ -232,6 +248,14 @@ export class SpendPolicy {
       return refuse(`unknown authorization style ${show(authorizationStyle)}; this client knows ${AUTHORIZATION_STYLES.join(", ")}`);
     }
 
+    // The token's EIP-712 domain, which the authorization is signed over. An option without a
+    // usable name or version is refused here, so that selection moves on to the next option,
+    // instead of failing at signing after its budget was reserved.
+    const domainRefusal =
+      domainFieldRefusal(extra.name, "extra.name", MAX_TOKEN_NAME_LENGTH) ??
+      domainFieldRefusal(extra.version, "extra.version", MAX_TOKEN_VERSION_LENGTH);
+    if (domainRefusal !== undefined) return refuse(`malformed EIP-712 domain: ${domainRefusal}`);
+
     let amount: bigint;
     try {
       amount = parseRawAmount(req.amount, "amount");
@@ -299,6 +323,21 @@ function normalizeList(
     out.add(normalize(value));
   }
   return out;
+}
+
+/**
+ * Why `value` cannot be signed over as `field` of a token's EIP-712 domain, or
+ * undefined when it can. @x402/casper throws when the name or the version is
+ * not a non-empty string, and encodes a lone surrogate as U+FFFD, a domain the
+ * token does not have.
+ */
+function domainFieldRefusal(value: unknown, field: string, maxLength: number): string | undefined {
+  if (value === undefined) return `${field} is missing`;
+  if (typeof value !== "string") return `${field} must be a string; got ${show(value)}`;
+  if (value === "") return `${field} is empty`;
+  if (LONE_SURROGATE.test(value)) return `${field} contains lone UTF-16 surrogates, which have no UTF-8 form to sign over`;
+  if (value.length > maxLength) return `${field} is ${value.length} characters long, above this client's ${maxLength}-character limit`;
+  return undefined;
 }
 
 function refuse(reason: string): SpendDecision {

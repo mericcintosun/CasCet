@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   CONTRACT_PAYEE_REASON,
   DEFAULT_MAX_AUTHORIZATION_SECONDS,
+  MAX_TOKEN_NAME_LENGTH,
+  MAX_TOKEN_VERSION_LENGTH,
   normalizeAllowedPayTo,
   normalizeAssetHash,
   normalizeNetworks,
@@ -258,6 +260,48 @@ describe("SpendPolicy.authorize", () => {
       refused(policy.authorize(requirements(extra(style))), /unknown authorization style/);
     }
     assert.deepEqual(policy.spentByAsset(), { [ASSET_A]: "300" }, "refusals reserve nothing");
+  });
+
+  it("refuses an option without a usable EIP-712 domain, naming the field and the problem", () => {
+    const policy = new SpendPolicy();
+    const NAME = "Wrapped CSPR";
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ version: "1" }, "extra.name is missing"],
+      [{ name: 42, version: "1" }, "extra.name must be a string; got 42"],
+      [{ name: null, version: "1" }, "extra.name must be a string; got null"],
+      [{ name: ["Wrapped CSPR"], version: "1" }, 'extra.name must be a string; got ["Wrapped CSPR"]'],
+      [{ name: "", version: "1" }, "extra.name is empty"],
+      [{ name: "Wrapped \ud800CSPR", version: "1" }, "extra.name contains lone UTF-16 surrogates, which have no UTF-8 form to sign over"],
+      [{ name: "x".repeat(101), version: "1" }, "extra.name is 101 characters long, above this client's 100-character limit"],
+      [{ name: NAME }, "extra.version is missing"],
+      [{ name: NAME, version: 1 }, "extra.version must be a string; got 1"],
+      [{ name: NAME, version: "" }, "extra.version is empty"],
+      [{ name: NAME, version: "\udc00" }, "extra.version contains lone UTF-16 surrogates, which have no UTF-8 form to sign over"],
+      [{ name: NAME, version: "1".repeat(21) }, "extra.version is 21 characters long, above this client's 20-character limit"],
+    ];
+    for (const [extra, reason] of cases) {
+      const decision = policy.authorize(requirements({ extra: { authorizationStyle: "cep3009-value", ...extra } }));
+      assert.deepEqual(decision, { ok: false, reason: `malformed EIP-712 domain: ${reason}` }, reason);
+    }
+    // No extra at all, or one that is not an object, names no domain either.
+    for (const extra of [undefined, null, NAME, [NAME, "1"]]) {
+      refused(policy.authorize(requirements({ extra })), /^malformed EIP-712 domain: extra\.name is missing$/);
+    }
+    assert.deepEqual(policy.spentByAsset(), {}, "refusals reserve nothing");
+  });
+
+  it("accepts any EIP-712 domain name and version within the bounds", () => {
+    assert.equal(MAX_TOKEN_NAME_LENGTH, 100);
+    assert.equal(MAX_TOKEN_VERSION_LENGTH, 20);
+    const policy = new SpendPolicy();
+    for (const extra of [
+      { name: "x".repeat(MAX_TOKEN_NAME_LENGTH), version: "1".repeat(MAX_TOKEN_VERSION_LENGTH) },
+      { name: "C", version: "1.0.0" },
+      // Non-ASCII, and a surrogate pair (one code point, two UTF-16 code units).
+      { name: "Jeton été \u{1FA99}", version: "2" },
+    ]) {
+      assert.equal(policy.check(requirements({ extra })).ok, true, JSON.stringify(extra));
+    }
   });
 });
 

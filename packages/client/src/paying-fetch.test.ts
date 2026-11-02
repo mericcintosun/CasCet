@@ -400,17 +400,23 @@ describe("createPayingFetch", () => {
     assert.equal((await paying.fetch(gateway.url(), { method: "POST", body: "{}" })).status, 200);
   });
 
-  it("gives the reserved budget back when signing fails after the policy approved the payment", async () => {
+  it("gives the reserved budget back when signing fails after the policy approved the payment", async t => {
     const paying = await make({ budget: { maxPerCallRaw: "600", maxSessionRaw: "600" } });
-    // Without extra.name the scheme cannot build the EIP-712 domain, so it throws after the policy reserved 600.
-    gateway.accepts = [requirement({ amount: "600", extra: { version: "1" } })];
+    // The key cannot sign (a signing device that went away, say): @x402/casper throws after the policy reserved 600.
+    const reservedWhenSigning: string[] = [];
+    const keyUnavailable = t.mock.method(PrivateKey.prototype, "signAndAddAlgorithmBytes", () => {
+      reservedWhenSigning.push(paying.spentRaw());
+      throw new Error("the signing key is unavailable");
+    });
+    gateway.accepts = [requirement({ amount: "600" })];
     const before = gateway.hits.length;
-    await assert.rejects(paying.fetch(gateway.url(), { method: "POST", body: "{}" }), /missing_token_name/);
+    await assert.rejects(paying.fetch(gateway.url(), { method: "POST", body: "{}" }), /failed_to_sign: the signing key is unavailable/);
+    assert.deepEqual(reservedWhenSigning, ["600"], "the policy approved the payment and reserved it before signing");
     assert.ok(gateway.hits.slice(before).every(hit => hit.signature === undefined), "nothing was signed or sent");
     assert.equal(paying.spentRaw(), "0");
     assert.deepEqual(paying.spentByAsset?.(), {});
     // The whole session budget is still available.
-    gateway.accepts = [requirement({ amount: "600" })];
+    keyUnavailable.mock.restore();
     assert.equal((await paying.fetch(gateway.url(), { method: "POST", body: "{}" })).status, 200);
     assert.equal(paying.spentRaw(), "600");
   });
@@ -635,6 +641,38 @@ describe("createPayingFetch with a legacy-amount and a cep3009-value token side 
 
     gateway.accepts = [unknownStyle];
     await refused(await make(), /unknown authorization style "permit2"; this client knows legacy-amount, cep3009-value/);
+  });
+
+  it("pays the next option when the first names no usable EIP-712 domain, and refuses when none does", async () => {
+    // Listed first, such an option used to be selected and then fail at signing (missing_token_name)
+    // instead of paying the next one.
+    const style = { authorizationStyle: "cep3009-value" };
+    const unusable = [
+      wcsprOption({ extra: { version: "1", ...style } }),
+      wcsprOption({ extra: { name: "Wrapped CSPR", ...style } }),
+      wcsprOption({ extra: { name: "", version: "1", ...style } }),
+      wcsprOption({ extra: { name: "W".repeat(101), version: "1", ...style } }),
+    ];
+    for (const option of unusable) {
+      gateway.accepts = [option, legacyOption()];
+      const payments: PaymentInfo[] = [];
+      const paying = await make({ onPayment: info => payments.push(info) });
+      const { signed } = await payOnce(paying, payments);
+      assert.deepEqual(signed.accepted, legacyOption());
+      assert.equal(signedFor(signed, "CasCet X402 Token", LEGACY), true);
+      assert.deepEqual(payments, [
+        { amountRaw: "500", payTo: SELLER, network: "casper:casper-test", asset: LEGACY, authorizationStyle: "legacy-amount" },
+      ]);
+      assert.deepEqual(paying.spentByAsset?.(), { [LEGACY]: "500" }, "nothing reserved for the refused option");
+    }
+
+    gateway.accepts = [unusable[0]];
+    await refused(await make(), /^payment refused: malformed EIP-712 domain: extra\.name is missing$/);
+    gateway.accepts = unusable;
+    await refused(
+      await make(),
+      /^payment refused: none of the 4 payment options the gateway offers is acceptable: malformed EIP-712 domain: extra\.name is missing; malformed EIP-712 domain: extra\.version is missing; /,
+    );
   });
 
   it("applies the per-call budget to every token and picks an option within it", async () => {
@@ -877,7 +915,18 @@ describe("createPaymentClient", () => {
   it("reserves before signing, reports after it, and gives the reservation back when signing fails", async () => {
     const policy = new SpendPolicy({ allowedAssets: [LEGACY, WCSPR], maxSessionRaw: "1000" });
     const payments: PaymentInfo[] = [];
-    const client = createPaymentClient({ policy, signer, preferStyles: ["cep3009-value"], onPayment: info => payments.push(info) });
+    // The buyer's key, until it becomes unavailable: then signing throws, after the policy reserved the budget.
+    let keyAvailable = true;
+    const reservedWhenSigning: Array<string | undefined> = [];
+    const flakySigner = {
+      ...signer,
+      signEIP712: async (digest: Uint8Array): Promise<Uint8Array> => {
+        reservedWhenSigning.push(policy.spentByAsset()[WCSPR]);
+        if (!keyAvailable) throw new Error("the signing key is unavailable");
+        return signer.signEIP712(digest);
+      },
+    };
+    const client = createPaymentClient({ policy, signer: flakySigner, preferStyles: ["cep3009-value"], onPayment: info => payments.push(info) });
     const paid = await client.createPaymentPayload(challenge(legacyOption(), wcsprOption()));
     assert.equal(paid.accepted.asset, WCSPR, "preferStyles applies");
     assert.deepEqual(paid.accepted, wcsprOption(), "the accepted entry is the gateway's, unchanged");
@@ -886,13 +935,25 @@ describe("createPaymentClient", () => {
     ]);
     assert.deepEqual(policy.spentByAsset(), { [WCSPR]: "400" });
 
-    // No token name: @x402/casper cannot build the EIP-712 domain and throws after the reservation.
-    await assert.rejects(
-      client.createPaymentPayload(challenge(wcsprOption({ extra: { version: "1", authorizationStyle: "cep3009-value" } }))),
-      /missing_token_name/,
-    );
+    // The key becomes unavailable: @x402/casper throws after the reservation.
+    keyAvailable = false;
+    await assert.rejects(client.createPaymentPayload(challenge(wcsprOption())), /failed_to_sign: the signing key is unavailable/);
+    assert.deepEqual(reservedWhenSigning, ["400", "800"], "each payment was reserved before it was signed");
     assert.deepEqual(policy.spentByAsset(), { [WCSPR]: "400" }, "the failed payment's reservation was given back");
     assert.equal(payments.length, 1);
+  });
+
+  it("pays the next option when the first names no usable EIP-712 domain, and reserves nothing for it", async () => {
+    const policy = new SpendPolicy({ allowedAssets: [LEGACY, WCSPR], maxSessionRaw: "1000" });
+    const payments: PaymentInfo[] = [];
+    const client = createPaymentClient({ policy, signer, onPayment: info => payments.push(info), log: () => undefined });
+    const noName = wcsprOption({ extra: { version: "1", authorizationStyle: "cep3009-value" } });
+    const paid = await client.createPaymentPayload(challenge(noName, legacyOption()));
+    assert.deepEqual(paid.accepted, legacyOption());
+    assert.deepEqual(policy.spentByAsset(), { [LEGACY]: "500" });
+    assert.deepEqual(payments, [
+      { amountRaw: "500", payTo: SELLER, network: "casper:casper-test", asset: LEGACY, authorizationStyle: "legacy-amount" },
+    ]);
   });
 
   it("binds each scheme to the policy's validity-window limit, which holds even if the selection changes after the policy check", async () => {
