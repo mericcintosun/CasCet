@@ -214,13 +214,22 @@ export const corsSchema = z
  *
  * A paid call in the default run-then-settle mode can take up to
  * facilitatorMs + upstreamMs + settleMs (165 s with the defaults) before the
- * gateway answers, plus its read-only chain checks when `settlement.nodeUrl`
- * is set (up to 15 s after a settlement that did not succeed, 5 s for the
- * preflight of a payment the hosted facilitator settles: 185 s), so buyers
- * must wait longer than that: a buyer that gives up earlier may still be
- * charged without receiving the result. A tool that settles before it runs
- * (`settleBeforeExecute`) adds the upstream ping before its settlement, at
- * most 5 s (170 s, or 190 s with a node).
+ * gateway answers; a facilitator's own `timeoutMs` replaces facilitatorMs and
+ * settleMs for the assets it settles, so the slowest facilitator sets the
+ * bound. Add its read-only chain checks when `settlement.nodeUrl` (or, without
+ * it, `anchoring.nodeUrl`) is set: up to 15 s after a settlement that did not
+ * succeed, 5 s for the preflight of a payment the hosted facilitator settles
+ * (185 s). Buyers must wait longer than that: a buyer that gives up earlier may
+ * still be charged without receiving the result. A tool that settles before it
+ * runs (`settleBeforeExecute`) adds the upstream ping before its settlement, at
+ * most 5 s (170 s, or 190 s with a node). The exact bound is @cascet/gateway's
+ * longestPaidCallMs.
+ *
+ * The schema refuses timeouts whose authorization window
+ * ({@link paymentWindowSeconds}) exceeds the 900 s CasCet buyers accept by
+ * default. That is a deliberate limit: a library buyer can raise its own
+ * (`maxAuthorizationSeconds`), but `cascet connect` cannot, so every default
+ * buyer would refuse such a gateway.
  */
 export const timeoutsSchema = z
   .object({

@@ -517,7 +517,7 @@ describe("x402's automatic retry of a settlement the facilitator reported as pen
         } else {
           assert.equal(res.body.error?.code, -32003);
           assert.equal(receipt?.status, "unknown");
-          assert.match(String(receipt?.note), /paid payTo, executed by a submitter other than this gateway's facilitator;/);
+          assert.match(String(receipt?.note), /paid payTo, executed by a submitter other than this gateway's facilitator( \(its transaction [0-9a-f]+ reverted\))?;/);
         }
       });
     }

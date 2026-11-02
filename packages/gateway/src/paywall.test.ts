@@ -14,6 +14,7 @@ import {
   type PaymentRail,
 } from "./paywall.js";
 import { InFlightPayments } from "./in-flight.js";
+import { DEFAULT_FACILITATOR_URL, paymentWindowSeconds } from "@cascet/core";
 import { ASSET, PAY_TO, PRICE_RAW, testConfig } from "./testing/harness.js";
 
 const unusedFacilitator: FacilitatorClient = {
@@ -122,6 +123,24 @@ describe("maxTimeoutSecondsFor", () => {
   it("covers verifying, running the tool and settling, never below 300 s", () => {
     assert.equal(maxTimeoutSecondsFor(testConfig()), 300);
     assert.equal(maxTimeoutSecondsFor(testConfig({ timeouts: { facilitatorMs: 15_000, upstreamMs: 600_000, settleMs: 90_000 } })), 735);
+  });
+});
+
+describe("maxTimeoutSecondsFor and the config schema's payment window", () => {
+  it("agree, so the schema's 900 s check is about the window buyers are really asked to sign", () => {
+    const hosted = { url: DEFAULT_FACILITATOR_URL, apiKey: "key", authScheme: "raw" as const };
+    const wcspr = { packageHash: "3d".repeat(32), name: "Wrapped CSPR", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 50 };
+    const configs = [
+      testConfig(),
+      testConfig({ timeouts: { facilitatorMs: 15_000, upstreamMs: 600_000, settleMs: 90_000 } }),
+      testConfig({ facilitator: { url: "http://127.0.0.1:4501", timeoutMs: 200_000 } }),
+      testConfig({ asset: wcspr, facilitator: hosted, timeouts: { upstreamMs: 400_000, facilitatorMs: 15_000, settleMs: 90_000 } }),
+      testConfig({ asset: wcspr, facilitator: hosted, settlement: { nodeUrl: "http://127.0.0.1:1/rpc" }, timeouts: { upstreamMs: 400_000, facilitatorMs: 15_000, settleMs: 90_000 } }),
+      testConfig({ asset: wcspr, facilitator: { ...hosted, timeoutMs: 200_000 }, settlement: { nodeUrl: "http://127.0.0.1:1/rpc" } }),
+    ];
+    for (const cfg of configs) assert.equal(paymentWindowSeconds(cfg), maxTimeoutSecondsFor(cfg), JSON.stringify(cfg.timeouts));
+    // The configs differ where it matters: the hosted preflight counts once a node is configured.
+    assert.equal(paymentWindowSeconds(configs[4]!) - paymentWindowSeconds(configs[3]!), 5);
   });
 });
 

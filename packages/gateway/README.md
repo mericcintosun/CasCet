@@ -28,7 +28,8 @@ Or from the command line: `npx @cascet/cli wrap cascet.config.json`.
 | `pricing.*.assets` | every asset | The assets a price accepts, by id. The 402 lists them in config order, not in the order of this list. |
 | `asset` / `assets` | | One token (`asset`) or several (`assets`, in order of preference); set exactly one. See *Accepting several tokens*. |
 | `asset.authorization` | from `packageHash` | The token's `transfer_with_authorization` ABI: `"legacy-amount"` (CasCet's own x402 token, takes `amount`) or `"cep3009-value"` (CEP-3009 tokens such as Wrapped CSPR, take `value`). CasCet's tokens default to the first, every other token to the second. Buyers see it as `extra.authorizationStyle`. A legacy-amount asset settled by the hosted facilitator is a config error. |
-| `asset.id` | lower-cased `symbol` | Handle used by `pricing.*.assets`. Two assets with the same symbol need explicit ids. |
+| `asset.id` | lower-cased `symbol`, or the package hash when `symbol` is blank | Handle used by `pricing.*.assets`. Two assets with the same symbol need explicit ids. |
+| `asset.name`, `asset.version` | | The token's EIP-712 domain. At most 100 and 20 UTF-16 units, and no lone surrogates: CasCet buyers refuse anything else. |
 | `asset.facilitator` | `"default"` | The facilitator that verifies and settles this asset: a key of `facilitators`, or `"default"` (the top-level `facilitator`). |
 | `facilitator` | the hosted facilitator | The `"default"` facilitator: `{ url, apiKey?, authScheme?, timeoutMs? }`. |
 | `facilitators.<name>` | `{}` | More facilitators, same fields, for assets that name them. |
@@ -166,9 +167,10 @@ its authorization's `validBefore`, when the authorization can no longer
 execute. The gateway tracks at most 10 000 payments in flight and refuses
 new ones beyond that (`preflight_unavailable: too many payments in flight;
 retry later`) rather than forget one. After a restart the gateway counts
-again, until they expire, the payments its receipt log records as `unknown`
-in a preflighted token (a receipt does not say whether the on-chain check
-found the nonce used, so those count again too). Like the replay guard, this
+again, until they expire, the payments in a preflighted token whose receipt
+says `unknown` or that have a write-ahead record but no receipt, because the
+process died during the call (a receipt does not say whether the on-chain
+check found the nonce used, so those count again too). Like the replay guard, this
 is per gateway: gateways that share a payer and a token do not see each
 other's payments.
 

@@ -4,6 +4,7 @@ import { x402HTTPResourceServer, x402ResourceServer, type FacilitatorClient, typ
 import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from "@x402/core/http";
 import type { Network } from "@x402/core/types";
 import { IN_FLIGHT_MARGIN_MS, InFlightPayments, paymentHoldOf, withPaymentHold, type InFlightPayment, type PaymentHold } from "./in-flight.js";
+import { seedInFlight } from "./server.js";
 import { CascetCasperServerScheme } from "./server-scheme.js";
 
 const NETWORK = "casper:casper-test";
@@ -184,5 +185,71 @@ describe("the hold of a paid call reaches x402's verify hooks", () => {
     for (const transportContext of [undefined, null, "x", {}, { request: null }, { request: { path: "/tools/0" } }]) {
       assert.equal(paymentHoldOf(transportContext), undefined);
     }
+  });
+});
+
+describe("seedInFlight: what a restarted gateway keeps counting", () => {
+  const record = (paymentId: string, overrides: Record<string, unknown> = {}) => ({
+    kind: "authorization" as const,
+    payer: PAYER,
+    nonce: paymentId.padEnd(64, "0"),
+    validBefore: 1_000,
+    asset: ASSET,
+    amountRaw: "100",
+    paymentId,
+    tool: "t",
+    createdAt: "2026-11-02T00:00:00.000Z",
+    ...overrides,
+  });
+  const receipt = (id: string, status: string, overrides: Record<string, unknown> = {}) => ({
+    id,
+    status,
+    network: NETWORK,
+    asset: ASSET,
+    payer: PAYER,
+    amountRaw: "100",
+    ...overrides,
+  });
+  const seed = (records: unknown[], receipts: unknown[], clock: { now: number }, assets = [{ packageHash: ASSET }]) => {
+    const inFlight = new InFlightPayments({ now: () => clock.now });
+    const rail = { preflightAssets: assets, network: NETWORK, inFlight } as unknown as Parameters<typeof seedInFlight>[0];
+    const store = { authorizations: () => records, list: () => receipts } as unknown as Parameters<typeof seedInFlight>[1];
+    return { kept: seedInFlight(rail, store), counted: () => inFlight.total(NETWORK, ASSET, PAYER) };
+  };
+
+  it("counts an unknown receipt and a call that died before its receipt, not a settled or failed one", () => {
+    const clock = { now: 0 };
+    const { kept, counted } = seed(
+      [record("unknown"), record("died"), record("settled"), record("failed")],
+      [receipt("unknown", "unknown"), receipt("settled", "settled"), receipt("failed", "failed")],
+      clock,
+    );
+    assert.equal(kept, 2);
+    assert.deepEqual(counted(), { count: 2, amount: 200n });
+  });
+
+  it("keeps them until the write-ahead validBefore plus the margin, and not one moment longer", () => {
+    const clock = { now: 0 };
+    const { counted } = seed([record("unknown"), record("died", { validBefore: 2_000 })], [receipt("unknown", "unknown")], clock);
+    assert.equal(counted().count, 2);
+    clock.now = 1_000 * 1_000 + IN_FLIGHT_MARGIN_MS - 1;
+    assert.equal(counted().count, 2);
+    clock.now = 1_000 * 1_000 + IN_FLIGHT_MARGIN_MS;
+    assert.deepEqual(counted(), { count: 1, amount: 100n }, "the first authorization can no longer execute");
+    clock.now = 2_000 * 1_000 + IN_FLIGHT_MARGIN_MS;
+    assert.equal(counted().count, 0);
+    // One already past that is not counted at all.
+    assert.equal(seed([record("died")], [], clock).kept, 0);
+  });
+
+  it("skips what it cannot price or does not preflight: an old record, another token, another network", () => {
+    const clock = { now: 0 };
+    const skipped = seed(
+      [record("old", { amountRaw: undefined }), record("other", { asset: "ee".repeat(32) }), record("net"), record("bad", { amountRaw: "1e9" })],
+      [receipt("net", "unknown", { network: "casper:casper" })],
+      clock,
+    );
+    assert.equal(skipped.kept, 0);
+    assert.equal(seed([record("died")], [], clock, []).kept, 0, "no preflighted token");
   });
 });

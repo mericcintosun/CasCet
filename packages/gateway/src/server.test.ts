@@ -638,7 +638,9 @@ describe("settlement preemption", () => {
           } else {
             assert.equal(res.body.error?.code, -32003);
             assert.equal(receipt?.status, "unknown");
-            assert.match(String(receipt?.note), /paid payTo, executed by a submitter other than this gateway's facilitator;/);
+            assert.equal(receipt?.txHash, undefined, "reconciling by txHash must not land on the reverted transfer");
+            assert.match(String(receipt?.note), new RegExp(`its transaction ${REVERTED_TX} reverted`));
+            assert.match(String(receipt?.note), /paid payTo, executed by a submitter other than this gateway's facilitator( \(its transaction [0-9a-f]+ reverted\))?;/);
             assert.deepEqual(anchored, []);
           }
         },

@@ -649,12 +649,15 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
               nonceUsed: true,
             };
           }
+          // Whoever reconciles unknown receipts by txHash must not land on a transfer that reverted.
+          const { txHash: ownTx, ...withoutTx } = outcome;
           return {
-            ...outcome,
+            ...withoutTx,
+            ...(pendingTx ? { txHash: pendingTx } : {}),
             status: "unknown",
             note:
               `token event #${found.eventIndex} shows this exact authorization paid payTo, ` +
-              `${through ?? "executed by a submitter other than this gateway's facilitator"}; ` +
+              `${through ?? `executed by a submitter other than this gateway's facilitator${ownTx ? ` (its transaction ${ownTx} reverted)` : ""}`}; ` +
               "settlement.acceptThirdPartySettlement is off, so the result was withheld",
             nonceUsed: true,
           };
@@ -982,6 +985,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
         nonce: authorization.nonce,
         validBefore: authorization.validBefore,
         asset: matched.asset.packageHash,
+        amountRaw: processed.paymentRequirements.amount,
         paymentId,
         tool: name,
         createdAt: new Date().toISOString(),
@@ -1347,22 +1351,30 @@ function seedReplayGuard(replay: ReplayGuard, store: ReceiptStore, maxTimeoutSec
 }
 
 /**
- * After a restart, keep counting in flight the preflighted payments whose settlement outcome was unknown: their
- * transfers may still execute until their authorizations expire (see in-flight.ts). Their receipts give the payer,
- * token and amount, their write-ahead records the validBefore. Returns how many count.
+ * After a restart, keep counting in flight the preflighted payments whose settlement outcome is not known: their
+ * transfers may still execute until their authorizations expire (see in-flight.ts). Those are the receipts that say
+ * `unknown`, with the validBefore of their write-ahead records, and the write-ahead records with no receipt at all:
+ * the process died during the call, perhaps with its transfer already broadcast. Returns how many count.
  */
-function seedInFlight(rail: PaymentRail, store: ReceiptStore): number {
+export function seedInFlight(
+  rail: Pick<PaymentRail, "preflightAssets" | "network" | "inFlight">,
+  store: Pick<ReceiptStore, "authorizations" | "list">,
+): number {
   const preflighted = new Set(rail.preflightAssets.map(asset => asset.packageHash));
   if (preflighted.size === 0) return 0;
-  const validBefore = new Map(store.authorizations().map(record => [record.paymentId, record.validBefore]));
   let kept = 0;
-  for (const receipt of store.list()) {
-    const until = validBefore.get(receipt.id);
-    if (receipt.status !== "unknown" || until === undefined || receipt.network !== rail.network) continue;
-    const { asset, payer, amountRaw } = receipt;
-    if (typeof asset !== "string" || !preflighted.has(normalizePackageHash(asset)) || typeof payer !== "string") continue;
-    if (typeof amountRaw !== "string" || !/^\d{1,78}$/.test(amountRaw)) continue;
-    if (rail.inFlight.keep({ network: rail.network, asset, payer, amount: BigInt(amountRaw), validBefore: until }) === "kept") kept++;
+  const keep = (asset: unknown, payer: unknown, amountRaw: unknown, validBefore: number): void => {
+    if (typeof asset !== "string" || !preflighted.has(normalizePackageHash(asset)) || typeof payer !== "string") return;
+    if (typeof amountRaw !== "string" || !/^\d{1,78}$/.test(amountRaw)) return;
+    if (rail.inFlight.keep({ network: rail.network, asset, payer, amount: BigInt(amountRaw), validBefore }) === "kept") kept++;
+  };
+  const receipts = new Map(store.list().map(receipt => [receipt.id, receipt]));
+  for (const record of store.authorizations()) {
+    const receipt = receipts.get(record.paymentId);
+    if (!receipt) keep(record.asset, record.payer, record.amountRaw, record.validBefore);
+    else if (receipt.status === "unknown" && receipt.network === rail.network) {
+      keep(receipt.asset, receipt.payer, receipt.amountRaw, record.validBefore);
+    }
   }
   return kept;
 }

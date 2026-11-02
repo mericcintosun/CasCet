@@ -40,9 +40,9 @@ import { normalizeAccountAddress } from "./authorization.js";
  *
  * The reservations live in memory. A restarted gateway rebuilds those that
  * outlive their calls from its receipt log ({@link InFlightPayments.keep}):
- * every payment in a preflighted token whose receipt says `unknown` counts
- * again until it expires (its validBefore is in the authorization's
- * write-ahead record). A receipt does not say whether the on-chain check found
+ * every payment in a preflighted token whose receipt says `unknown`, or whose
+ * write-ahead record has no receipt because the process died during the call,
+ * counts again until it expires. A receipt does not say whether the on-chain check found
  * the nonce used, so after a restart such a payment counts again too: in
  * doubt the gateway holds its amount back rather than let another payment
  * through on funds it may already have spent.
