@@ -8,9 +8,10 @@ import { buildTransferWithAuthorizationDigest } from "@x402/casper";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { clientSignerFromPem, createCasperClientScheme } from "@cascet/client";
 import { SignatureReason, verifyPaymentSignature } from "./authorization-signature.js";
+import { FORGED_WCSPR_PAYMENTS } from "./ed25519-fixtures.js";
 import * as fx from "./rpc-fixtures.js";
 
-const { PrivateKey, KeyAlgorithm } = casperSdk;
+const { PrivateKey, PublicKey, KeyAlgorithm } = casperSdk;
 
 const NETWORK = "casper:casper-test" as const;
 const LEGACY_TOKEN = "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
@@ -155,6 +156,30 @@ describe("signature verification", () => {
     const highS = `${secp.payload.signature.slice(0, 66)}${(SECP256K1_N - s).toString(16).padStart(64, "0")}`;
     const malleated = { ...secp.payload, signature: highS };
     assert.equal(verifyPaymentSignature(paymentOf(reqs, malleated), reqs).invalidReason, SignatureReason.nonCanonicalSignature);
+  });
+
+  test("an ed25519 signature only the cofactored check accepts is refused: the token's verify_strict would revert the settle", () => {
+    // Small-order points and a mixed-order R (ed25519-fixtures.ts): casper-js-sdk accepts each signature,
+    // casper-types' crypto::verify refuses it, and the reverted settle would burn the fee payer's gas limit.
+    const reqs = requirements(WCSPR, "Wrapped CSPR");
+    for (const forged of FORGED_WCSPR_PAYMENTS) {
+      const authorization: Auth = { from: forged.from, to: SELLER, value: "500000000", validAfter: "0", validBefore: "1893456000", nonce: forged.nonce };
+      const payload: Payload = { signature: forged.signature, publicKey: forged.publicKey, authorization };
+      const key = PublicKey.fromHex(forged.publicKey);
+      assert.equal(`00${key.accountHash().toHex()}`, forged.from);
+      const digest = buildTransferWithAuthorizationDigest({ name: "Wrapped CSPR", version: "1", network: NETWORK, asset: WCSPR, authorization });
+      assert.equal(key.verifySignature(digest, Buffer.from(forged.signature, "hex")), true, `${forged.label}: the sdk's check passes`);
+      assert.deepEqual(
+        verifyPaymentSignature(paymentOf(reqs, payload), reqs),
+        {
+          isValid: false,
+          invalidReason: SignatureReason.invalidSignature,
+          invalidMessage: `the token's ed25519 check (verify_strict) refuses this signature: ${forged.problem}`,
+          payer: forged.from,
+        },
+        forged.label,
+      );
+    }
   });
 
   test("the payload's network, the domain fields and the payload shape are required", async () => {

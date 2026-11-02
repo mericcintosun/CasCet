@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import { after, before, describe, test } from "node:test";
 import casperSdk from "casper-js-sdk";
 import { toClientCasperSigner } from "@make-software/casper-x402";
 import { ExactCasperScheme as ClientScheme } from "@make-software/casper-x402/exact/client";
+import { buildTransferWithAuthorizationDigest } from "@x402/casper";
 import { HTTPFacilitatorClient, x402ResourceServer } from "@x402/core/server";
 import type { PaymentPayload, PaymentRequirements, SettleResponse, VerifyResponse } from "@x402/core/types";
 import { clientSignerFromPem, createCasperClientScheme } from "@cascet/client";
@@ -20,6 +22,7 @@ import {
   type KnownTransaction,
   type ParsedPayment,
 } from "./facilitator-core.js";
+import { ORDER_8_POINT, WEAK_KEY_SIGNATURE } from "./ed25519-fixtures.js";
 import { NETWORKS } from "./facilitator-env.js";
 import { serializeFacilitatorState } from "./facilitator-state.js";
 import {
@@ -34,7 +37,7 @@ import {
 import * as fx from "./rpc-fixtures.js";
 import { startFakeRpcServer, type FakeRpcServer } from "./test-helpers.js";
 
-const { PrivateKey, KeyAlgorithm } = casperSdk;
+const { PrivateKey, PublicKey, KeyAlgorithm } = casperSdk;
 
 const NETWORK = "casper:casper-test" as const;
 const TOKEN = "9d2f4b6c8e0a1c3e5f7b9d1f3a5c7e9b0d2f4a6c8e0b1d3f5a7c9e1b3d5f7a9c";
@@ -844,6 +847,53 @@ describe("startRealFacilitator end to end against a local fake node (no network)
       assert.equal(submitted.length, before + 1, "nothing else reached the node");
     } finally {
       await fac.close();
+    }
+  });
+
+  test("a payment the token's ed25519 check refuses (a small-order key) is refused at /verify and /settle, and nothing is submitted", async () => {
+    // The order-8 point as the payer's key: one signature passes casper-js-sdk's
+    // cofactored check over every message, with no private key at all. The token
+    // refuses the key (verify_strict), so a settle would revert and burn its gas.
+    const weakKey = `01${ORDER_8_POINT}`;
+    const weakPayer = `00${PublicKey.fromHex(weakKey).accountHash().toHex()}`;
+    const weakNode = await startFakeRpcServer(nodeRoutes(weakPayer)); // funded, nonce unused
+    const fac = await start({ rpcUrl: weakNode.url });
+    try {
+      const reqs = requirements();
+      const now = Math.floor(Date.now() / 1000);
+      const authorization = {
+        from: weakPayer,
+        to: SELLER,
+        value: PRICE,
+        validAfter: "0",
+        validBefore: String(now + 300),
+        nonce: randomBytes(32).toString("hex"),
+      };
+      const digest = buildTransferWithAuthorizationDigest({ name: "CasCet X402 Token", version: "1", network: NETWORK, asset: TOKEN_PKG, authorization });
+      assert.equal(PublicKey.fromHex(weakKey).verifySignature(digest, Buffer.from(WEAK_KEY_SIGNATURE, "hex")), true, "the sdk's check passes");
+      const body = {
+        x402Version: 2,
+        paymentPayload: { x402Version: 2, accepted: reqs, payload: { signature: WEAK_KEY_SIGNATURE, publicKey: weakKey, authorization } },
+        paymentRequirements: reqs,
+      };
+      const before = submitted.length;
+
+      const verified = await post(fac.url, "/verify", body);
+      assert.deepEqual(
+        [verified.status, verified.body["isValid"], verified.body["invalidReason"]],
+        [200, false, "invalid_exact_casper_facilitator_invalid_signature"],
+      );
+      assert.match(verified.body["invalidMessage"], /verify_strict\) refuses this signature: the public key has small order$/);
+      const settled = await post(fac.url, "/settle", body);
+      assert.deepEqual(
+        [settled.status, settled.body["success"], settled.body["errorReason"], settled.body["transaction"]],
+        [200, false, "invalid_exact_casper_facilitator_invalid_signature", ""],
+      );
+      assert.deepEqual(settled.body["extra"], { settlementStatus: "not_submitted" });
+      assert.equal(submitted.length, before, "nothing reached the node");
+    } finally {
+      await fac.close();
+      await weakNode.close();
     }
   });
 

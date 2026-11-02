@@ -1,6 +1,7 @@
 import casperSdk from "casper-js-sdk";
 import { buildTransferWithAuthorizationDigest, isCanonicalSecp256k1Signature } from "@x402/casper";
 import type { Network, PaymentPayload, PaymentRequirements, VerifyResponse } from "@x402/core/types";
+import { ed25519StrictProblem } from "./ed25519-strict.js";
 
 const { PublicKey } = casperSdk;
 
@@ -23,7 +24,11 @@ const { PublicKey } = casperSdk;
  *  - the public key's account hash is the payer (`authorization.from`);
  *  - the signature is 65 bytes, its algorithm tag matches the key, and a
  *    secp256k1 signature is canonical (low s);
- *  - the signature verifies over the digest.
+ *  - the signature verifies over the digest;
+ *  - an ed25519 signature also passes the token's own check, ed25519-dalek's
+ *    `verify_strict` (ed25519-strict.ts): casper-js-sdk's check is cofactored
+ *    and accepts signatures the token refuses (a small-order key or R, a
+ *    mixed-order R), whose settle reverts and burns the whole gas limit.
  * Reason codes are @x402/casper's, so x402 clients classify them as failures
  * that happened before anything was submitted.
  *
@@ -137,6 +142,15 @@ export function verifyPaymentSignature(payload: PaymentPayload, requirements: Pa
     }
   } catch (err) {
     return invalid(SignatureReason.invalidSignature, payer, describe(err));
+  }
+  // The token verifies ed25519 cofactorless and refuses small-order points; the
+  // check above does neither. Checked on the payload's own key bytes, the ones
+  // the settlement sends.
+  if (signatureHex.slice(0, 2) === "01") {
+    const problem = ed25519StrictProblem(Buffer.from(p.publicKey.slice(2), "hex"), digest, signature.subarray(1));
+    if (problem) {
+      return invalid(SignatureReason.invalidSignature, payer, `the token's ed25519 check (verify_strict) refuses this signature: ${problem}`);
+    }
   }
   return { isValid: true, payer };
 }

@@ -69,7 +69,7 @@ export const TOKEN_STATE_CACHE_MS = 5 * 60_000;
  * one CasCet-owned transaction builder sends `amount` or `value` according to
  * each token's on-chain ABI, fee-sponsored by a Casper key. Signatures are
  * checked with @x402/casper's EIP-712 digest (both styles sign the same
- * message).
+ * message), ed25519 ones as strictly as the tokens check them (verify_strict).
  *
  * SECURITY: the fee payer pays real CSPR gas for every settle it submits, and
  * a reverted deploy burns its whole gas limit. The server therefore:
