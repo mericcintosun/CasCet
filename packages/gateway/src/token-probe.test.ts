@@ -290,7 +290,10 @@ describe("TokenProbe deadline (one budget per preflight)", () => {
 
     const late = clockedRpc(clock);
     const reader2 = new TokenProbe(late.rpc, { now: clock.now });
-    await assert.rejects(reader2.balanceOf(TESTNET_TOKEN, PAYER, { deadlineMs: clock.now() }), /deadline exceeded/);
+    await assert.rejects(
+      reader2.balanceOf(TESTNET_TOKEN, PAYER, { deadlineMs: clock.now() }),
+      err => indeterminate(err) && /deadline exceeded/.test((err as Error).message),
+    );
     assert.equal(late.calls.length, 0);
   });
 
