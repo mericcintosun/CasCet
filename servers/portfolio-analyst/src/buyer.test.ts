@@ -1,6 +1,7 @@
-import { after, before, describe, it } from "node:test";
+import { after, before, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
+import { RequestTimeoutError } from "@cascet/client";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -266,6 +267,39 @@ describe("createDataBuyer with the real paying fetch", { timeout: 15_000 }, () =
   it("applies the analysis' reserved budget when it is tighter than CASCET_MAX_SESSION (L03)", async () => {
     const { err, gateway } = await refusal({}, {}, { maxSessionRaw: "400000000" });
     assertRefused(err, gateway, /would exceed (the )?session budget/);
+  });
+
+  it("gives each purchase CASCET_TIMEOUT_MS, not the client's 30 s default", async () => {
+    // A paid purchase cut off at 30 s would still settle, and its data would be thrown away. The
+    // deadlines of the paying fetch and of the MCP client run on mocked timers here.
+    const gateway = await startFakeGateway({ hang: true });
+    try {
+      const buyer = await createDataBuyer(configFor(gateway.url, { CASCET_TIMEOUT_MS: "120000" }), {
+        signal: new AbortController().signal,
+        log: () => {},
+      });
+      mock.timers.enable({ apis: ["setTimeout"] });
+      let settled = false;
+      const purchase = buyer
+        .callTool("get_cspr_market_data", {})
+        .then(
+          (): unknown => "bought",
+          (err: unknown) => err,
+        )
+        .finally(() => (settled = true));
+      await gateway.firstRequest;
+      mock.timers.tick(31_000);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(settled, false, "the purchase ended at 31 s, before CASCET_TIMEOUT_MS");
+      mock.timers.tick(89_000);
+      const err = await purchase;
+      assert.ok(err instanceof RequestTimeoutError, String(err));
+      assert.match(err.message, /timed out after 120000 ms/);
+      assert.deepEqual(gateway.requests, [{ paid: false }]);
+    } finally {
+      mock.timers.reset();
+      await gateway.close();
+    }
   });
 
   it("aborts an in-flight purchase when the analysis is aborted, and pays nothing", async () => {
