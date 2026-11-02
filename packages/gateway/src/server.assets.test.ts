@@ -460,6 +460,33 @@ describe("x402's automatic retry of a settlement the facilitator reported as pen
     });
   });
 
+  it("keeps the pending transaction, as possibly the one that paid, when the on-chain check finds the authorization paid", async () => {
+    const paid: SettlementPreemptionChecker = { check: async () => ({ kind: "paid", eventIndex: 7 }) };
+    for (const accept of [true, false]) {
+      await withTwoAssets({ config: { settlement: { acceptThirdPartySettlement: accept } }, gateway: { preemptionChecker: paid } }, async h => {
+        pendingThen(h, refusal(429, "rate_limited", "too many requests; retry after the window resets"));
+        const { header } = await payInAsset(h, "paid_tool", LEGACY_TOKEN);
+        const res = await callPaid(h, "paid_tool", header);
+        const [receipt] = await receipts(h);
+        assert.equal(receipt?.txHash, PENDING_TX, `the receipt keeps the facilitator's transaction (acceptThirdPartySettlement ${accept})`);
+        assert.match(
+          String(receipt?.note),
+          new RegExp(`event #7 shows this exact authorization paid payTo.*possibly through transaction ${PENDING_TX}, which this gateway's facilitator broadcast`),
+        );
+        assert.doesNotMatch(String(receipt?.note), /another submitter|other than this gateway's facilitator/);
+        if (accept) {
+          assert.equal(res.status, 200, JSON.stringify(res.body));
+          assert.deepEqual([receipt?.status, receipt?.settledBy], ["settled", "third-party"]);
+          assert.equal((res.body.result?._meta as { cascet: Record<string, unknown> }).cascet.txHash, PENDING_TX);
+          assert.equal(res.headers.get("payment-response"), null, "never the failed settle's PAYMENT-RESPONSE with a delivered result");
+        } else {
+          assert.equal(res.body.error?.code, -32003);
+          assert.equal(receipt?.status, "unknown");
+        }
+      });
+    }
+  });
+
   it("gives the retry only what is left of the facilitator's settle timeout, and keeps the hash when it does not answer", async () => {
     const config = (urls: { legacy: string }) => ({
       facilitators: { self: { url: urls.legacy, apiKey: "self-key", authScheme: "bearer", timeoutMs: 600 } },

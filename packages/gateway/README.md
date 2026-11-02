@@ -232,7 +232,10 @@ token styles write this pair (checked on CasCet's token and on testnet
 Wrapped CSPR).
 
 - Exact authorization found: delivered as settled by a third party when
-  `acceptThirdPartySettlement` is on, otherwise recorded as `unknown`.
+  `acceptThirdPartySettlement` is on, otherwise recorded as `unknown`. The
+  events do not say which transaction executed it: when the facilitator had
+  reported a transfer of its own for the payment as pending, the receipt
+  keeps that `txHash`, noted as possibly the one that paid.
   Leave it off when several gateways share this `payTo` without sharing one
   facilitator nonce cache: a buyer could present one authorization to each.
 - Nonce canceled by the payer: failed.

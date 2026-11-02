@@ -582,7 +582,10 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
    * Sharpen an unsuccessful settle with the token's on-chain events:
    * - this exact authorization already paid payTo (settlement preemption, or a
    *   facilitator that lost track of its own transfer): settled by a third
-   *   party when `settlement.acceptThirdPartySettlement` is on, else unknown;
+   *   party when `settlement.acceptThirdPartySettlement` is on, else unknown.
+   *   The events do not say which transaction executed it: the hash of a
+   *   transfer the facilitator reported as broadcast for this payment is kept,
+   *   as possibly the one that paid;
    * - the payer canceled the nonce: failed (the cancel event alone proves the
    *   transfer can never execute);
    * - the nonce was used without the expected transfer right after it: noted,
@@ -610,22 +613,28 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
         asset: call.price.asset.packageHash,
       });
       switch (found.kind) {
-        case "paid":
+        case "paid": {
+          // A transfer the facilitator reported as broadcast (pending) may well be the one that paid.
+          const through = outcome.txHash ? `possibly through transaction ${outcome.txHash}, which this gateway's facilitator broadcast` : undefined;
           if (cfg.settlement.acceptThirdPartySettlement) {
+            // Not the settle answer's headers: its PAYMENT-RESPONSE reports a failure.
             return {
               status: "settled",
               settledBy: "third-party",
               payer: auth.from,
-              note: `facilitator answered "${clip(outcome.reason ?? "", 200)}", but token event #${found.eventIndex} shows this exact authorization paid payTo (settled by another submitter)`,
+              txHash: outcome.txHash,
+              note: `facilitator answered "${clip(outcome.reason ?? "", 200)}", but token event #${found.eventIndex} shows this exact authorization paid payTo (${through ?? "settled by another submitter"})`,
             };
           }
           return {
             ...outcome,
             status: "unknown",
             note:
-              `token event #${found.eventIndex} shows this exact authorization paid payTo, executed by a submitter other than this ` +
-              "gateway's facilitator; settlement.acceptThirdPartySettlement is off, so the result was withheld",
+              `token event #${found.eventIndex} shows this exact authorization paid payTo, ` +
+              `${through ?? "executed by a submitter other than this gateway's facilitator"}; ` +
+              "settlement.acceptThirdPartySettlement is off, so the result was withheld",
           };
+        }
         case "canceled":
           return { ...outcome, status: "failed", note: `the payer canceled the authorization nonce on-chain (token event #${found.eventIndex})` };
         case "consumed-elsewhere":
