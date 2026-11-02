@@ -2,8 +2,11 @@ import { z } from "zod";
 import {
   AUTHORIZATION_STYLES,
   defaultAuthorizationStyle,
+  hasLoneSurrogate,
   isLegacyAmountToken,
   isPackageHash,
+  MAX_TOKEN_NAME_LENGTH,
+  MAX_TOKEN_VERSION_LENGTH,
   normalizePackageHash,
   type AuthorizationStyle,
 } from "./assets.js";
@@ -78,6 +81,19 @@ const FACILITATOR_NAME_RULE = 'facilitator names are 1-64 letters, digits, ".", 
 const MAX_TIMER_MS = 2_147_483_647;
 
 /**
+ * A field of the token's EIP-712 domain, bounded as CasCet buyers bound it:
+ * they refuse every payment option whose name or version is longer, or holds
+ * a lone surrogate, so a gateway configured with one could sell nothing.
+ */
+function domainFieldSchema(field: "name" | "version", maxLength: number) {
+  return z
+    .string()
+    .min(1)
+    .max(maxLength, `${field} must be at most ${maxLength} characters (UTF-16 code units): CasCet buyers refuse a longer one`)
+    .refine(value => !hasLoneSurrogate(value), `${field} contains a lone UTF-16 surrogate, which has no UTF-8 form to sign over`);
+}
+
+/**
  * A CEP-18 token the gateway accepts, plus the fixed USD conversion rate used
  * on testnet. `packageHash` is stored as bare lower-case hex.
  */
@@ -90,12 +106,12 @@ export const assetSchema = z.object({
   id: z.string().regex(ASSET_ID, 'asset id must be 1-64 lower-case letters, digits, ".", "_" or "-"').optional(),
   packageHash: packageHashSchema,
   /** EIP-712 domain name: must equal the token's on-chain `name`. */
-  name: z.string().min(1),
+  name: domainFieldSchema("name", MAX_TOKEN_NAME_LENGTH),
   /** Display only (receipts, the 402's `extra`); may be empty, as in earlier versions. */
   symbol: z.string(),
   decimals: z.number().int().min(0).max(18).default(9),
   /** EIP-712 domain version ("1" for every Casper x402 token seen so far). */
-  version: z.string().min(1).default("1"),
+  version: domainFieldSchema("version", MAX_TOKEN_VERSION_LENGTH).default("1"),
   /** How many whole tokens equal 1 USD (testnet demo rate). */
   tokensPerUsd: z.number().positive().default(50),
   /**

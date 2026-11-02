@@ -23,6 +23,34 @@ export type AuthorizationStyle = (typeof AUTHORIZATION_STYLES)[number];
  */
 export const AUTHORIZATION_STYLE_EXTRA_KEY = "authorizationStyle";
 
+/**
+ * Longest EIP-712 domain name (the token's `name`, `extra.name` of a 402) CasCet
+ * buyers accept, in UTF-16 code units (String.length): the bound CasCet's
+ * self-hosted facilitator puts on a token name it pins. Real tokens use a few
+ * characters ("Wrapped CSPR").
+ */
+export const MAX_TOKEN_NAME_LENGTH = 100;
+
+/**
+ * Longest EIP-712 domain version (`extra.version`) CasCet buyers accept,
+ * counted as {@link MAX_TOKEN_NAME_LENGTH} is: the self-hosted facilitator's
+ * bound for a pinned version. Tokens use "1".
+ */
+export const MAX_TOKEN_VERSION_LENGTH = 20;
+
+/** A UTF-16 surrogate that is not half of a pair: with the u flag, a pair reads as one code point. */
+const LONE_SURROGATE = /\p{Surrogate}/u;
+
+/**
+ * Whether `value` holds a lone UTF-16 surrogate. It has no UTF-8 form, so an
+ * EIP-712 domain name or version holding one cannot be signed over (it would
+ * be encoded as U+FFFD, a domain the token does not have); CasCet buyers
+ * refuse it.
+ */
+export function hasLoneSurrogate(value: string): boolean {
+  return LONE_SURROGATE.test(value);
+}
+
 /** Whether `value` is one of {@link AUTHORIZATION_STYLES}. */
 export function isAuthorizationStyle(value: unknown): value is AuthorizationStyle {
   return typeof value === "string" && (AUTHORIZATION_STYLES as readonly string[]).includes(value);

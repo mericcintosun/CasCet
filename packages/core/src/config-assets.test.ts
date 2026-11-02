@@ -9,6 +9,7 @@ import {
   facilitatorFor,
   facilitatorTimeouts,
 } from "./config.js";
+import { hasLoneSurrogate, MAX_TOKEN_NAME_LENGTH, MAX_TOKEN_VERSION_LENGTH } from "./assets.js";
 import { DEFAULT_FACILITATOR_URL, DEFAULT_SELF_HOSTED_FACILITATOR_URL } from "./constants.js";
 
 const LEGACY_TESTNET = "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
@@ -209,6 +210,19 @@ describe("config assets: validation", () => {
     assert.match(issuesOf({ asset: wcsprAsset, facilitator: { authScheme: "basic" } }).join("\n"), /^facilitator\.authScheme: /m);
     assert.match(issuesOf({ asset: wcsprAsset, facilitator: { timeoutMs: 0 } }).join("\n"), /^facilitator\.timeoutMs: /m);
     assert.match(issuesOf({ asset: wcsprAsset, facilitators: { "bad name": { url: DEFAULT_SELF_HOSTED_FACILITATOR_URL } } }).join("\n"), /^facilitators\.bad name: /m);
+  });
+
+  it("refuses an EIP-712 name or version CasCet buyers would refuse: too long, or with a lone surrogate", () => {
+    assert.equal(MAX_TOKEN_NAME_LENGTH, 100);
+    assert.equal(MAX_TOKEN_VERSION_LENGTH, 20);
+    assert.equal(parse({ asset: { ...wcsprAsset, name: "n".repeat(100), version: "v".repeat(20) } }).success, true);
+    assert.equal(parse({ asset: { ...wcsprAsset, name: "Coin \u{1fa99}" } }).success, true, "a surrogate pair is not a lone surrogate");
+    assert.match(issuesOf({ asset: { ...wcsprAsset, name: "n".repeat(101) } }).join("\n"), /^asset\.name: name must be at most 100 characters/m);
+    assert.match(issuesOf({ asset: { ...wcsprAsset, version: "1.0.0-rc.1+build.1234" } }).join("\n"), /^asset\.version: version must be at most 20 characters/m);
+    assert.match(issuesOf({ asset: { ...wcsprAsset, name: "Wrapped \ud800CSPR" } }).join("\n"), /^asset\.name: name contains a lone UTF-16 surrogate/m);
+    assert.match(issuesOf({ assets: [{ ...wcsprAsset, version: "1\udc00" }] }).join("\n"), /^assets\.0\.version: version contains a lone UTF-16 surrogate/m);
+    assert.equal(hasLoneSurrogate("a\ud800"), true);
+    assert.equal(hasLoneSurrogate("\u{1fa99}"), false);
   });
 
   it("names the naming rule for a bad facilitator name, beside the config's other problems", () => {
