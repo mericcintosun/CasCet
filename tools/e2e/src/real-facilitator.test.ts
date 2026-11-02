@@ -937,6 +937,12 @@ describe("startRealFacilitator end to end against a local fake node (no network)
     const noEntryPoint = structuredClone(fx.testnetContractResponse) as unknown as { result: { stored_value: { Contract: { entry_points: unknown[] } } } };
     noEntryPoint.result.stored_value.Contract.entry_points = [];
     const valuePkg = "ea".repeat(32);
+    const namelessPkg = "ec".repeat(32);
+    const namelessContract = "ed".repeat(32);
+    const nameless = structuredClone(fx.wcsprTestnetContractResponse) as unknown as {
+      result: { stored_value: { Contract: { named_keys: Array<{ name: string; key: string }> } } };
+    };
+    nameless.result.stored_value.Contract.named_keys = nameless.result.stored_value.Contract.named_keys.filter(k => k.name !== "name");
     const odd = await startFakeRpcServer(
       nodeRoutes(payerKey, {
         // CasCet's token answering with mainnet's chain_name.
@@ -946,6 +952,9 @@ describe("startRealFacilitator end to end against a local fake node (no network)
         [`query_global_state hash-${otherContract}`]: noEntryPoint,
         // A token CasCet does not know whose ABI takes `value` (Wrapped CSPR's contract).
         [`query_global_state hash-${valuePkg}`]: fx.wcsprTestnetPackageResponse,
+        // A CEP-3009 token without a `name` named key.
+        [`query_global_state hash-${namelessPkg}`]: packagePointingAt(namelessContract),
+        [`query_global_state hash-${namelessContract}`]: nameless,
       }),
     );
     try {
@@ -956,6 +965,14 @@ describe("startRealFacilitator end to end against a local fake node (no network)
         start({ rpcUrl: odd.url, assets: [{ packageHash: valuePkg, authorization: "legacy-amount" }] }),
         /configured as legacy-amount \(`amount`\), but its transfer_with_authorization takes `value` \(cep3009-value\)/,
       );
+      // No on-chain name: only with a pinned one, which every request is then held to.
+      await assert.rejects(start({ rpcUrl: odd.url, assets: [{ packageHash: namelessPkg }] }), /has no on-chain name: pin its EIP-712 domain name/);
+      const pinned = await start({ rpcUrl: odd.url, assets: [{ packageHash: namelessPkg, name: "Wrapped CSPR" }] });
+      try {
+        assert.deepEqual(pinned.assets?.map(a => [a.style, a.name]), [["cep3009-value", "Wrapped CSPR"]]);
+      } finally {
+        await pinned.close();
+      }
     } finally {
       await odd.close();
     }

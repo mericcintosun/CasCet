@@ -658,13 +658,30 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
         },
       };
     }
-    if (chainName !== undefined && chainName !== network) {
+    // The EIP-712 domain must be checkable (fail closed): without an on-chain
+    // chain_name, or without any name (on-chain or pinned), the buyer's own
+    // extra.name would only be checked against itself, and a wrong domain
+    // reverts on-chain and burns the gas limit.
+    if (chainName !== network) {
       return {
         ok: false,
         rejection: {
           status: 200,
           reason: Reason.tokenDomainMismatch,
-          message: `the token's EIP-712 chain_name is "${logText(chainName).slice(0, 40)}", not ${network}`,
+          message:
+            chainName === undefined
+              ? "the token has no on-chain chain_name: the chain its EIP-712 domain signs for cannot be checked"
+              : `the token's EIP-712 chain_name is "${logText(chainName).slice(0, 40)}", not ${network}`,
+        },
+      };
+    }
+    if (name === undefined && policy.name === undefined) {
+      return {
+        ok: false,
+        rejection: {
+          status: 200,
+          reason: Reason.tokenDomainMismatch,
+          message: "the token has no on-chain name and this facilitator pins none: its EIP-712 domain name cannot be checked",
         },
       };
     }

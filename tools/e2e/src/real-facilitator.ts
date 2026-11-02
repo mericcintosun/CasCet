@@ -75,9 +75,11 @@ export const TOKEN_STATE_CACHE_MS = 5 * 60_000;
  *     loses the hash to a 429;
  *   - only settles to allowlisted payees and assets (required on mainnet);
  *   - reads every allowlisted token's ABI, chain_name and name at start-up and
- *     refuses to start when the chain contradicts the configured style or name;
- *     every request reads them again (cached) and refuses payments when the
- *     token's ABI no longer matches its pinned style;
+ *     refuses to start when the chain contradicts the configured style or name,
+ *     or when the token's EIP-712 domain cannot be checked (no chain_name, or a
+ *     name neither on-chain nor pinned); every request reads them again
+ *     (cached) and refuses payments when the token's ABI no longer matches its
+ *     pinned style or its domain can no longer be checked;
  *   - gives every asset its own gas limit (default per style: 4 CSPR for
  *     `legacy-amount`, 3.5 CSPR for `cep3009-value`), never below the style's
  *     measured consumption;

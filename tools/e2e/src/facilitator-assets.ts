@@ -22,9 +22,11 @@ import { AMOUNT_ARGUMENT_BY_STYLE } from "./settlement.js";
  *     pins);
  *  2. {@link resolveAssetPolicies}, with the token probe: read every asset's
  *     `transfer_with_authorization` ABI, `chain_name` and `name`, refuse to
- *     start when the chain contradicts the configuration, and pin the style
- *     and name each asset is settled with from then on. Every request reads
- *     the (cached) ABI again and refuses payments when it changed.
+ *     start when the chain contradicts the configuration or when the token's
+ *     EIP-712 domain cannot be checked (no `chain_name`, or a name neither
+ *     on-chain nor pinned), and pin the style and name each asset is settled
+ *     with from then on. Every request reads the (cached) ABI again and
+ *     refuses payments when it changed.
  */
 
 /** One asset of the facilitator's allowlist, as configured. */
@@ -183,7 +185,7 @@ export interface ResolveOptions {
   /** The token probe; undefined = the preflight is off (the plans must pin style and name). */
   probe?: Pick<TokenProbe, "authorizationStyle" | "tokenName" | "chainName">;
   now?: () => number;
-  /** Notes for the operator (an asset without an on-chain name, …). */
+  /** Notes for the operator (a pinned name trusted for a token without an on-chain one, …). */
   warn?: (message: string) => void;
 }
 
@@ -219,7 +221,14 @@ export async function resolveAssetPolicies(plans: readonly AssetPlan[], opts: Re
             `but its transfer_with_authorization takes \`${AMOUNT_ARGUMENT_BY_STYLE[style]}\` (${style}): every settle would revert`,
         );
       }
-      if (chainName !== undefined && chainName !== opts.network) {
+      // The EIP-712 domain must be checkable on every request (fail closed): a
+      // payment signed for another domain reverts on-chain and burns the gas limit.
+      if (chainName === undefined) {
+        throw new Error(
+          `asset ${short(plan.asset)} has no on-chain chain_name: this facilitator cannot tell which chain its EIP-712 domain signs for`,
+        );
+      }
+      if (chainName !== opts.network) {
         throw new Error(
           `asset ${short(plan.asset)} signs for chain_name "${logText(chainName).slice(0, 40)}", not ${opts.network}: ` +
             "every signature would be refused on-chain",
@@ -228,10 +237,16 @@ export async function resolveAssetPolicies(plans: readonly AssetPlan[], opts: Re
       if (name !== undefined && onChainName !== undefined && name !== onChainName) {
         throw new Error(`asset ${short(plan.asset)}: the pinned EIP-712 name "${name}" is not the token's on-chain name "${logText(onChainName)}"`);
       }
-      name ??= onChainName;
-      if (name === undefined) {
-        opts.warn?.(`asset ${short(plan.asset)} has no on-chain name: only the buyer's signature binds its EIP-712 domain name`);
+      if (onChainName === undefined) {
+        if (name === undefined) {
+          throw new Error(
+            `asset ${short(plan.asset)} has no on-chain name: pin its EIP-712 domain name ` +
+              "(assets[].name, or CASCET_ASSET_NAMES / CASCET_TOKEN_NAME), or every buyer-chosen name would be accepted",
+          );
+        }
+        opts.warn?.(`asset ${short(plan.asset)} has no on-chain name: the pinned name "${name}" is its EIP-712 domain name`);
       }
+      name ??= onChainName;
     } else {
       // planAssets made sure both are pinned when nothing reads the chain.
       if (plan.expectedStyle === undefined || plan.name === undefined) {

@@ -169,19 +169,35 @@ describe("resolving assets against the chain (recorded testnet answers)", () => 
     );
   });
 
-  test("a token without a name named key keeps no name pin, and the operator is told", async () => {
+  /** Wrapped CSPR's recorded contract without the named key `without`. */
+  function wcsprWithout(without: string) {
     const contract = structuredClone(fx.wcsprTestnetContractResponse) as unknown as {
       result: { stored_value: { Contract: { named_keys: Array<{ name: string; key: string }> } } };
     };
-    contract.result.stored_value.Contract.named_keys = contract.result.stored_value.Contract.named_keys.filter(k => k.name !== "name");
+    contract.result.stored_value.Contract.named_keys = contract.result.stored_value.Contract.named_keys.filter(k => k.name !== without);
+    return recordedProbe({ [`query_global_state hash-${WCSPR_CONTRACT}`]: contract });
+  }
+
+  test("a token without an on-chain name starts only with a pinned name (fail closed), and the operator is told", async () => {
+    await assert.rejects(
+      resolveAssetPolicies(plansOf({ packageHash: WCSPR }), { network: NETWORK, probe: wcsprWithout("name") }),
+      /asset 3d80df21… has no on-chain name: pin its EIP-712 domain name/,
+    );
     const warnings: string[] = [];
-    const [policy] = await resolveAssetPolicies(plansOf({ packageHash: WCSPR }), {
+    const [policy] = await resolveAssetPolicies(plansOf({ packageHash: WCSPR, name: "Wrapped CSPR" }), {
       network: NETWORK,
-      probe: recordedProbe({ [`query_global_state hash-${WCSPR_CONTRACT}`]: contract }),
+      probe: wcsprWithout("name"),
       warn: m => warnings.push(m),
     });
-    assert.equal(policy?.name, undefined);
-    assert.ok(warnings.some(w => w.includes("no on-chain name")));
+    assert.equal(policy?.name, "Wrapped CSPR", "every request is held to the pinned name");
+    assert.ok(warnings.some(w => w.includes('no on-chain name: the pinned name "Wrapped CSPR"')));
+  });
+
+  test("a token without an on-chain chain_name is refused: the chain its domain signs for cannot be checked", async () => {
+    await assert.rejects(
+      resolveAssetPolicies(plansOf({ packageHash: WCSPR, name: "Wrapped CSPR" }), { network: NETWORK, probe: wcsprWithout("chain_name") }),
+      /asset 3d80df21… has no on-chain chain_name/,
+    );
   });
 
   test("without the preflight, the pinned style and name are used as they are", async () => {

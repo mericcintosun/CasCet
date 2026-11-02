@@ -95,8 +95,10 @@ function parsed(over: BodyOverrides = {}): ParsedPayment {
 
 interface TokenState {
   style: AuthorizationStyle;
-  name: string;
-  chainName: string;
+  /** On-chain `name`; undefined = the token has no such named key. */
+  name?: string;
+  /** On-chain `chain_name`; undefined = the token has no such named key. */
+  chainName?: string;
   /** Thrown by authorizationStyle (e.g. TokenUnsupportedError). */
   abiError?: Error;
 }
@@ -438,6 +440,34 @@ describe("authorization styles", () => {
     const r = await h.core.verify(parsed());
     assert.deepEqual([r.status, r.body.invalidReason], [200, Reason.tokenDomainMismatch]);
     assert.match(r.body.invalidMessage ?? "", /chain_name/);
+  });
+
+  test("an EIP-712 domain the facilitator cannot check is refused (fail closed), at /verify and /settle", async () => {
+    // A token (upgraded after start-up) without a chain_name named key.
+    const noChain = harness();
+    delete noChain.state.tokens[ASSET]!.chainName;
+    const v = await noChain.core.verify(parsed());
+    assert.deepEqual([v.status, v.body.invalidReason], [200, Reason.tokenDomainMismatch]);
+    assert.match(v.body.invalidMessage ?? "", /no on-chain chain_name/);
+    const s = await noChain.core.settle(parsed());
+    assert.deepEqual([s.status, s.body.errorReason, s.body.transaction], [200, Reason.tokenDomainMismatch, ""]);
+    assert.deepEqual([noChain.chain.builds.length, noChain.ledger.size], [0, 0]);
+
+    // Without an asset allowlist (testnet), a token without an on-chain name and no pinned name.
+    const open = harness({ config: { assets: undefined, anyAsset: { version: "1" } } });
+    const other = "dd".repeat(32);
+    open.state.tokens[other] = { style: "cep3009-value", chainName: NETWORK };
+    const unnamed = await open.core.settle(parsed({ asset: other, extra: { name: "Anything the buyer chose", version: "1" } }));
+    assert.deepEqual([unnamed.status, unnamed.body.errorReason], [200, Reason.tokenDomainMismatch]);
+    assert.match(unnamed.body.errorMessage ?? "", /no on-chain name and this facilitator pins none/);
+    assert.equal(open.chain.builds.length, 0);
+
+    // A pinned name binds the domain of a token without an on-chain name.
+    const pinned = harness({ config: { assets: undefined, anyAsset: { name: "Pinned", version: "1" } } });
+    pinned.state.tokens[other] = { style: "cep3009-value", chainName: NETWORK };
+    assert.equal((await pinned.core.settle(parsed({ asset: other, extra: { name: "Pinned", version: "1" } }))).body.success, true);
+    const wrong = await pinned.core.settle(parsed({ asset: other, nonce: "02".repeat(32), extra: { name: "Other", version: "1" } }));
+    assert.equal(wrong.body.errorReason, Reason.tokenDomainMismatch);
   });
 
   test("the authorizationStyle the requirements advertise is informational: logged, never trusted", async () => {
