@@ -225,9 +225,10 @@ it they stay empty.
 The demos in `tools/e2e` (`demo`, `demo-real`, `demo-real-wcspr`, `agent`,
 `connect-demo`) sign with the CasCet operator's keys in `contracts/keys/` by
 default, which are not part of the repository, so they run on a maintainer's
-machine. `demo-real-mainnet` does not read `contracts/keys/`: it takes each
-role's key from its own environment variable and settles a real payment on
-mainnet (see [`docs/mainnet-readiness.md`](docs/mainnet-readiness.md)). These
+machine. `demo-real-mainnet` does not read `contracts/keys/`: it takes the
+fee-payer and recorder keys from `CASCET_FACILITATOR_KEY` and
+`CASCET_RECORDER_KEY`, pays from `tools/e2e/keys/agent.pem`, and settles a real
+payment on mainnet (see [`docs/mainnet-readiness.md`](docs/mainnet-readiness.md)). These
 demos produced the transactions linked in this README. `fund-token` and
 `wrap-wcspr` also default to the operator key, but sign with your own testnet
 key when you pass `--key /absolute/path/to/key.pem`: that is how a buyer wraps
@@ -281,6 +282,11 @@ Then edit `cascet.config.json`:
 - `facilitator.url`: the facilitator that verifies and settles payments, and
   `facilitator.apiKey` the credential it expects (for the hosted facilitator,
   your CSPR.cloud access key, sent raw).
+- `settlement.nodeUrl`: a Casper node, which you need with the hosted
+  facilitator. The gateway reads it before each payment, because the hosted
+  facilitator's own nonce check does not work and it does not count a payer's
+  payments in flight. Without a node those payments pass its verify, the
+  run-then-settle tools run, and the settles revert unpaid.
 - `pricing.tools`: a price per tool. Add `"settleBeforeExecute": true` to tools
   that are expensive, have side effects, or buy from other paid tools
   (cascades): they then run only after the payment has settled on-chain. The
@@ -361,6 +367,10 @@ limit. So:
   `Authorization` header, with no `Bearer ` prefix. Put it in
   `facilitator.apiKey`; `facilitator.authScheme` is `"raw"` by default, and
   `"bearer"` is refused for the hosted facilitator. Its `/supported` needs no key.
+- Give a gateway that uses the hosted facilitator a `settlement.nodeUrl`. Without
+  a node it only warns at start-up and skips its own checks (unused nonce, token
+  style and name, the payer's balance once payments in flight are counted), so
+  an unfunded payment runs its tool and its settle reverts.
 - **The hosted facilitator's testnet fee payer is underfunded.** On 2026-11-01
   it held 2.145 CSPR, less than the 2.5 CSPR one settle needs (Casper's minimum
   balance for the account that submits a transaction, and the hosted

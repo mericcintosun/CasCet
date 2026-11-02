@@ -112,9 +112,12 @@ Expected:
 
 ## Option D — Maintainer demos (need the CasCet operator keys)
 
-These scripts sign with the operator keys in `contracts/keys/`, which are not in
-the repository, so they only run on a maintainer's machine. They produced the
-transactions linked in the README and in [`buidl-page.md`](buidl-page.md).
+These demos sign with the operator keys in `contracts/keys/` by default, which
+are not in the repository, so they run on a maintainer's machine. Two exceptions:
+`demo-real-mainnet` reads its fee-payer and recorder keys from the environment
+instead, and `wrap-wcspr` and `fund-token` sign with your own testnet key when you
+pass `--key`. They produced the transactions linked in the README and in
+[`buidl-page.md`](buidl-page.md).
 
 ### Full cascade, real settlement on testnet
 
@@ -323,6 +326,7 @@ npx "@cascet/cli@^0.1.1" init                                 # writes cascet.co
 npx "@cascet/cli@^0.1.1" account-hash <your-public-key-hex>   # your payTo ("00" + account hash)
 # edit cascet.config.json: upstream, payTo, asset, facilitator.url, prices,
 # pricing.freeTools and settleBeforeExecute where needed
+# (with the hosted facilitator, also settlement.nodeUrl: see the README)
 npx "@cascet/cli@^0.1.1" wrap                                 # your MCP server is now paid
 ```
 

@@ -151,8 +151,8 @@ needed: the hosted facilitator pays the gas.
   the one signed, or that the payer's balance does not cover once the payer's
   other payments in flight are counted. The hosted facilitator's own nonce
   check does not work and it does not count payments in flight, so without a
-  node those payments pass its verify, the tools run, and their settles revert:
-  the seller is not paid and the hosted fee payer loses the gas. A node that
+  node those payments pass its verify, the run-then-settle tools run, and their
+  settles revert: the seller is not paid and the hosted fee payer loses the gas. A node that
   cannot be read within 5 s gets the payment refused (`preflight_unavailable`;
   nothing is charged). See
   [The hosted facilitator](../../packages/gateway/README.md#the-hosted-facilitator).

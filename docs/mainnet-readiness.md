@@ -264,8 +264,8 @@ never reaches the gateway.
   retry of a payment that was still pending follows its transaction, as it would
   without the restart; any other settle of a listed authorization is a duplicate
   carrying the hash. A verify of one is refused as `duplicate_nonce` without the
-  hash (or, close to its `validBefore`, as `authorization_expires_too_soon`):
-  only a settle hands the hash back. Nothing is submitted for it again. A file
+  hash (or, within 20 s of its `validBefore`, as `authorization_expires_too_soon`,
+  and after it as `authorization_expired`): only a settle hands the hash back. Nothing is submitted for it again. A file
   that is not valid JSON, not this format or version, written for the other
   network, or unreadable stops the start-up: it may hold transactions that can
   still execute.

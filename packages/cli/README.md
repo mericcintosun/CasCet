@@ -57,6 +57,12 @@ own x402 token, or any asset marked `"authorization": "legacy-amount"`) is
 refused, and `cascet wrap` exits with that error. With any other token that is
 not known to be CEP-3009, `cascet wrap` only warns.
 
+With the hosted facilitator, also set `settlement.nodeUrl` to a Casper node. The
+gateway then checks each payment on-chain before the facilitator verifies it:
+unused nonce, token style and name, and the payer's balance once payments in
+flight are counted. Without a node it only warns at start-up, and an unfunded
+payment runs its tool while its settle reverts.
+
 ### `cascet account-hash <public-key>`
 Prints the `payTo` value (`"00"` + account hash) for an ed25519 (`01…`) or secp256k1
 (`02…`) public key. Only the value goes to stdout, so it can be captured in a script.
