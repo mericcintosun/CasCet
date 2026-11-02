@@ -1,4 +1,5 @@
 import casperSdk from "casper-js-sdk";
+import { isAuthorizationStyle, type AuthorizationStyle } from "@cascet/core";
 import { isNoSuchTransaction, RpcNodeError, type CasperRpc } from "@cascet/gateway";
 
 const { Args, CLValue, CLTypeUInt8, ContractCallBuilder, Key, PublicKey, Timestamp, TransactionWrapper } = casperSdk;
@@ -6,12 +7,21 @@ type PrivateKeyT = InstanceType<typeof casperSdk.PrivateKey>;
 
 /**
  * Building, submitting and following the `transfer_with_authorization`
- * settlement transaction (M22).
+ * settlement transaction (M22): the one settlement path of the self-hosted
+ * facilitator, for both authorization styles.
  *
- * The transaction is built exactly like @make-software/casper-x402 1.0.0 builds
- * it (same entry point, same `amount` argument name the CasCet token expects,
- * same CLTypes); a unit test rebuilds settled testnet tx 04e54a95… byte for
- * byte. What changes is everything around it:
+ * Both styles take the same arguments with the same CLTypes; only the name of
+ * the U256 amount differs (see {@link AMOUNT_ARGUMENT_BY_STYLE}):
+ *  - `legacy-amount` (CasCet's x402 token): `amount`, exactly as
+ *    @make-software/casper-x402 1.0.0 builds it; a unit test rebuilds settled
+ *    testnet tx 04e54a95… byte for byte;
+ *  - `cep3009-value` (the official Wrapped CSPR and other CEP-3009 tokens):
+ *    `value`, exactly as @x402/casper 2.29 (the hosted facilitator) builds it;
+ *    a unit test rebuilds the hosted facilitator's testnet tx 9fe35eed… byte
+ *    for byte.
+ * The facilitator core takes the style from the token's on-chain ABI: the
+ * wrong name reverts on-chain (Odra `MissingArg`, User error 64658) and burns
+ * the whole gas limit. What changes around the transaction:
  *  - submission failures are classified: a JSON-RPC error means the node
  *    rejected the transaction (nothing was submitted); a transport failure
  *    means it may or may not have been accepted (outcome unknown);
@@ -57,18 +67,28 @@ export type ExecutionOutcome =
   | { kind: "failure"; errorMessage: string; costMotes?: bigint; blockHeight?: number }
   | { kind: "pending"; seen: boolean; lastError?: string };
 
+/** How one settlement transaction is built. */
+export interface SettlementSettings {
+  /** The token's authorization style (read from its on-chain ABI): the amount argument's name. */
+  style: AuthorizationStyle;
+  /** Gas limit (motes) of the transaction: the asset's own limit. */
+  paymentMotes: bigint;
+  /**
+   * This transaction's TTL: the core caps it so the transaction expires before
+   * the authorization does; it is capped again at the chain maximum
+   * ({@link SettlementChain.txTtlMs}) and rounded down to whole seconds.
+   */
+  ttlMs: number;
+}
+
 /** The chain operations the facilitator core needs (a fake implements this in tests). */
 export interface SettlementChain {
   readonly feePayerAccountHash: string;
   readonly feePayerPublicKey: string;
   /** Maximum TTL of a settlement transaction (how long it may still be included). */
   readonly txTtlMs: number;
-  /**
-   * Build and sign a settlement. `ttlMs` is this transaction's TTL: the core
-   * caps it so the transaction expires before the authorization does; it is
-   * capped again at {@link txTtlMs} and rounded down to whole seconds.
-   */
-  build(input: SettlementInput, paymentMotes: bigint, ttlMs: number): BuiltTransaction;
+  /** Build and sign a settlement. */
+  build(input: SettlementInput, settings: SettlementSettings): BuiltTransaction;
   submit(tx: BuiltTransaction): Promise<SubmitOutcome>;
   waitForExecution(hash: string, deadlineMs: number): Promise<ExecutionOutcome>;
 }
@@ -76,13 +96,32 @@ export interface SettlementChain {
 const hexToBytes = (hex: string): Uint8Array => Uint8Array.from(Buffer.from(hex, "hex"));
 const u8List = (bytes: Uint8Array) => CLValue.newCLList(CLTypeUInt8, Array.from(bytes).map(b => CLValue.newCLUint8(b)));
 
-/** Runtime args of `transfer_with_authorization`, identical to casper-x402 1.0.0. */
-export function transferWithAuthorizationArgs(input: SettlementInput) {
+/**
+ * Name of the U256 amount argument of `transfer_with_authorization` per
+ * authorization style. Everything else about the call is identical.
+ */
+export const AMOUNT_ARGUMENT_BY_STYLE: Readonly<Record<AuthorizationStyle, "amount" | "value">> = Object.freeze({
+  "legacy-amount": "amount",
+  "cep3009-value": "value",
+});
+
+/** The amount argument's name for `style`; throws for anything that is not a known style. */
+export function amountArgumentName(style: AuthorizationStyle): "amount" | "value" {
+  if (!isAuthorizationStyle(style)) throw new Error(`unknown authorization style: ${String(style).slice(0, 40)}`);
+  return AMOUNT_ARGUMENT_BY_STYLE[style];
+}
+
+/**
+ * Runtime args of `transfer_with_authorization` in `style`: identical to
+ * casper-x402 1.0.0 for `legacy-amount` and to @x402/casper 2.29 for
+ * `cep3009-value` (same order, same CLTypes; only the amount's name differs).
+ */
+export function transferWithAuthorizationArgs(input: SettlementInput, style: AuthorizationStyle) {
+  const amountArgument = amountArgumentName(style);
   return Args.fromMap({
     from: CLValue.newCLKey(Key.newKey(`account-hash-${input.from.slice(2).toLowerCase()}`)),
     to: CLValue.newCLKey(Key.newKey(`account-hash-${input.to.slice(2).toLowerCase()}`)),
-    // The CasCet token is the pre-CEP-3009-rename build: the argument is `amount`, not `value`.
-    amount: CLValue.newCLUInt256(input.value.toString()),
+    [amountArgument]: CLValue.newCLUInt256(input.value.toString()),
     valid_after: CLValue.newCLUint64(input.validAfter),
     valid_before: CLValue.newCLUint64(input.validBefore),
     nonce: u8List(hexToBytes(input.nonce)),
@@ -94,6 +133,8 @@ export function transferWithAuthorizationArgs(input: SettlementInput) {
 export interface BuildOptions {
   feePayerPublicKey: string;
   chainName: string;
+  /** The token's authorization style: decides the amount argument's name. */
+  style: AuthorizationStyle;
   paymentMotes: bigint;
   ttlMs: number;
   /** Fixed timestamp (tests); defaults to now. */
@@ -106,7 +147,7 @@ export function buildSettlementTransaction(input: SettlementInput, opts: BuildOp
     .from(PublicKey.fromHex(opts.feePayerPublicKey))
     .byPackageHash(input.asset)
     .entryPoint("transfer_with_authorization")
-    .runtimeArgs(transferWithAuthorizationArgs(input))
+    .runtimeArgs(transferWithAuthorizationArgs(input, opts.style))
     .chainName(opts.chainName)
     .payment(Number(opts.paymentMotes))
     .ttl(opts.ttlMs);
@@ -198,11 +239,14 @@ export function createCasperSettlementChain(opts: CasperSettlementChainOptions):
     feePayerPublicKey,
     txTtlMs: ttlMs,
 
-    build(input, paymentMotes, requestedTtlMs) {
+    build(input, { style, paymentMotes, ttlMs: requestedTtlMs }) {
       // Whole seconds: the node parses the TTL as a duration string ("4m 57s").
       const txTtl = Math.floor(Math.min(requestedTtlMs, ttlMs) / 1000) * 1000;
       if (!(txTtl >= 1000)) throw new Error(`settlement TTL must be at least 1 s, got ${requestedTtlMs} ms`);
-      const tx = buildSettlementTransaction(input, { feePayerPublicKey, chainName: opts.chainName, paymentMotes, ttlMs: txTtl });
+      if (paymentMotes <= 0n || paymentMotes > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error(`settlement gas limit out of range: ${paymentMotes} motes`);
+      }
+      const tx = buildSettlementTransaction(input, { feePayerPublicKey, chainName: opts.chainName, style, paymentMotes, ttlMs: txTtl });
       tx.sign(opts.privateKey);
       return { hash: tx.hash.toHex(), json: TransactionWrapper.toJSON(tx.getTransactionWrapper()) };
     },

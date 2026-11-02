@@ -40,7 +40,7 @@ describe("in-flight nonce ledger (M09)", () => {
     assert.deepEqual(l.markVerified(id("bb"), 5n, validBefore), { ok: true });
   });
 
-  test("verify → settle proceeds once; every later attempt is a 409 duplicate", () => {
+  test("verify → settle proceeds once; every later attempt is a duplicate", () => {
     const clock = new FakeClock(T0);
     const l = ledger(clock);
     const vb = sec(T0) + 300;
@@ -159,5 +159,59 @@ describe("in-flight nonce ledger (M09)", () => {
     clock.advance(180_001); // "01" (verified) expires; sweep makes room
     assert.equal(l.markVerified(id("03"), 1n, vb).ok, true);
     assert.equal(l.size, 2);
+  });
+});
+
+describe("pending-settlement store (a settle retry never broadcasts twice)", () => {
+  const TX = "f0".repeat(32);
+  const FINGERPRINT = "aa".repeat(32);
+  const charge = { id: 7, day: "2026-11-01", motes: 4_000_000_000n };
+
+  function submitted(clock: FakeClock) {
+    const l = ledger(clock);
+    const vb = sec(T0) + 300;
+    assert.equal(l.beginSettle(id(), 5n, vb).ok, true);
+    l.markSubmitted(id(), TX, T0 + 298_000);
+    return l;
+  }
+
+  test("only a transaction whose settle answered pending/unknown can be followed, and only by the same payment", () => {
+    const clock = new FakeClock(T0);
+    const l = submitted(clock);
+    // Still being waited on by the request that submitted it: not followable.
+    assert.equal(l.followUnresolved(id(), FINGERPRINT), undefined);
+    l.markUnresolved(id(), TX, { status: "pending", fingerprint: FINGERPRINT, style: "cep3009-value", gas: charge });
+    assert.equal(l.followUnresolved(id(), "bb".repeat(32)), undefined, "another payment for the same nonce");
+    assert.equal(l.followUnresolved(id("bb"), FINGERPRINT), undefined, "another authorization");
+    assert.deepEqual(l.followUnresolved(id(), FINGERPRINT), {
+      txHash: TX,
+      unresolved: { status: "pending", fingerprint: FINGERPRINT, style: "cep3009-value", gas: charge },
+    });
+    // One follower at a time; the others are duplicates.
+    assert.equal(l.followUnresolved(id(), FINGERPRINT), undefined);
+    assert.deepEqual(l.beginSettle(id(), 5n, sec(T0) + 300), { ok: false, reason: "duplicate", state: "submitted", txHash: TX });
+    l.stopFollowing(id(), "unknown");
+    assert.equal(l.followUnresolved(id(), FINGERPRINT)?.unresolved.status, "unknown", "followable again");
+  });
+
+  test("a final outcome ends it: settled and failed transactions are duplicates, never followed", () => {
+    const clock = new FakeClock(T0);
+    for (const finish of ["markSettled", "markFailed"] as const) {
+      const l = submitted(clock);
+      l.markUnresolved(id(), TX, { status: "pending", fingerprint: FINGERPRINT, style: "legacy-amount" });
+      l[finish](id(), TX);
+      assert.equal(l.peek(id())?.unresolved, undefined);
+      assert.equal(l.followUnresolved(id(), FINGERPRINT), undefined);
+    }
+  });
+
+  test("it only records the transaction this authorization submitted, and expires with the entry", () => {
+    const clock = new FakeClock(T0);
+    const l = submitted(clock);
+    l.markUnresolved(id(), "f1".repeat(32), { status: "pending", fingerprint: FINGERPRINT, style: "legacy-amount" });
+    assert.equal(l.peek(id())?.unresolved, undefined, "another hash");
+    l.markUnresolved(id(), TX, { status: "pending", fingerprint: FINGERPRINT, style: "legacy-amount" });
+    clock.advance(300_000 + 60_001); // validBefore + grace
+    assert.equal(l.followUnresolved(id(), FINGERPRINT), undefined);
   });
 });

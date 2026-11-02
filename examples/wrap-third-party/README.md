@@ -125,8 +125,9 @@ The hosted CSPR.cloud facilitator only settles CEP-3009 tokens whose
 `transfer_with_authorization` takes a `value` argument (for example the
 official Wrapped CSPR). CasCet's x402 tokens, on testnet and on mainnet, are the
 earlier reference build that takes `amount`, so the hosted facilitator cannot
-settle them. The self-hosted facilitator in `tools/e2e` is built on
-`@make-software/casper-x402` 1.0.0, which sends `amount`. Background and
+settle them. The self-hosted facilitator in `tools/e2e` builds its own
+settlement in each token's style, `amount` for these tokens and `value` for
+CEP-3009 tokens, and still settles to account hashes only. Background and
 transaction evidence: [`docs/onchain.md`](../../docs/onchain.md#why-cascet-runs-its-own-x402-facilitator).
 
 The upstream server is unmodified: CasCet adds the paywall, receipts and

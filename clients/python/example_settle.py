@@ -585,7 +585,8 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
         print(f"\n❌ facilitator answered HTTP {resp.status_code} with a non-JSON body: {resp.text[:300]!r}")
         return EXIT_FAILED
     if resp.status_code != 200:
-        # Policy rejections (401 auth, 403 allowlist, 429 rate limit, 503 gas cap) carry {"error": ...}.
+        # Refusals before any verdict (401 auth, 429 rate limit, 503 gas cap/unavailable) carry "errorReason";
+        # allowlist and duplicate verdicts come back as HTTP 200 with success: false (handled below).
         reason = data.get("error") or data.get("errorReason") or "unknown error"
         print(f"\n❌ facilitator refused the settle (HTTP {resp.status_code}): {shown(reason)}")
         return EXIT_FAILED

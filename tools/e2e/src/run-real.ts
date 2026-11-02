@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { cascetConfigSchema, type CascetConfig } from "@cascet/core";
 import { startGateway } from "@cascet/gateway";
 import { createPayingFetch, PaidMcpHttpClient } from "@cascet/client";
-import { NETWORKS, readFacilitatorEnv } from "./facilitator-env.js";
+import { facilitatorOptionsFromEnv, NETWORKS, readFacilitatorEnv } from "./facilitator-env.js";
 import { checkRecorderSeparation } from "./facilitator-roles.js";
 import { accountHashOfKeyFile } from "./key-file.js";
 import { startRealFacilitator } from "./real-facilitator.js";
@@ -15,7 +15,8 @@ import { startRealFacilitator } from "./real-facilitator.js";
  *    the CasCet deployer key. The hosted CSPR.cloud facilitator now sends the
  *    CEP-3009 settle arg `value`, while this (earlier reference) token expects
  *    `amount`, so a hosted settle reverts `User error: 64658` (Odra MissingArg);
- *    the self-hosted facilitator (npm SDK 1.0.0) sends `amount` and settles.
+ *    the self-hosted facilitator builds its own settlement in each token's
+ *    style (`amount` here) and settles.
  *  - the real CEP-18 x402 token deployed by CasCet (supports
  *    transfer_with_authorization), package hash below,
  *  - the demo agent, which already holds a balance of that token on-chain.
@@ -60,24 +61,10 @@ const SELLER_DATA_ACCOUNT_HASH = fac.allowedPayTo[0]!;
 
 // Self-hosted facilitator: fee-sponsored by CASCET_FACILITATOR_KEY (funded with CSPR).
 // Allowlist the seller + token so it refuses to fee-sponsor any other settle.
-const facilitator = await startRealFacilitator({
-  port: fac.port,
-  network: "casper:casper-test",
-  keyPath: fac.keyPath,
-  keyAlgo: fac.keyAlgo,
-  rpcUrl: fac.rpcUrl,
-  ...(fac.authToken ? { authToken: fac.authToken } : {}),
-  allowedPayTo: fac.allowedPayTo,
-  allowedAssets: fac.allowedAssets,
-  ownerAccountHashes: fac.ownerAccountHashes,
-  paymentMotes: fac.paymentMotes,
-  dailyGasCapMotes: fac.dailyGasCapMotes,
-  settleWaitMs: fac.settleWaitMs,
-  preflight: fac.preflight,
-  preflightDeadlineMs: fac.preflightDeadlineMs,
-  tokenVersion: fac.tokenVersion,
-  ...(fac.tokenName ? { tokenName: fac.tokenName } : {}),
-});
+// Every environment setting reaches it, per asset too: declared style, pinned
+// name and version, gas limit (CASCET_ASSET_STYLES, CASCET_ASSET_NAMES,
+// CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET).
+const facilitator = await startRealFacilitator(facilitatorOptionsFromEnv(fac));
 
 const dataConfig: CascetConfig = cascetConfigSchema.parse({
   name: "casper-defi-data",

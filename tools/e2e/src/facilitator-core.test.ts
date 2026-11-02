@@ -1,32 +1,57 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { VerifyResponse } from "@x402/core/types";
-import { TokenStateError } from "@cascet/gateway";
+import type { AuthorizationStyle } from "@cascet/core";
+import { TokenStateError, TokenUnsupportedError } from "@cascet/gateway";
 import { AuthorizationLedger } from "./authorization-ledger.js";
 import {
+  assetPolicyFor,
   createFacilitatorCore,
+  knownAuthorizationStyle,
   normalizeAsset,
   normalizePayTo,
   parsePaymentRequest,
+  paymentFingerprint,
   Reason,
+  type AssetPolicy,
   type FacilitatorCoreConfig,
   type ParsedPayment,
 } from "./facilitator-core.js";
 import { DailyGasBudget } from "./gas-budget.js";
-import type { ExecutionOutcome, SettlementChain, SubmitOutcome } from "./settlement.js";
+import type { ExecutionOutcome, SettlementChain, SettlementSettings, SubmitOutcome } from "./settlement.js";
 import { FakeClock } from "./test-helpers.js";
 
 const NETWORK = "casper:casper-test" as const;
+/** CasCet X402 Token on testnet (legacy-amount). */
 const ASSET = "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
+/** Official Wrapped CSPR on testnet (cep3009-value). */
+const WCSPR = "3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e";
 const SELLER = `00${"88".repeat(32)}`;
 const PAYER = `00${"65".repeat(32)}`;
 const T0 = Date.UTC(2026, 10, 1, 12, 0, 0);
 const CSPR = 1_000_000_000n;
 
-function body(over: { nonce?: string; value?: string; from?: string; payTo?: string; asset?: string; validBefore?: number; publicKey?: string; signature?: string; extra?: Record<string, unknown> } = {}) {
+const LEGACY_POLICY: AssetPolicy = { asset: ASSET, style: "legacy-amount", name: "CasCet X402 Token", version: "1", paymentMotes: 4n * CSPR };
+const WCSPR_POLICY: AssetPolicy = { asset: WCSPR, style: "cep3009-value", name: "Wrapped CSPR", version: "1", paymentMotes: 3_500_000_000n };
+
+type BodyOverrides = {
+  nonce?: string;
+  value?: string;
+  from?: string;
+  payTo?: string;
+  asset?: string;
+  validAfter?: number;
+  validBefore?: number;
+  publicKey?: string;
+  signature?: string;
+  extra?: Record<string, unknown>;
+};
+
+function body(over: BodyOverrides = {}) {
   const now = Math.floor(T0 / 1000);
   const payTo = over.payTo ?? SELLER;
   const value = over.value ?? "500000000";
+  const asset = over.asset ?? ASSET;
   return {
     x402Version: 2,
     paymentPayload: {
@@ -39,7 +64,7 @@ function body(over: { nonce?: string; value?: string; from?: string; payTo?: str
           from: over.from ?? PAYER,
           to: payTo,
           value,
-          validAfter: String(now - 600),
+          validAfter: String(over.validAfter ?? now - 600),
           validBefore: String(over.validBefore ?? now + 300),
           nonce: over.nonce ?? "9c".repeat(32),
         },
@@ -48,19 +73,34 @@ function body(over: { nonce?: string; value?: string; from?: string; payTo?: str
     paymentRequirements: {
       scheme: "exact",
       network: NETWORK,
-      asset: over.asset ?? ASSET,
+      asset,
       amount: value,
       payTo,
       maxTimeoutSeconds: 300,
-      extra: over.extra ?? { name: "CasCet X402 Token", version: "1", symbol: "WCSPR", decimals: "9" },
+      extra: over.extra ?? {
+        name: asset === WCSPR ? "Wrapped CSPR" : "CasCet X402 Token",
+        version: "1",
+        symbol: asset === WCSPR ? "WCSPR" : "CCX",
+        decimals: "9",
+      },
     },
   };
 }
 
-function parsed(over: Parameters<typeof body>[0] = {}): ParsedPayment {
+function parsed(over: BodyOverrides = {}): ParsedPayment {
   const p = parsePaymentRequest(body(over), NETWORK);
   assert.ok(p.ok, "fixture must parse");
   return p.value;
+}
+
+interface TokenState {
+  style: AuthorizationStyle;
+  /** On-chain `name`; undefined = the token has no such named key. */
+  name?: string;
+  /** On-chain `chain_name`; undefined = the token has no such named key. */
+  chainName?: string;
+  /** Thrown by authorizationStyle (e.g. TokenUnsupportedError). */
+  abiError?: Error;
 }
 
 interface Harness {
@@ -68,30 +108,48 @@ interface Harness {
   clock: FakeClock;
   ledger: AuthorizationLedger;
   gas: DailyGasBudget;
-  chain: SettlementChain & { submits: number; builds: number; ttls: number[] };
+  chain: SettlementChain & { submits: number; builds: SettlementSettings[]; ttls: number[]; waits: string[] };
   signatureChecks: { count: number };
   /** `readDelayMs`: how far each nonce read moves the clock (a slow node). */
-  state: { balance: bigint; used: Set<string>; name: string; fail?: boolean; readDelayMs: number; deadlines: Array<number | undefined> };
+  state: {
+    balance: bigint;
+    used: Set<string>;
+    tokens: Record<string, TokenState>;
+    fail?: boolean;
+    readDelayMs: number;
+    deadlines: Array<number | undefined>;
+  };
   logs: string[];
 }
 
-function harness(opts: {
-  config?: Partial<FacilitatorCoreConfig>;
-  submit?: () => SubmitOutcome | Promise<SubmitOutcome>;
-  outcome?: () => ExecutionOutcome | Promise<ExecutionOutcome>;
-  verifySignature?: () => VerifyResponse;
-  preflight?: boolean;
-} = {}): Harness {
+function harness(
+  opts: {
+    config?: Partial<FacilitatorCoreConfig>;
+    submit?: () => SubmitOutcome | Promise<SubmitOutcome>;
+    outcome?: () => ExecutionOutcome | Promise<ExecutionOutcome>;
+    verifySignature?: () => VerifyResponse;
+    preflight?: boolean;
+    capMotes?: bigint;
+  } = {},
+): Harness {
   const clock = new FakeClock(T0);
   const ledger = new AuthorizationLedger({ now: clock.now });
-  const gas = new DailyGasBudget({ capMotes: 12n * CSPR, now: clock.now });
-  const state = {
+  const gas = new DailyGasBudget({ capMotes: opts.capMotes ?? 12n * CSPR, now: clock.now });
+  const state: Harness["state"] = {
     balance: 10n * CSPR,
     used: new Set<string>(),
-    name: "CasCet X402 Token" as string,
+    tokens: {
+      [ASSET]: { style: "legacy-amount", name: "CasCet X402 Token", chainName: NETWORK },
+      [WCSPR]: { style: "cep3009-value", name: "Wrapped CSPR", chainName: NETWORK },
+    },
     fail: false,
     readDelayMs: 0,
-    deadlines: [] as Array<number | undefined>,
+    deadlines: [],
+  };
+  const token = (asset: string): TokenState => {
+    const t = state.tokens[asset];
+    if (!t) throw new TokenUnsupportedError("token package: value was not found");
+    return t;
   };
   const signatureChecks = { count: 0 };
   const logs: string[] = [];
@@ -101,11 +159,12 @@ function harness(opts: {
     feePayerPublicKey: `01${"fe".repeat(32)}`,
     txTtlMs: 600_000,
     submits: 0,
-    builds: 0,
+    builds: [] as SettlementSettings[],
     ttls: [] as number[],
-    build(_input: unknown, _paymentMotes: bigint, ttlMs: number) {
-      chain.builds++;
-      chain.ttls.push(ttlMs);
+    waits: [] as string[],
+    build(_input: unknown, settings: SettlementSettings) {
+      chain.builds.push(settings);
+      chain.ttls.push(settings.ttlMs);
       txCounter++;
       return { hash: txCounter.toString(16).padStart(64, "0"), json: {} };
     },
@@ -113,7 +172,8 @@ function harness(opts: {
       chain.submits++;
       return opts.submit ? opts.submit() : ({ kind: "accepted", hash: tx.hash } as SubmitOutcome);
     },
-    async waitForExecution() {
+    async waitForExecution(hash: string) {
+      chain.waits.push(hash);
       return opts.outcome ? opts.outcome() : ({ kind: "success", costMotes: 3_010_000_000n } as ExecutionOutcome);
     },
   };
@@ -121,9 +181,7 @@ function harness(opts: {
     {
       network: NETWORK,
       allowedPayTo: [SELLER],
-      allowedAssets: [ASSET],
-      tokenVersion: "1",
-      paymentMotes: 4n * CSPR,
+      assets: [LEGACY_POLICY, WCSPR_POLICY],
       settleWaitMs: 12_000,
       maxValiditySeconds: 3_600,
       ...opts.config,
@@ -137,6 +195,12 @@ function harness(opts: {
         ? {}
         : {
             tokenState: {
+              authorizationStyle: async (asset: string, readOpts?: { deadlineMs?: number }) => {
+                state.deadlines.push(readOpts?.deadlineMs);
+                const t = token(asset);
+                if (t.abiError) throw t.abiError;
+                return t.style;
+              },
               isNonceUsed: async (_asset: string, _from: string, nonce: string, readOpts?: { deadlineMs?: number }) => {
                 state.deadlines.push(readOpts?.deadlineMs);
                 clock.advance(state.readDelayMs);
@@ -148,9 +212,13 @@ function harness(opts: {
                 if (state.fail) throw new TokenStateError("node unreachable");
                 return state.balance;
               },
-              tokenName: async (_asset: string, readOpts?: { deadlineMs?: number }) => {
+              tokenName: async (asset: string, readOpts?: { deadlineMs?: number }) => {
                 state.deadlines.push(readOpts?.deadlineMs);
-                return state.name;
+                return token(asset).name;
+              },
+              chainName: async (asset: string, readOpts?: { deadlineMs?: number }) => {
+                state.deadlines.push(readOpts?.deadlineMs);
+                return token(asset).chainName;
               },
             },
           }),
@@ -196,40 +264,71 @@ describe("request parsing (HTTP 400)", () => {
   });
 });
 
+describe("asset policies", () => {
+  test("styles CasCet knows without the chain: its own token on both networks, Wrapped CSPR on testnet", () => {
+    assert.equal(knownAuthorizationStyle(NETWORK, ASSET), "legacy-amount");
+    assert.equal(knownAuthorizationStyle("casper:casper", "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41"), "legacy-amount");
+    assert.equal(knownAuthorizationStyle(NETWORK, WCSPR), "cep3009-value");
+    assert.equal(knownAuthorizationStyle(NETWORK, "dd".repeat(32)), undefined);
+  });
+
+  test("an allowlist lists policies; without one (testnet), any asset gets the open policy", () => {
+    const listed: FacilitatorCoreConfig = { network: NETWORK, assets: [LEGACY_POLICY], settleWaitMs: 1, maxValiditySeconds: 1 };
+    assert.equal(assetPolicyFor(listed, ASSET), LEGACY_POLICY);
+    assert.equal(assetPolicyFor(listed, WCSPR), undefined);
+    const open: FacilitatorCoreConfig = { network: NETWORK, anyAsset: { name: "Pinned" }, settleWaitMs: 1, maxValiditySeconds: 1 };
+    assert.deepEqual(assetPolicyFor(open, WCSPR), { asset: WCSPR, style: "cep3009-value", name: "Pinned", version: "1" });
+    assert.deepEqual(assetPolicyFor(open, "dd".repeat(32)), { asset: "dd".repeat(32), name: "Pinned", version: "1" });
+  });
+});
+
 describe("/verify", () => {
-  test("a valid, funded, fresh authorization verifies once; a replay is 409", async () => {
+  test("a valid, funded, fresh authorization verifies once; a replay is a duplicate (HTTP 200)", async () => {
     const h = harness();
     const first = await h.core.verify(parsed());
     assert.deepEqual(first, { status: 200, body: { isValid: true, payer: PAYER } });
     const replay = await h.core.verify(parsed());
-    assert.equal(replay.status, 409);
-    assert.equal(replay.body.invalidReason, Reason.duplicateNonce);
+    assert.equal(replay.status, 200);
+    assert.deepEqual([replay.body.isValid, replay.body.invalidReason], [false, Reason.duplicateNonce]);
   });
 
-  test("policy and CEP-3009 format checks (no gas, no RPC)", async () => {
+  test("both styles verify: Wrapped CSPR with its own domain name", async () => {
+    const h = harness();
+    assert.equal((await h.core.verify(parsed({ asset: WCSPR }))).body.isValid, true);
+    assert.ok(h.logs.some(l => l.includes("style=cep3009-value")));
+    const wrongName = await h.core.verify(parsed({ asset: WCSPR, nonce: "01".repeat(32), extra: { name: "CasCet X402 Token", version: "1" } }));
+    assert.deepEqual([wrongName.status, wrongName.body.invalidReason], [200, Reason.tokenDomainMismatch]);
+    assert.match(wrongName.body.invalidMessage ?? "", /Wrapped CSPR/);
+  });
+
+  test("policy and CEP-3009 format checks answer HTTP 200 (no gas, no RPC)", async () => {
     const h = harness();
     const now = Math.floor(T0 / 1000);
-    const cases: Array<[Parameters<typeof body>[0], number, string]> = [
-      [{ payTo: `00${"99".repeat(32)}` }, 403, Reason.payToNotAllowlisted],
-      [{ asset: "dd".repeat(32) }, 403, Reason.assetNotAllowlisted],
-      [{ payTo: `01${"88".repeat(32)}` }, 200, Reason.invalidPayTo],
-      [{ from: `01${"65".repeat(32)}` }, 200, Reason.invalidPayer],
-      [{ value: "0" }, 200, Reason.invalidAmount],
-      [{ value: "0500" }, 200, Reason.invalidAmount],
-      [{ validBefore: now - 1 }, 200, Reason.expired],
-      [{ validBefore: now + 19 }, 200, Reason.expiresTooSoon],
-      [{ validBefore: now + 7_200 }, 200, Reason.validityTooLong],
-      [{ nonce: "abc" }, 200, Reason.invalidNonce],
-      [{ publicKey: `02${"cd".repeat(33)}` }, 200, Reason.algorithmMismatch],
-      [{ signature: "ab".repeat(64) }, 200, Reason.invalidSignature],
-      [{ extra: { name: "CasCet X402 Token", version: "2" } }, 200, Reason.tokenDomainMismatch],
+    const cases: Array<[BodyOverrides, string]> = [
+      [{ payTo: `00${"99".repeat(32)}` }, Reason.payToNotAllowlisted],
+      [{ asset: "dd".repeat(32) }, Reason.assetNotAllowlisted],
+      [{ asset: "hash-xyz" }, Reason.invalidAsset],
+      [{ payTo: `01${"88".repeat(32)}` }, Reason.invalidPayTo],
+      [{ from: `01${"65".repeat(32)}` }, Reason.invalidPayer],
+      [{ value: "0" }, Reason.invalidAmount],
+      [{ value: "0500" }, Reason.invalidAmount],
+      [{ validAfter: now + 30 }, Reason.notYetValid],
+      [{ validBefore: now - 1 }, Reason.expired],
+      [{ validBefore: now + 19 }, Reason.expiresTooSoon],
+      [{ validBefore: now + 7_200 }, Reason.validityTooLong],
+      [{ nonce: "abc" }, Reason.invalidNonce],
+      [{ publicKey: `02${"cd".repeat(33)}` }, Reason.algorithmMismatch],
+      [{ signature: "ab".repeat(64) }, Reason.invalidSignature],
+      [{ extra: { name: "CasCet X402 Token", version: "2" } }, Reason.tokenDomainMismatch],
+      [{ extra: { name: "Wrapped CSPR", version: "1" } }, Reason.tokenDomainMismatch],
     ];
-    for (const [over, status, reason] of cases) {
+    for (const [over, reason] of cases) {
       const r = await h.core.verify(parsed(over));
-      assert.equal(r.status, status, `status for ${reason}`);
-      assert.equal(r.body.invalidReason, reason);
+      assert.equal(r.status, 200, `status for ${reason}`);
+      assert.deepEqual([r.body.isValid, r.body.invalidReason], [false, reason]);
     }
     assert.equal(h.signatureChecks.count, 0, "rejected before the signature check");
+    assert.equal(h.state.deadlines.length, 0, "and before any chain read");
     const contractPayee = await h.core.verify(parsed({ payTo: `01${"88".repeat(32)}` }));
     assert.match(contractPayee.body.invalidMessage ?? "", /contract-package payees .* not supported/);
   });
@@ -242,27 +341,24 @@ describe("/verify", () => {
     assert.equal((await lax.core.verify(parsed({ validBefore: now + 10 }))).body.isValid, true);
   });
 
-  test("passes through the casper-x402 signature verdict", async () => {
+  test("passes through the signature verdict", async () => {
     const h = harness({ verifySignature: () => ({ isValid: false, invalidReason: "invalid_exact_casper_facilitator_invalid_signature" }) });
     const r = await h.core.verify(parsed());
     assert.deepEqual(r.body.invalidReason, "invalid_exact_casper_facilitator_invalid_signature");
     assert.equal(h.ledger.size, 0);
   });
 
-  test("on-chain preflight: used nonce (409), low balance, wrong domain name, RPC down (503)", async () => {
+  test("on-chain preflight: used nonce and low balance are verdicts (200); RPC down is 503", async () => {
     const h = harness();
     h.state.used.add("9c".repeat(32));
-    assert.equal((await h.core.verify(parsed())).status, 409);
-    assert.equal((await h.core.verify(parsed())).body.invalidReason, Reason.nonceAlreadyUsed);
+    const used = await h.core.verify(parsed());
+    assert.deepEqual([used.status, used.body.invalidReason], [200, Reason.nonceAlreadyUsed]);
 
     h.state.balance = 499_999_999n;
     const poor = await h.core.verify(parsed({ nonce: "01".repeat(32) }));
     assert.deepEqual([poor.status, poor.body.invalidReason], [200, Reason.insufficientFunds]);
 
     h.state.balance = 10n * CSPR;
-    const wrongName = await h.core.verify(parsed({ nonce: "02".repeat(32), extra: { name: "Wrapped CSPR", version: "1" } }));
-    assert.equal(wrongName.body.invalidReason, Reason.tokenDomainMismatch);
-
     h.state.fail = true;
     const down = await h.core.verify(parsed({ nonce: "03".repeat(32) }));
     assert.deepEqual([down.status, down.body.invalidReason], [503, Reason.preflightUnavailable]);
@@ -272,10 +368,10 @@ describe("/verify", () => {
   test("every preflight read shares one deadline (default 10 s, configurable)", async () => {
     const h = harness();
     await h.core.verify(parsed());
-    assert.deepEqual(h.state.deadlines, [T0 + 10_000, T0 + 10_000, T0 + 10_000]);
+    assert.deepEqual(h.state.deadlines, Array(5).fill(T0 + 10_000), "ABI, nonce, balance, name and chain_name");
     const custom = harness({ config: { preflightDeadlineMs: 4_000 } });
     await custom.core.settle(parsed());
-    assert.deepEqual(custom.state.deadlines, [T0 + 4_000, T0 + 4_000, T0 + 4_000]);
+    assert.deepEqual(custom.state.deadlines, Array(5).fill(T0 + 4_000));
   });
 
   test("one balance cannot back several in-flight authorizations", async () => {
@@ -289,6 +385,121 @@ describe("/verify", () => {
   });
 });
 
+describe("authorization styles", () => {
+  test("each asset settles in its own style, with its own gas limit", async () => {
+    const h = harness();
+    const legacy = await h.core.settle(parsed({ nonce: "01".repeat(32) }));
+    const value = await h.core.settle(parsed({ asset: WCSPR, nonce: "02".repeat(32) }));
+    assert.deepEqual([legacy.body.success, value.body.success], [true, true]);
+    assert.deepEqual(
+      h.chain.builds.map(b => [b.style, b.paymentMotes]),
+      [
+        ["legacy-amount", 4n * CSPR],
+        ["cep3009-value", 3_500_000_000n],
+      ],
+    );
+    assert.equal(legacy.body.extra?.["authorizationStyle"], "legacy-amount");
+    assert.equal(value.body.extra?.["authorizationStyle"], "cep3009-value");
+  });
+
+  test("the daily cap counts every asset's own limit", async () => {
+    // 7.5 CSPR fits one legacy (4) and one Wrapped CSPR (3.5) settle whose cost stays unknown.
+    const h = harness({ capMotes: 7_500_000_000n, outcome: () => ({ kind: "success" }) });
+    assert.equal((await h.core.settle(parsed({ nonce: "01".repeat(32) }))).body.success, true);
+    assert.equal((await h.core.settle(parsed({ asset: WCSPR, nonce: "02".repeat(32) }))).body.success, true);
+    const capped = await h.core.settle(parsed({ asset: WCSPR, nonce: "03".repeat(32) }));
+    assert.deepEqual([capped.status, capped.body.errorReason], [503, Reason.gasCapReached]);
+    assert.equal(h.gas.snapshot().spentMotes, 7_500_000_000n);
+  });
+
+  test("a pinned style the chain contradicts is refused (200) and nothing is built", async () => {
+    const h = harness();
+    // The token was upgraded to the CEP-3009 ABI after start-up.
+    h.state.tokens[ASSET]!.style = "cep3009-value";
+    const v = await h.core.verify(parsed());
+    assert.deepEqual([v.status, v.body.invalidReason], [200, Reason.authorizationStyleMismatch]);
+    assert.match(v.body.invalidMessage ?? "", /takes `value` \(cep3009-value\); this facilitator settles it as legacy-amount/);
+    const s = await h.core.settle(parsed());
+    assert.deepEqual([s.status, s.body.success, s.body.errorReason, s.body.transaction], [200, false, Reason.authorizationStyleMismatch, ""]);
+    assert.deepEqual(s.body.extra, { settlementStatus: "not_submitted" });
+    assert.deepEqual([h.chain.builds.length, h.chain.submits, h.ledger.size], [0, 0, 0]);
+    assert.ok(h.logs.some(l => /pinned as legacy-amount/.test(l)), "the operator is told");
+  });
+
+  test("a token whose ABI matches neither style is unsupported (200), not unavailable", async () => {
+    const h = harness();
+    h.state.tokens[WCSPR]!.abiError = new TokenUnsupportedError("transfer_with_authorization is missing");
+    const r = await h.core.settle(parsed({ asset: WCSPR }));
+    assert.deepEqual([r.status, r.body.errorReason], [200, Reason.unsupportedAsset]);
+    assert.equal(h.chain.builds.length, 0);
+  });
+
+  test("the token's EIP-712 chain_name must be this network", async () => {
+    const h = harness();
+    h.state.tokens[ASSET]!.chainName = "casper:casper";
+    const r = await h.core.verify(parsed());
+    assert.deepEqual([r.status, r.body.invalidReason], [200, Reason.tokenDomainMismatch]);
+    assert.match(r.body.invalidMessage ?? "", /chain_name/);
+  });
+
+  test("an EIP-712 domain the facilitator cannot check is refused (fail closed), at /verify and /settle", async () => {
+    // A token (upgraded after start-up) without a chain_name named key.
+    const noChain = harness();
+    delete noChain.state.tokens[ASSET]!.chainName;
+    const v = await noChain.core.verify(parsed());
+    assert.deepEqual([v.status, v.body.invalidReason], [200, Reason.tokenDomainMismatch]);
+    assert.match(v.body.invalidMessage ?? "", /no on-chain chain_name/);
+    const s = await noChain.core.settle(parsed());
+    assert.deepEqual([s.status, s.body.errorReason, s.body.transaction], [200, Reason.tokenDomainMismatch, ""]);
+    assert.deepEqual([noChain.chain.builds.length, noChain.ledger.size], [0, 0]);
+
+    // Without an asset allowlist (testnet), a token without an on-chain name and no pinned name.
+    const open = harness({ config: { assets: undefined, anyAsset: { version: "1" } } });
+    const other = "dd".repeat(32);
+    open.state.tokens[other] = { style: "cep3009-value", chainName: NETWORK };
+    const unnamed = await open.core.settle(parsed({ asset: other, extra: { name: "Anything the buyer chose", version: "1" } }));
+    assert.deepEqual([unnamed.status, unnamed.body.errorReason], [200, Reason.tokenDomainMismatch]);
+    assert.match(unnamed.body.errorMessage ?? "", /no on-chain name and this facilitator pins none/);
+    assert.equal(open.chain.builds.length, 0);
+
+    // A pinned name binds the domain of a token without an on-chain name.
+    const pinned = harness({ config: { assets: undefined, anyAsset: { name: "Pinned", version: "1" } } });
+    pinned.state.tokens[other] = { style: "cep3009-value", chainName: NETWORK };
+    assert.equal((await pinned.core.settle(parsed({ asset: other, extra: { name: "Pinned", version: "1" } }))).body.success, true);
+    const wrong = await pinned.core.settle(parsed({ asset: other, nonce: "02".repeat(32), extra: { name: "Other", version: "1" } }));
+    assert.equal(wrong.body.errorReason, Reason.tokenDomainMismatch);
+  });
+
+  test("the authorizationStyle the requirements advertise is informational: logged, never trusted", async () => {
+    const h = harness();
+    const extra = { name: "CasCet X402 Token", version: "1", authorizationStyle: "cep3009-value" };
+    const r = await h.core.settle(parsed({ extra }));
+    assert.equal(r.body.success, true);
+    assert.equal(h.chain.builds[0]?.style, "legacy-amount", "the chain decides");
+    assert.ok(h.logs.some(l => l.includes("advertise authorizationStyle=cep3009-value")));
+  });
+
+  test("without an asset allowlist (testnet), the chain's style is used; without the preflight only known tokens settle", async () => {
+    const open = harness({ config: { assets: undefined, anyAsset: { version: "1" } } });
+    const other = "dd".repeat(32);
+    open.state.tokens[other] = { style: "cep3009-value", name: "Other", chainName: NETWORK };
+    const r = await open.core.settle(parsed({ asset: other, extra: { name: "Other", version: "1" } }));
+    assert.equal(r.body.success, true);
+    assert.deepEqual(
+      open.chain.builds.map(b => [b.style, b.paymentMotes]),
+      [["cep3009-value", 3_500_000_000n]],
+      "the style's default gas limit",
+    );
+
+    const offline = harness({ preflight: false, config: { assets: undefined, anyAsset: { name: "CasCet X402 Token", version: "1" } } });
+    assert.equal((await offline.core.settle(parsed())).body.success, true, "CasCet's own token: legacy-amount");
+    assert.equal(offline.chain.builds[0]?.style, "legacy-amount");
+    const unknown = await offline.core.settle(parsed({ asset: other, nonce: "02".repeat(32), extra: { name: "CasCet X402 Token", version: "1" } }));
+    assert.deepEqual([unknown.status, unknown.body.errorReason], [200, Reason.unsupportedAsset]);
+    assert.equal(offline.chain.builds.length, 1);
+  });
+});
+
 describe("/settle", () => {
   test("verify → settle succeeds, counts the real gas cost, and locks the nonce", async () => {
     const h = harness();
@@ -297,12 +508,12 @@ describe("/settle", () => {
     assert.equal(r.status, 200);
     assert.equal(r.body.success, true);
     assert.equal(r.body.transaction, "1".padStart(64, "0"));
-    assert.deepEqual(r.body.extra, { settlementStatus: "success", gasCostMotes: "3010000000" });
+    assert.deepEqual(r.body.extra, { settlementStatus: "success", authorizationStyle: "legacy-amount", gasCostMotes: "3010000000" });
     assert.equal(h.gas.snapshot().spentMotes, 3_010_000_000n);
     assert.equal(h.signatureChecks.count, 2, "full verification runs again at settle (M21)");
 
     const again = await h.core.settle(parsed());
-    assert.deepEqual([again.status, again.body.errorReason], [409, Reason.duplicateNonce]);
+    assert.deepEqual([again.status, again.body.errorReason], [200, Reason.duplicateNonce]);
     assert.equal(again.body.transaction, r.body.transaction, "a retry learns the earlier transaction hash");
     assert.deepEqual(again.body.extra, { settlementStatus: "duplicate" }, "not 'not_submitted': the earlier tx charged the payer");
     assert.equal(h.chain.submits, 1);
@@ -323,18 +534,18 @@ describe("/settle", () => {
     release();
     const first = await a;
     assert.equal(first.body.success, true);
-    assert.deepEqual([second.status, second.body.errorReason], [409, Reason.duplicateNonce]);
+    assert.deepEqual([second.status, second.body.errorReason], [200, Reason.duplicateNonce]);
     assert.deepEqual(second.body.extra, { settlementStatus: "duplicate" });
     assert.equal(h.chain.submits, 1);
   });
 
-  test("a nonce already used on-chain is a duplicate (409), not a determinate non-payment", async () => {
+  test("a nonce already used on-chain is a duplicate, not a determinate non-payment", async () => {
     const h = harness();
     h.state.used.add("9c".repeat(32));
     const r = await h.core.settle(parsed());
-    assert.deepEqual([r.status, r.body.errorReason, r.body.transaction], [409, Reason.nonceAlreadyUsed, ""]);
+    assert.deepEqual([r.status, r.body.errorReason, r.body.transaction], [200, Reason.nonceAlreadyUsed, ""]);
     assert.deepEqual(r.body.extra, { settlementStatus: "duplicate" });
-    assert.deepEqual([h.chain.builds, h.chain.submits, h.ledger.size], [0, 0, 0]);
+    assert.deepEqual([h.chain.builds.length, h.chain.submits, h.ledger.size], [0, 0, 0]);
   });
 
   test("a settle that fails before submission releases gas and the nonce", async () => {
@@ -369,7 +580,7 @@ describe("/settle", () => {
     const r = await h.core.settle(parsed({ validBefore: now + 30 }));
     assert.deepEqual([r.status, r.body.errorReason, r.body.transaction], [200, Reason.expiresTooSoon, ""]);
     assert.deepEqual(r.body.extra, { settlementStatus: "not_submitted" });
-    assert.deepEqual([h.chain.builds, h.chain.submits], [0, 0]);
+    assert.deepEqual([h.chain.builds.length, h.chain.submits], [0, 0]);
     const s = h.gas.snapshot();
     assert.equal(s.reservedMotes + s.spentMotes, 0n);
     assert.equal(h.ledger.size, 0, "the settle claim is released");
@@ -403,7 +614,7 @@ describe("/settle", () => {
     h.state.balance = 1n;
     const poor = await h.core.settle(parsed());
     assert.equal(poor.body.errorReason, Reason.insufficientFunds);
-    assert.equal(h.chain.builds, 0);
+    assert.equal(h.chain.builds.length, 0);
     const s = h.gas.snapshot();
     assert.equal(s.reservedMotes + s.spentMotes, 0n, "rejected settles never touch the gas budget");
   });
@@ -428,9 +639,10 @@ describe("/settle", () => {
     assert.equal(r.body.success, false);
     assert.equal(r.body.errorReason, Reason.failedOnChain);
     assert.equal(r.body.transaction, "1".padStart(64, "0"));
-    assert.deepEqual(r.body.extra, { settlementStatus: "failed" });
+    assert.deepEqual(r.body.extra, { settlementStatus: "failed", authorizationStyle: "legacy-amount" });
     assert.equal(h.gas.snapshot().spentMotes, 4n * CSPR);
-    assert.equal((await h.core.settle(parsed())).status, 409);
+    const again = await h.core.settle(parsed());
+    assert.deepEqual([again.status, again.body.errorReason, again.body.transaction], [200, Reason.duplicateNonce, r.body.transaction]);
   });
 
   test("M22: an unobserved outcome is 'pending' with the hash, never a failure with an empty hash", async () => {
@@ -440,11 +652,8 @@ describe("/settle", () => {
     assert.equal(r.body.success, false);
     assert.equal(r.body.errorReason, Reason.pending);
     assert.equal(r.body.transaction, "1".padStart(64, "0"));
-    assert.deepEqual(r.body.extra, { settlementStatus: "pending" });
+    assert.deepEqual(r.body.extra, { settlementStatus: "pending", authorizationStyle: "legacy-amount" });
     assert.equal(h.gas.snapshot().spentMotes, 4n * CSPR, "full limit counted while unknown");
-    const retry = await h.core.settle(parsed());
-    assert.equal(retry.status, 409, "the nonce stays locked");
-    assert.equal(retry.body.transaction, r.body.transaction, "and a retry is pointed at the pending transaction");
     assert.equal(h.chain.submits, 1);
   });
 
@@ -456,7 +665,7 @@ describe("/settle", () => {
     const r = await h.core.settle(parsed());
     assert.equal(r.body.errorReason, Reason.unknown);
     assert.equal(r.body.transaction, "77".repeat(32));
-    assert.deepEqual(r.body.extra, { settlementStatus: "unknown" });
+    assert.deepEqual(r.body.extra, { settlementStatus: "unknown", authorizationStyle: "legacy-amount" });
   });
 
   test("an ambiguous submission that turns out executed is reported as success", async () => {
@@ -480,29 +689,215 @@ describe("/settle", () => {
   });
 
   test("a pinned domain name is checked without RPC, and the on-chain name still applies with the preflight on", async () => {
-    const offline = harness({ preflight: false, config: { tokenName: "CasCet X402 Token" } });
+    const offline = harness({ preflight: false });
     const wrong = await offline.core.settle(parsed({ extra: { name: "Wrapped CSPR", version: "1" } }));
-    assert.deepEqual([wrong.body.errorReason, offline.chain.builds], [Reason.tokenDomainMismatch, 0]);
+    assert.deepEqual([wrong.body.errorReason, offline.chain.builds.length], [Reason.tokenDomainMismatch, 0]);
     assert.equal(offline.signatureChecks.count, 0, "rejected before the signature check");
 
     // A pin that disagrees with the chain is caught by the preflight instead of reverting on-chain.
-    const mispinned = harness({ config: { tokenName: "Wrapped CSPR" } });
+    const mispinned = harness({ config: { assets: [{ ...LEGACY_POLICY, name: "Wrapped CSPR" }] } });
     const r = await mispinned.core.verify(parsed({ extra: { name: "Wrapped CSPR", version: "1" } }));
     assert.equal(r.body.invalidReason, Reason.tokenDomainMismatch);
     assert.match(r.body.invalidMessage ?? "", /CasCet X402 Token/);
   });
 
-  test("without preflight the in-flight ledger still blocks duplicates", async () => {
+  test("without preflight the in-flight ledger still blocks duplicates, and the pinned style is used", async () => {
     const h = harness({ preflight: false });
-    assert.equal((await h.core.settle(parsed())).body.success, true);
-    assert.equal((await h.core.settle(parsed())).status, 409);
+    assert.equal((await h.core.settle(parsed({ asset: WCSPR }))).body.success, true);
+    assert.equal(h.chain.builds[0]?.style, "cep3009-value");
+    const again = await h.core.settle(parsed({ asset: WCSPR }));
+    assert.deepEqual([again.status, again.body.errorReason], [200, Reason.duplicateNonce]);
   });
 
   test("log lines carry no raw request text", async () => {
     const h = harness();
     await h.core.verify(parsed({ payTo: `00${"99".repeat(32)}` }));
-    await h.core.settle(parsed());
+    await h.core.settle(parsed({ extra: { name: "CasCet X402 Token", version: "1", authorizationStyle: "x\ny" } }));
     for (const line of h.logs) assert.doesNotMatch(line, /[\r\n]/);
+  });
+});
+
+describe("pending settlements: a settle retry follows the earlier transaction (never broadcasts twice)", () => {
+  /** A harness whose execution outcomes are taken from `outcomes` in order. */
+  function scripted(outcomes: ExecutionOutcome[], submit?: () => SubmitOutcome) {
+    let n = 0;
+    return harness({ outcome: () => outcomes[Math.min(n++, outcomes.length - 1)]!, ...(submit ? { submit } : {}) });
+  }
+
+  test("the @x402/core 2.29 retry of settlement_pending gets the outcome of the same transaction", async () => {
+    const h = scripted([
+      { kind: "pending", seen: true },
+      { kind: "success", costMotes: 3_010_000_000n },
+    ]);
+    const first = await h.core.settle(parsed());
+    assert.deepEqual([first.body.errorReason, first.body.transaction], [Reason.pending, "1".padStart(64, "0")]);
+    assert.equal(h.gas.snapshot().spentMotes, 4n * CSPR, "counted at the full limit while pending");
+
+    const retry = await h.core.settle(parsed());
+    assert.equal(retry.status, 200);
+    assert.equal(retry.body.success, true);
+    assert.equal(retry.body.transaction, first.body.transaction, "the same transaction");
+    assert.deepEqual(retry.body.extra, {
+      settlementStatus: "success",
+      authorizationStyle: "legacy-amount",
+      gasCostMotes: "3010000000",
+      reconciled: true,
+    });
+    assert.deepEqual([h.chain.builds.length, h.chain.submits], [1, 1], "nothing was built or submitted again");
+    assert.deepEqual(h.chain.waits, [first.body.transaction, first.body.transaction]);
+    assert.equal(h.signatureChecks.count, 1, "the follow path needs no new verification: it submits nothing");
+    assert.equal(h.gas.snapshot().spentMotes, 3_010_000_000n, "corrected to the real cost");
+    assert.equal(h.ledger.peek({ network: NETWORK, asset: ASSET, from: PAYER, nonce: "9c".repeat(32) })?.state, "settled");
+
+    // A third settle of the same payment is a duplicate: one success per authorization.
+    const third = await h.core.settle(parsed());
+    assert.deepEqual([third.body.success, third.body.errorReason, third.body.transaction], [false, Reason.duplicateNonce, first.body.transaction]);
+    assert.equal(h.chain.waits.length, 2);
+  });
+
+  test("followed even when the authorization is now too close to expiry for a new settlement", async () => {
+    const h = scripted([
+      { kind: "pending", seen: true },
+      { kind: "success", costMotes: 3n * CSPR },
+    ]);
+    const now = Math.floor(T0 / 1000);
+    const first = await h.core.settle(parsed({ validBefore: now + 60 }));
+    assert.equal(first.body.errorReason, Reason.pending);
+    h.clock.advance(50_000); // 10 s left: a new settle would be refused
+    const retry = await h.core.settle(parsed({ validBefore: now + 60 }));
+    assert.deepEqual([retry.body.success, retry.body.transaction], [true, first.body.transaction]);
+  });
+
+  test("near expiry, a concurrent retry (the follow claim is taken) is a duplicate with the hash, never 'expires too soon'", async () => {
+    let releaseWait!: () => void;
+    const gate = new Promise<void>(r => (releaseWait = r));
+    const outcomes: Array<() => Promise<ExecutionOutcome>> = [
+      async () => ({ kind: "pending", seen: true }),
+      async () => {
+        await gate;
+        return { kind: "success", costMotes: 3n * CSPR };
+      },
+    ];
+    let n = 0;
+    const h = harness({ outcome: () => outcomes[n++]!() });
+    const now = Math.floor(T0 / 1000);
+    const payment = () => parsed({ validBefore: now + 60 });
+    const first = await h.core.settle(payment());
+    assert.equal(first.body.errorReason, Reason.pending);
+    h.clock.advance(50_000); // 10 s left: inside the 20 s settle window
+
+    const follower = h.core.settle(payment());
+    const concurrent = await h.core.settle(payment());
+    assert.deepEqual(
+      [concurrent.status, concurrent.body.success, concurrent.body.errorReason, concurrent.body.transaction, concurrent.body.payer],
+      [200, false, Reason.duplicateNonce, first.body.transaction, PAYER],
+    );
+    assert.deepEqual(concurrent.body.extra, { settlementStatus: "duplicate" }, "not not_submitted: the transaction can still charge the payer");
+    releaseWait();
+    assert.deepEqual([(await follower).body.success, (await follower).body.transaction], [true, first.body.transaction]);
+
+    // After the outcome, still near expiry: another payment for the nonce and the same payment again.
+    const other = await h.core.settle(parsed({ validBefore: now + 60, signature: `01${"ac".repeat(64)}` }));
+    const again = await h.core.settle(payment());
+    for (const r of [other, again]) {
+      assert.deepEqual([r.body.errorReason, r.body.transaction], [Reason.duplicateNonce, first.body.transaction]);
+      assert.deepEqual(r.body.extra, { settlementStatus: "duplicate" });
+    }
+    assert.deepEqual([h.chain.builds.length, h.chain.submits], [1, 1]);
+    assert.equal(h.signatureChecks.count, 1, "answered before any check of a new settlement");
+  });
+
+  test("knownTransaction: a lookup of the transaction submitted for an authorization, without claiming it", async () => {
+    const h = scripted([
+      { kind: "pending", seen: true },
+      { kind: "success", costMotes: 3n * CSPR },
+    ]);
+    assert.equal(h.core.knownTransaction(parsed()), undefined, "nothing yet");
+    assert.equal((await h.core.verify(parsed())).body.isValid, true);
+    assert.equal(h.core.knownTransaction(parsed()), undefined, "verified: no transaction");
+    const first = await h.core.settle(parsed());
+    const hash = first.body.transaction;
+    assert.deepEqual(h.core.knownTransaction(parsed()), { state: "submitted", txHash: hash });
+    // Any payment for the same (asset, payer, nonce) sees it, however its fields are spelled.
+    assert.deepEqual(h.core.knownTransaction(parsed({ asset: `hash-${ASSET.toUpperCase()}`, signature: `01${"ac".repeat(64)}` })), {
+      state: "submitted",
+      txHash: hash,
+    });
+    assert.equal(h.core.knownTransaction(parsed({ nonce: "01".repeat(32) })), undefined);
+    assert.equal(h.core.knownTransaction(parsed({ asset: WCSPR })), undefined);
+    // The lookup took no claim: the retry still follows the transaction.
+    const retry = await h.core.settle(parsed());
+    assert.deepEqual([retry.body.success, retry.body.extra?.["reconciled"]], [true, true]);
+    assert.deepEqual(h.core.knownTransaction(parsed()), { state: "settled", txHash: hash });
+  });
+
+  test("only the identical payment may follow: another payment for the same nonce is a duplicate", async () => {
+    const h = scripted([{ kind: "pending", seen: true }]);
+    const first = await h.core.settle(parsed());
+    const other = await h.core.settle(parsed({ signature: `01${"ac".repeat(64)}` }));
+    assert.deepEqual([other.body.errorReason, other.body.transaction], [Reason.duplicateNonce, first.body.transaction]);
+    assert.deepEqual(other.body.extra, { settlementStatus: "duplicate" });
+    assert.equal(h.chain.waits.length, 1, "nothing followed the transaction for it");
+    // The fingerprint covers the signature, the authorization and the terms it pays.
+    assert.notEqual(paymentFingerprint(parsed(), NETWORK), paymentFingerprint(parsed({ signature: `01${"ac".repeat(64)}` }), NETWORK));
+    assert.equal(paymentFingerprint(parsed({ asset: `hash-${ASSET.toUpperCase()}` }), NETWORK), paymentFingerprint(parsed(), NETWORK));
+  });
+
+  test("a transaction still unseen answers pending again and can be followed again; concurrent retries follow once", async () => {
+    let releaseWait!: () => void;
+    const gate = new Promise<void>(r => (releaseWait = r));
+    const outcomes: Array<() => Promise<ExecutionOutcome>> = [
+      async () => ({ kind: "pending", seen: true }),
+      async () => {
+        await gate;
+        return { kind: "pending", seen: true, lastError: "timeout" };
+      },
+      async () => ({ kind: "failure", errorMessage: "User error: 4", costMotes: 4n * CSPR }),
+    ];
+    let n = 0;
+    const h = harness({ outcome: () => outcomes[n++]!() });
+    const first = await h.core.settle(parsed());
+    assert.equal(first.body.errorReason, Reason.pending);
+
+    const follower = h.core.settle(parsed());
+    const concurrent = await h.core.settle(parsed());
+    assert.deepEqual([concurrent.body.errorReason, concurrent.body.transaction], [Reason.duplicateNonce, first.body.transaction]);
+    releaseWait();
+    const stillPending = await follower;
+    assert.deepEqual([stillPending.body.errorReason, stillPending.body.transaction], [Reason.pending, first.body.transaction]);
+    assert.deepEqual(stillPending.body.extra, { settlementStatus: "pending", authorizationStyle: "legacy-amount" });
+
+    const reverted = await h.core.settle(parsed());
+    assert.deepEqual([reverted.body.errorReason, reverted.body.transaction], [Reason.failedOnChain, first.body.transaction]);
+    assert.deepEqual(reverted.body.extra, { settlementStatus: "failed", authorizationStyle: "legacy-amount", reconciled: true });
+    assert.equal(h.chain.submits, 1);
+    assert.equal(h.gas.snapshot().spentMotes, 4n * CSPR);
+  });
+
+  test("an unknown submission stays unknown while the node never shows it", async () => {
+    const h = scripted([{ kind: "pending", seen: false }], () => ({ kind: "unknown", hash: "77".repeat(32), error: "socket hang up" }));
+    const first = await h.core.settle(parsed());
+    assert.equal(first.body.errorReason, Reason.unknown);
+    const retry = await h.core.settle(parsed());
+    assert.deepEqual([retry.body.errorReason, retry.body.transaction], [Reason.unknown, "77".repeat(32)]);
+    assert.equal(h.chain.submits, 1);
+  });
+
+  test("a follower polls the stored hash for the settle wait, from its own start", async () => {
+    const h = scripted([
+      { kind: "pending", seen: true },
+      { kind: "pending", seen: true },
+    ]);
+    const deadlines: number[] = [];
+    const wait = h.chain.waitForExecution.bind(h.chain);
+    h.chain.waitForExecution = async (hash: string, deadlineMs: number) => {
+      deadlines.push(deadlineMs);
+      return wait(hash, deadlineMs);
+    };
+    await h.core.settle(parsed());
+    h.clock.advance(1_000);
+    await h.core.settle(parsed());
+    assert.deepEqual(deadlines, [T0 + 12_000, T0 + 13_000]);
   });
 });
 

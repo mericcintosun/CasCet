@@ -3,7 +3,7 @@ import { cascetConfigSchema, type CascetConfig } from "@cascet/core";
 import { createCasperRpc, startGateway } from "@cascet/gateway";
 import { createPayingFetch, PaidMcpHttpClient } from "@cascet/client";
 import { accountsSignableBy } from "./account-keys.js";
-import { NETWORKS, readFacilitatorEnv } from "./facilitator-env.js";
+import { facilitatorOptionsFromEnv, NETWORKS, readFacilitatorEnv } from "./facilitator-env.js";
 import { checkRecorderSeparation } from "./facilitator-roles.js";
 import { accountHashOfKeyFile } from "./key-file.js";
 import { startRealFacilitator } from "./real-facilitator.js";
@@ -75,24 +75,10 @@ if (RECORDER_KEY) {
 
 // Self-hosted mainnet facilitator: dedicated fee payer, token-protected, allowlisted.
 // It refuses to start if the fee payer is an owner or the seller, or can sign for one.
-const facilitator = await startRealFacilitator({
-  port: fac.port,
-  network: "casper:casper",
-  keyPath: fac.keyPath,
-  keyAlgo: fac.keyAlgo,
-  rpcUrl: fac.rpcUrl,
-  ...(fac.authToken ? { authToken: fac.authToken } : {}),
-  allowedPayTo: fac.allowedPayTo,
-  allowedAssets: fac.allowedAssets,
-  ownerAccountHashes: fac.ownerAccountHashes,
-  paymentMotes: fac.paymentMotes,
-  dailyGasCapMotes: fac.dailyGasCapMotes,
-  settleWaitMs: fac.settleWaitMs,
-  preflight: fac.preflight,
-  preflightDeadlineMs: fac.preflightDeadlineMs,
-  tokenVersion: fac.tokenVersion,
-  ...(fac.tokenName ? { tokenName: fac.tokenName } : {}),
-});
+// Every environment setting reaches it, per asset too: declared style, pinned
+// name and version, gas limit (CASCET_ASSET_STYLES, CASCET_ASSET_NAMES,
+// CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET).
+const facilitator = await startRealFacilitator(facilitatorOptionsFromEnv(fac));
 
 const dataConfig: CascetConfig = cascetConfigSchema.parse({
   name: "casper-defi-data",

@@ -252,9 +252,11 @@ Then edit `cascet.config.json`:
 - `payTo`: the `00…` value printed by `account-hash`. It must be an account
   hash, never a public key: a public key (`01…` or `02…`) is rejected, because a
   payment to it would land in an account nobody controls. Do not point `payTo`
-  at a contract package (such as a `RevenueSplit`) yet: the settlement library,
-  `@make-software/casper-x402` 1.0.0, always settles to an account hash, so such
-  a payment would be lost.
+  at a contract package (such as a `RevenueSplit`) yet: CasCet's self-hosted
+  facilitator builds its own settlement in the token's style (`amount` or
+  `value`) and still settles to account hashes only, so it refuses such a
+  payment, and `@make-software/casper-x402` 1.0.0 facilitators settle it to an
+  account hash nobody controls, so it would be lost.
 - `asset`: a token your facilitator can settle (see the table below). On testnet
   that is CasCet's x402 token, `hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3`
   (name `CasCet X402 Token`, version `1`, 9 decimals).
@@ -274,7 +276,7 @@ npx "@cascet/cli@^0.1.1" wrap   # your server is now paid; the gateway listens o
 
 | Facilitator | Settles | Use it with |
 | --- | --- | --- |
-| Self-hosted (`pnpm --filter @cascet/e2e facilitator`, in this repository) | tokens whose `transfer_with_authorization` takes `amount` (it is built on `@make-software/casper-x402` 1.0.0) | CasCet's x402 tokens: testnet `hash-cb65a928…`, mainnet `hash-8dd4f1aa…` |
+| Self-hosted (`pnpm --filter @cascet/e2e facilitator`, in this repository) | both styles, per token from its on-chain ABI: `amount` (`legacy-amount`) and CEP-3009 `value` (`cep3009-value`) | CasCet's x402 tokens (testnet `hash-cb65a928…`, mainnet `hash-8dd4f1aa…`) and CEP-3009 tokens such as testnet Wrapped CSPR (`hash-3d80df21…`), listed in `CASCET_ALLOWED_ASSETS` |
 | Hosted CSPR.cloud (`x402-facilitator.cspr.cloud`) | only CEP-3009 tokens whose `transfer_with_authorization` takes `value`, such as the official Wrapped CSPR | not CasCet's x402 tokens; using it needs the planned move to the CEP-3009 `value` stack ([why](docs/onchain.md#why-cascet-runs-its-own-x402-facilitator)) |
 
 Start the self-hosted facilitator from a clone of this repository:
@@ -287,9 +289,12 @@ pnpm --filter @cascet/e2e facilitator   # testnet, http://127.0.0.1:4501
 
 The fee payer pays the gas of every settlement, so fund it with testnet CSPR from
 the [faucet](https://testnet.cspr.live/tools/faucet); buyers need no CSPR. The
-facilitator settles only payments to `CASCET_SELLER_ACCOUNT_HASH` in CasCet's x402
-token. `CASCET_SETTLE_PAYMENT_MOTES` sets the gas limit per settlement (default
-4 CSPR). For mainnet (`CASCET_NET=mainnet`) it also requires a bearer token in
+facilitator settles only payments to `CASCET_SELLER_ACCOUNT_HASH` in the tokens of
+`CASCET_ALLOWED_ASSETS` (default: CasCet's x402 token); at start-up it reads each
+token's ABI and pins the style it settles it with. `CASCET_SETTLE_PAYMENT_MOTES`
+sets the gas limit per settlement (default per style: 4 CSPR for `amount`
+tokens, 3.5 CSPR for `value` tokens). For mainnet (`CASCET_NET=mainnet`) it also
+requires a bearer token in
 `CASCET_FACILITATOR_TOKEN` of at least 32 characters (`openssl rand -hex 32`;
 put the same value into `facilitator.apiKey`), and it refuses to start when its
 fee-payer account is the owner account (`CASCET_OWNER_ACCOUNT_HASH`) or the
@@ -360,7 +365,7 @@ and pick up whatever is published next.
 
 ## How it works
 
-**The x402 flow, per tool call.** MCP speaks JSON-RPC over one HTTP endpoint, so the gateway maps each priced tool to a synthetic x402 route. On `tools/call`, the gateway returns `402 Payment Required` with the price; the agent's wallet signs a CEP-18 `transfer_with_authorization` (EIP-712) and retries; the gateway verifies the authorization, runs the tool, and **only settles payment if the tool succeeds** (a failed call is never charged). Tools marked `settleBeforeExecute` settle first and run only once the payment is on-chain. Tools that are neither priced nor listed as free are hidden and rejected. Settlement uses a self-hosted x402 facilitator built on the official `@make-software/casper-x402` package — CasCet builds *on* the official rails, it does not reimplement verification.
+**The x402 flow, per tool call.** MCP speaks JSON-RPC over one HTTP endpoint, so the gateway maps each priced tool to a synthetic x402 route. On `tools/call`, the gateway returns `402 Payment Required` with the price; the agent's wallet signs a CEP-18 `transfer_with_authorization` (EIP-712) and retries; the gateway verifies the authorization, runs the tool, and **only settles payment if the tool succeeds** (a failed call is never charged). Tools marked `settleBeforeExecute` settle first and run only once the payment is on-chain. Tools that are neither priced nor listed as free are hidden and rejected. Settlement uses a self-hosted x402 facilitator: it checks each signature with the official `@x402/casper` EIP-712 digest and builds the `transfer_with_authorization` transaction itself, with the `amount` or `value` argument that the token's on-chain ABI takes.
 
 > **Real settlement, verified.** `pnpm --filter @cascet/e2e demo-real` (a maintainer
 > demo) settles a real `transfer_with_authorization` on-chain: the agent pays from
