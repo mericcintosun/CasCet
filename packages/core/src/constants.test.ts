@@ -33,6 +33,12 @@ describe("isKnownCep3009Asset", () => {
     assert.equal(isKnownCep3009Asset(NETWORK_CASPER_MAINNET, `hash-${CASCET_X402_MAINNET}`), false);
   });
 
+  it("answers false for a network that is a prototype key, instead of throwing", () => {
+    for (const network of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      assert.equal(isKnownCep3009Asset(network, "3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e"), false);
+    }
+  });
+
   it("is frozen", () => {
     assert.ok(Object.isFrozen(KNOWN_CEP3009_ASSETS));
     assert.ok(Object.isFrozen(KNOWN_CEP3009_ASSETS[NETWORK_CASPER_MAINNET]));

@@ -55,9 +55,10 @@ export function isHostedFacilitatorUrl(url: string): boolean {
 
 /**
  * Default address of CasCet's self-hosted facilitator
- * (`pnpm --filter @cascet/e2e facilitator` in a CasCet checkout). It is built on
- * `@make-software/casper-x402` 1.0.0, so it settles `amount`-style x402 tokens
- * such as CasCet's own, paying the gas from its own fee-payer key.
+ * (`pnpm --filter @cascet/e2e facilitator` in a CasCet checkout). It builds its
+ * own settlement in each token's style, `amount` for `legacy-amount` tokens such
+ * as CasCet's own and `value` for CEP-3009 tokens such as Wrapped CSPR, and
+ * pays the gas from its own fee-payer key.
  */
 export const DEFAULT_SELF_HOSTED_FACILITATOR_URL = "http://127.0.0.1:4501";
 
@@ -77,7 +78,8 @@ export const KNOWN_CEP3009_ASSETS: Readonly<Record<string, readonly string[]>> =
 /** True when `packageHash` (with or without `hash-`) is a known CEP-3009 `value` token on `network`. */
 export function isKnownCep3009Asset(network: string, packageHash: string): boolean {
   const bare = packageHash.trim().toLowerCase().replace(/^hash-/, "");
-  return KNOWN_CEP3009_ASSETS[network]?.includes(bare) ?? false;
+  // Own keys only: a network such as "constructor" must not reach Object.prototype.
+  return Object.hasOwn(KNOWN_CEP3009_ASSETS, network) && KNOWN_CEP3009_ASSETS[network]!.includes(bare);
 }
 
 /** Default gateway port. */
