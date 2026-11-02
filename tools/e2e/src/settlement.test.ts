@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import casperSdk from "casper-js-sdk";
+import { AUTHORIZATION_STYLES, type AuthorizationStyle } from "@cascet/core";
 import { createCasperRpc } from "@cascet/gateway";
-import type { AuthorizationStyle } from "@cascet/core";
 import * as fx from "./rpc-fixtures.js";
 import {
   AMOUNT_ARGUMENT_BY_STYLE,
@@ -11,6 +11,7 @@ import {
   createCasperSettlementChain,
   netCostMotes,
   parseExecutionInfo,
+  SETTLEABLE_STYLES,
   transferWithAuthorizationArgs,
   type SettlementInput,
 } from "./settlement.js";
@@ -131,6 +132,26 @@ describe("settlement transaction builder: one path, two styles", () => {
     assert.deepEqual([amountArgumentName("legacy-amount"), amountArgumentName("cep3009-value")], ["amount", "value"]);
     assert.throws(() => amountArgumentName("value" as AuthorizationStyle), /unknown authorization style/);
     assert.throws(() => transferWithAuthorizationArgs(settledInput, "cep3009" as AuthorizationStyle), /unknown authorization style/);
+  });
+
+  test("SETTLEABLE_STYLES are exactly the styles whose amount argument the builder sends", () => {
+    const sentArguments = (style: AuthorizationStyle) => {
+      const tx = buildSettlementTransaction(settledInput, {
+        feePayerPublicKey: recorded.payload.initiator_addr.PublicKey,
+        chainName: "casper-test",
+        style,
+        paymentMotes: 4_000_000_000n,
+        ttlMs: 10 * 60_000,
+      });
+      const json = TransactionWrapper.toJSON(tx.getTransactionWrapper()) as TxJson;
+      return new Set(json.Version1.payload.fields.args.Named.map(([name]) => name));
+    };
+    assert.deepEqual(
+      [...SETTLEABLE_STYLES],
+      AUTHORIZATION_STYLES.filter(style => sentArguments(style).has(AMOUNT_ARGUMENT_BY_STYLE[style])),
+    );
+    assert.deepEqual([...SETTLEABLE_STYLES], ["legacy-amount", "cep3009-value"]);
+    assert.ok(Object.isFrozen(SETTLEABLE_STYLES));
   });
 
   test("uses the requested gas limit (4 CSPR default path)", () => {

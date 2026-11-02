@@ -105,6 +105,14 @@ export const AMOUNT_ARGUMENT_BY_STYLE: Readonly<Record<AuthorizationStyle, "amou
   "cep3009-value": "value",
 });
 
+/**
+ * The authorization styles this builder settles: every style it has an amount
+ * argument for. demo-real refuses a token whose style is not listed here.
+ */
+export const SETTLEABLE_STYLES: readonly AuthorizationStyle[] = Object.freeze(
+  Object.keys(AMOUNT_ARGUMENT_BY_STYLE) as AuthorizationStyle[],
+);
+
 /** The amount argument's name for `style`; throws for anything that is not a known style. */
 export function amountArgumentName(style: AuthorizationStyle): "amount" | "value" {
   if (!isAuthorizationStyle(style)) throw new Error(`unknown authorization style: ${String(style).slice(0, 40)}`);

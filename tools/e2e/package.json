@@ -11,8 +11,11 @@
     "test": "tsx --test \"src/**/*.test.ts\"",
     "key-roles": "tsx src/key-roles.ts",
     "demo-real": "tsx src/run-real.ts",
+    "demo-real-wcspr": "tsx src/run-real.ts --asset wcspr",
     "demo-real-mainnet": "tsx src/run-real-mainnet.ts",
     "fund-token": "tsx src/fund-token.ts",
+    "wrap-wcspr": "tsx src/wrap-wcspr.ts",
+    "settle-report": "tsx src/settle-report.ts",
     "facilitator": "tsx src/run-facilitator.ts",
     "agent": "tsx src/run-agent-demo.ts",
     "connect-demo": "tsx src/run-connect-demo.ts"

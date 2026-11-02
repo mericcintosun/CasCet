@@ -220,16 +220,24 @@ it they stay empty.
 
 ### Maintainer demos
 
-The scripts in `tools/e2e` that move tokens (`fund-token`, `demo`, `demo-real`,
-`demo-real-mainnet`, `agent`, `connect-demo`) sign with the CasCet operator's
-keys in `contracts/keys/`, which are not part of the repository, so they only run
-on a maintainer's machine. They produced the transactions linked in this README.
+The scripts in `tools/e2e` that move tokens (`fund-token`, `wrap-wcspr`, `demo`,
+`demo-real`, `demo-real-wcspr`, `demo-real-mainnet`, `agent`, `connect-demo`)
+sign with the CasCet operator's keys in `contracts/keys/`, which are not part of
+the repository, so they only run on a maintainer's machine. They produced the
+transactions linked in this README.
 
 ```bash
 pnpm --filter @cascet/e2e gen-keys                                # throwaway testnet keys in tools/e2e/keys/
-pnpm --filter @cascet/e2e fund-token <analyst-account-hash> 300   # pays the analyst from the token treasury
+pnpm --filter @cascet/e2e fund-token cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3 \
+  <analyst-account-hash> 300 --send                               # pays the analyst from the token treasury
 pnpm --filter @cascet/e2e demo                                    # full cascade, real settlement on testnet, both hops
 ```
+
+`fund-token`, and `wrap-wcspr` (testnet CSPR into Wrapped CSPR), are dry runs
+unless you add `--send`, and refuse mainnet. The demos have no dry run:
+`demo-real-wcspr` signs and pays in Wrapped CSPR on testnet after its read-only
+checks, and `settle-report <tx-hash>…` (read-only) prints the measured gas of
+settles; see [Two token styles](#two-token-styles-legacy-amount-and-cep3009-value).
 
 You'll see an agent pay `$0.10` for `analyze_portfolio`, which autonomously spends `$0.07` buying four data tools underneath — every downstream payment linked to the root, asserted at the end. With `pnpm --filter @cascet/dashboard dev` running, the demo's gateways push their receipts to the dashboard live.
 
@@ -259,8 +267,12 @@ Then edit `cascet.config.json`:
   account hash nobody controls, so it would be lost.
 - `asset`: a token your facilitator can settle (see the table below). On testnet
   that is CasCet's x402 token, `hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3`
-  (name `CasCet X402 Token`, version `1`, 9 decimals).
-- `facilitator.url`: the facilitator that verifies and settles payments.
+  (name `CasCet X402 Token`, version `1`, 9 decimals), with the self-hosted
+  facilitator; or Wrapped CSPR, `hash-3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e`
+  (name `Wrapped CSPR`, version `1`, 9 decimals), with the hosted one.
+- `facilitator.url`: the facilitator that verifies and settles payments, and
+  `facilitator.apiKey` the credential it expects (for the hosted facilitator,
+  your CSPR.cloud access key, sent raw).
 - `pricing.tools`: a price per tool. Add `"settleBeforeExecute": true` to tools
   that are expensive, have side effects, or buy from other paid tools
   (cascades): they then run only after the payment has settled on-chain. The
@@ -277,7 +289,7 @@ npx "@cascet/cli@^0.1.1" wrap   # your server is now paid; the gateway listens o
 | Facilitator | Settles | Use it with |
 | --- | --- | --- |
 | Self-hosted (`pnpm --filter @cascet/e2e facilitator`, in this repository) | both styles, per token from its on-chain ABI: `amount` (`legacy-amount`) and CEP-3009 `value` (`cep3009-value`) | CasCet's x402 tokens (testnet `hash-cb65a928…`, mainnet `hash-8dd4f1aa…`) and CEP-3009 tokens such as testnet Wrapped CSPR (`hash-3d80df21…`), listed in `CASCET_ALLOWED_ASSETS` |
-| Hosted CSPR.cloud (`x402-facilitator.cspr.cloud`) | only CEP-3009 tokens whose `transfer_with_authorization` takes `value`, such as the official Wrapped CSPR | not CasCet's x402 tokens; using it needs the planned move to the CEP-3009 `value` stack ([why](docs/onchain.md#why-cascet-runs-its-own-x402-facilitator)) |
+| Hosted CSPR.cloud (`x402-facilitator.cspr.cloud`) | only `cep3009-value` tokens, whose `transfer_with_authorization` takes `value`, such as the official Wrapped CSPR | Wrapped CSPR: testnet `hash-3d80df21…` (see [`examples/wrap-third-party/cascet.wcspr.config.json`](examples/wrap-third-party/cascet.wcspr.config.json)); never CasCet's x402 tokens ([why](docs/onchain.md#why-cascet-runs-its-own-x402-facilitator)) |
 
 Start the self-hosted facilitator from a clone of this repository:
 
@@ -301,6 +313,47 @@ fee-payer account is the owner account (`CASCET_OWNER_ACCOUNT_HASH`) or the
 seller account. Read [`SECURITY.md`](SECURITY.md) and
 [`docs/mainnet-readiness.md`](docs/mainnet-readiness.md) before you run anything
 with real funds.
+
+#### Two token styles: legacy-amount and cep3009-value
+
+Buyers sign the same EIP-712 `TransferWithAuthorization` message for both
+styles; only the name of the amount argument the facilitator passes to the
+token differs (`amount` or `value`). A facilitator that sends the wrong one
+makes the settlement revert with `User error: 64658`, which burns its whole gas
+limit. So:
+
+- Each `asset` has an authorization style. It is resolved from the package
+  hash (CasCet's x402 tokens are `legacy-amount`, every other token
+  `cep3009-value`) or set with `"authorization"`. The gateway advertises it in
+  every `accepts` entry as `extra.authorizationStyle`; no facilitator trusts
+  that field. The hosted facilitator always sends `value`; the self-hosted
+  facilitator in this release always sends `amount`, so its
+  `CASCET_ALLOWED_ASSETS` must list only `legacy-amount` tokens (never Wrapped
+  CSPR).
+- The config schema refuses a `legacy-amount` asset settled by the hosted
+  facilitator.
+- The hosted facilitator takes your CSPR.cloud access key **raw** in the
+  `Authorization` header, with no `Bearer ` prefix. Put it in
+  `facilitator.apiKey`; `facilitator.authScheme` is `"raw"` by default, and
+  `"bearer"` is refused for the hosted facilitator. Its `/supported` needs no key.
+- **The hosted facilitator's testnet fee payer is underfunded.** On 2026-11-01
+  it held 2.145 CSPR, less than the 2.5 CSPR one settle needs (Casper's minimum
+  balance for the account that submits a transaction, and the hosted
+  facilitator's gas limit per settle), so every hosted settle on testnet fails
+  until MAKE refills it. Its mainnet fee payer is funded.
+- Testnet Wrapped CSPR (`hash-3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e`,
+  name `Wrapped CSPR`, version `1`, 9 decimals) is minted 1:1 for testnet CSPR
+  by its payable `deposit` entry point:
+  `pnpm --filter @cascet/e2e wrap-wcspr <cspr> --key /absolute/path/to/key.pem`
+  prints the plan and the expected gas, and wraps with `--send`.
+- `pnpm --filter @cascet/e2e settle-report <tx-hash>…` reads settle
+  transactions back (read-only) and prints consumed gas, refund and net cost,
+  with a gas limit suggested from the measurements (ceil(1.3 × max consumed)).
+  The self-hosted facilitator's limit for `legacy-amount` settles is 4 CSPR
+  (they consume about 2.7 CSPR, more than `@x402/casper`'s 2.5 CSPR default).
+
+[`docs/testing-playbook.md`](docs/testing-playbook.md#two-token-styles-on-testnet-cascet-x402-token-and-wrapped-cspr)
+walks through a Wrapped CSPR payment on testnet.
 
 ### Point an agent at it
 
