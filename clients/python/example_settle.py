@@ -74,8 +74,9 @@ dropped); an error about a key names its variable and never shows the value.
 
 Exit status:
     0  settled
-    1  nothing was paid: a setting or a refusal (before anything is signed),
-       a facilitator that could not be reached, or a settle it reports failed
+    1  not settled: a setting or a refusal (before anything is signed), a
+       facilitator that could not be reached, or a settle it reports failed
+       (a hosted failure without a transaction hash prints the caution of 3)
     2  invalid options
     3  outcome unknown: the request may have reached the facilitator but no
        answer came back, or the facilitator could not tell whether the
@@ -136,8 +137,9 @@ HOSTED_SETTLE_STYLES: Tuple[str, ...] = ("cep3009-value",)
 #: How long to wait for /settle: the facilitator answers once the transaction has executed.
 SETTLE_TIMEOUT_SECONDS = 120
 
+#: The transfer executed.
 EXIT_SETTLED = 0
-#: Nothing was paid (a setting, a refusal, an unreachable facilitator or a failed settle).
+#: Not settled: a setting, a refusal, an unreachable facilitator or a settle the facilitator reports failed.
 EXIT_FAILED = 1
 #: The settle may still execute: check the payer's balance before running again.
 EXIT_OUTCOME_UNKNOWN = 3
