@@ -133,6 +133,28 @@ export function formatWrapPlan(plan: WrapPlan): string[] {
   ];
 }
 
+/**
+ * What wrap-wcspr prints once the wrap executed successfully: the signer's new
+ * WCSPR balance and how to hand some to a buyer. A balance that cannot be read
+ * (`readBalance` rejects, e.g. the node answers 503 twice) is reported as
+ * unknown with a warning, never as a failure: the wrap already succeeded, and
+ * a re-run would wrap (and pay gas) again.
+ */
+export async function wrappedReport(readBalance: () => Promise<bigint>): Promise<{ lines: string[]; warning?: string }> {
+  const hint = `give some to a buyer: pnpm --filter @cascet/e2e fund-token ${TESTNET_WCSPR.packageHash} <buyer account hash> <amount> --send`;
+  try {
+    const after = await readBalance();
+    return { lines: [`\nwrapped: the signer now holds ${formatAmount(after, TESTNET_WCSPR.decimals)} ${TESTNET_WCSPR.symbol}`, hint] };
+  } catch (err) {
+    return {
+      lines: [`\nwrapped: the wrap executed; the signer's ${TESTNET_WCSPR.symbol} balance is unknown`, hint],
+      warning:
+        `could not read the new ${TESTNET_WCSPR.symbol} balance (${err instanceof Error ? err.message : String(err)}); ` +
+        "the wrap succeeded, so do not wrap again: check the balance on the explorer",
+    };
+  }
+}
+
 /** The (unsigned) wrap: Odra's proxy session calling WCSPR `deposit` with `depositMotes` attached. */
 export function buildWrapTransaction(wasm: Uint8Array, depositMotes: bigint, opts: ProxySessionOptions) {
   if (depositMotes <= 0n) throw new Error("the amount to wrap must be more than 0 CSPR");
