@@ -45,9 +45,21 @@ export {
 export {
   HOSTED_PREFLIGHT_DEADLINE_MS,
   hostedPreflightHook,
+  insufficientFundsInFlight,
   PreflightReason,
   type HostedPreflightOptions,
 } from "./hosted-preflight.js";
+export {
+  IN_FLIGHT_MARGIN_MS,
+  InFlightPayments,
+  paymentHoldOf,
+  withPaymentHold,
+  type InFlightOptions,
+  type InFlightPayment,
+  type InFlightTotal,
+  type PaymentHold,
+  type ReserveOutcome,
+} from "./in-flight.js";
 export {
   connectUpstream,
   createUpstreamTransport,

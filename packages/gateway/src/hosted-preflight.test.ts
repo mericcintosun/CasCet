@@ -3,7 +3,8 @@ import { describe, it } from "node:test";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import type { ResolvedAsset } from "@cascet/core";
 import { createCasperRpc, type RpcFetch } from "./casper-rpc.js";
-import { HOSTED_PREFLIGHT_DEADLINE_MS, hostedPreflightHook, PreflightReason } from "./hosted-preflight.js";
+import { HOSTED_PREFLIGHT_DEADLINE_MS, hostedPreflightHook, insufficientFundsInFlight, PreflightReason } from "./hosted-preflight.js";
+import { IN_FLIGHT_MARGIN_MS, InFlightPayments, withPaymentHold, type PaymentHold } from "./in-flight.js";
 import { WCSPR_TESTNET, wcsprNodeRoutes, wcsprNonceCall, wcsprRequirements } from "./testing/fake-node.js";
 import * as fx from "./testing/rpc-fixtures.js";
 import { replayFetch, type Replay } from "./testing/rpc-replay.js";
@@ -39,16 +40,30 @@ const payment = (requirements: PaymentRequirements, authorization: Record<string
 });
 
 /** The hook over a probe whose node answers `routes` (recorded testnet Wrapped CSPR state by default). */
-function preflight(opts: { routes?: Record<string, Replay>; fetchImpl?: RpcFetch; asset?: Partial<ResolvedAsset>; deadlineMs?: number } = {}) {
+function preflight(
+  opts: { routes?: Record<string, Replay>; fetchImpl?: RpcFetch; asset?: Partial<ResolvedAsset>; deadlineMs?: number; inFlight?: InFlightPayments } = {},
+) {
   const calls: string[] = [];
   const routes = opts.routes ?? wcsprNodeRoutes({ balances: { [PAYER]: 1_000_000_000n } });
   const probe = new TokenProbe(createCasperRpc("http://node.invalid/rpc", { fetchImpl: opts.fetchImpl ?? replayFetch(routes, calls) }));
-  const hook = hostedPreflightHook({ probe, network: NETWORK, assets: [{ ...WCSPR_ASSET, ...opts.asset }], deadlineMs: opts.deadlineMs });
+  const hook = hostedPreflightHook({
+    probe,
+    network: NETWORK,
+    assets: [{ ...WCSPR_ASSET, ...opts.asset }],
+    deadlineMs: opts.deadlineMs,
+    inFlight: opts.inFlight,
+  });
   return {
     calls,
-    // The hook only ever passes (undefined) or aborts; it never skips verification.
-    run: async (requirements: PaymentRequirements = wcsprRequirements(PRICE, PAY_TO), paymentPayload = payment(requirements)) =>
-      (await hook({ paymentPayload, requirements, declaredExtensions: {} })) as { abort: true; reason: string; message?: string } | undefined,
+    // The hook only ever passes (undefined) or aborts; it never skips verification. With `hold`, the payment
+    // comes as x402 hands it over for a gateway call: with the call's hold in its request context.
+    run: async (requirements: PaymentRequirements = wcsprRequirements(PRICE, PAY_TO), paymentPayload = payment(requirements), hold?: PaymentHold) =>
+      (await hook({
+        paymentPayload,
+        requirements,
+        declaredExtensions: {},
+        transportContext: hold ? { request: withPaymentHold({ path: "/tools/0", method: "POST" }, hold) } : undefined,
+      })) as { abort: true; reason: string; message?: string } | undefined,
   };
 }
 
@@ -128,5 +143,115 @@ describe("on-chain preflight of payments the hosted facilitator settles", () => 
     assert.equal(await run({ ...wcsprRequirements(PRICE, PAY_TO), asset: LEGACY_TOKEN }), undefined);
     assert.equal(await run({ ...wcsprRequirements(PRICE, PAY_TO), network: "casper:casper" }), undefined);
     assert.deepEqual(calls, []);
+  });
+});
+
+describe("payments in flight in the hosted preflight", () => {
+  const requirements = wcsprRequirements(PRICE, PAY_TO);
+  const nonce = (byte: string) => byte.repeat(32);
+  /** A preflight with in-flight tracking over a payer whose balance funds `payments` payments. */
+  const tracked = (payments: number, inFlight = new InFlightPayments()) => ({
+    inFlight,
+    ...preflight({ inFlight, routes: wcsprNodeRoutes({ balances: { [PAYER]: BigInt(PRICE) * BigInt(payments) } }) }),
+  });
+
+  it("lets exactly one of two concurrent payments through when the balance funds one, and names the other's in-flight payment", async () => {
+    const { inFlight, run } = tracked(1);
+    const [first, second] = [inFlight.open(), inFlight.open()];
+    const results = await Promise.all([
+      run(requirements, payment(requirements, { nonce: nonce("01") }), first),
+      run(requirements, payment(requirements, { nonce: nonce("02") }), second),
+    ]);
+    assert.equal(results.filter(result => result === undefined).length, 1, "one passes");
+    assert.deepEqual(
+      results.find(result => result !== undefined),
+      {
+        abort: true,
+        reason: insufficientFundsInFlight(1),
+        message: `payer balance ${PRICE} does not cover ${PRICE} plus ${PRICE} already in flight`,
+      },
+    );
+    assert.equal(insufficientFundsInFlight(1), "insufficient_funds: insufficient balance once 1 in-flight payment is counted");
+    assert.deepEqual(inFlight.total(NETWORK, WCSPR_TESTNET, PAYER), { count: 1, amount: BigInt(PRICE) }, "only the payment that passed is reserved");
+  });
+
+  it("frees the balance again once the call of the payment in flight ends", async () => {
+    const { inFlight, run } = tracked(1);
+    const first = inFlight.open();
+    assert.equal(await run(requirements, payment(requirements, { nonce: nonce("01") }), first), undefined);
+    assert.equal((await run(requirements, payment(requirements, { nonce: nonce("02") }), inFlight.open()))?.reason, insufficientFundsInFlight(1));
+    first.release();
+    assert.equal(await run(requirements, payment(requirements, { nonce: nonce("03") }), inFlight.open()), undefined);
+  });
+
+  it("counts every payment of the payer in flight in that asset, and nothing else", async () => {
+    const inFlight = new InFlightPayments();
+    const reserve = (overrides: { payer?: string; asset?: string; network?: string } = {}) =>
+      inFlight.reserve(inFlight.open(), { network: NETWORK, asset: WCSPR_TESTNET, payer: PAYER, amount: BigInt(PRICE), validBefore: 4102444800, ...overrides });
+    reserve({ payer: `00${"66".repeat(32)}` });
+    reserve({ asset: LEGACY_TOKEN });
+    reserve({ network: "casper:casper" });
+    assert.equal(await tracked(1, inFlight).run(requirements, payment(requirements), inFlight.open()), undefined, "other payers, assets and networks");
+
+    const crowded = new InFlightPayments();
+    crowded.reserve(crowded.open(), { network: NETWORK, asset: `hash-${WCSPR_TESTNET.toUpperCase()}`, payer: PAYER.toUpperCase(), amount: BigInt(PRICE), validBefore: 4102444800 });
+    crowded.reserve(crowded.open(), { network: NETWORK, asset: WCSPR_TESTNET, payer: PAYER, amount: BigInt(PRICE), validBefore: 4102444800 });
+    assert.equal((await tracked(2, crowded).run(requirements, payment(requirements), crowded.open()))?.reason, insufficientFundsInFlight(2));
+    assert.equal(insufficientFundsInFlight(2), "insufficient_funds: insufficient balance once 2 in-flight payments are counted");
+    assert.equal(await tracked(3, crowded).run(requirements, payment(requirements), crowded.open()), undefined);
+  });
+
+  it("keeps the plain insufficient_funds reason when nothing else is in flight, and reserves nothing for a refused payment", async () => {
+    const { inFlight, run } = tracked(0);
+    assert.deepEqual(await run(requirements, payment(requirements), inFlight.open()), {
+      abort: true,
+      reason: PreflightReason.insufficientFunds,
+      message: `payer balance 0 is below ${PRICE}`,
+    });
+    const spent = new InFlightPayments();
+    const routes = wcsprNodeRoutes({ balances: { [PAYER]: 5n * BigInt(PRICE) }, usedNonces: [{ payer: PAYER, nonce: NONCE }] });
+    const used = preflight({ inFlight: spent, routes });
+    assert.equal((await used.run(requirements, payment(requirements), spent.open()))?.reason, PreflightReason.nonceAlreadyUsed);
+    assert.deepEqual([inFlight.size, spent.size], [0, 0]);
+  });
+
+  it("reserves until the authorization's validBefore plus the margin, at most", async () => {
+    let now = 0;
+    const inFlight = new InFlightPayments({ now: () => now });
+    const { run } = tracked(1, inFlight);
+    assert.equal(await run(requirements, payment(requirements, { validBefore: "1000" }), inFlight.open()), undefined);
+    now = 1_000_000 + IN_FLIGHT_MARGIN_MS - 1;
+    assert.deepEqual(inFlight.total(NETWORK, WCSPR_TESTNET, PAYER).count, 1);
+    now += 1;
+    assert.deepEqual(inFlight.total(NETWORK, WCSPR_TESTNET, PAYER).count, 0, "a stale reservation stops counting");
+  });
+
+  it("refuses a payment it could not track: without a hold or a validBefore (before reading anything), or of a call that already ended", async () => {
+    const { inFlight, calls, run } = tracked(1);
+    assert.deepEqual(await run(requirements, payment(requirements)), {
+      abort: true,
+      reason: PreflightReason.preflightUnavailable,
+      message: "the gateway cannot track this payment while it is in flight",
+    });
+    assert.deepEqual(await run(requirements, payment(requirements, { validBefore: undefined }), inFlight.open()), {
+      abort: true,
+      reason: PreflightReason.invalidPayload,
+      message: "the payment names no validBefore",
+    });
+    assert.deepEqual(calls, []);
+    const ended = inFlight.open();
+    ended.release();
+    assert.equal((await run(requirements, payment(requirements), ended))?.reason, PreflightReason.preflightUnavailable);
+    assert.equal(inFlight.size, 0);
+  });
+
+  it("refuses rather than forget a live payment when the tracker is full", async () => {
+    const inFlight = new InFlightPayments({ maxPayments: 1 });
+    inFlight.reserve(inFlight.open(), { network: NETWORK, asset: LEGACY_TOKEN, payer: PAYER, amount: 1n, validBefore: 4102444800 });
+    assert.deepEqual(await tracked(1, inFlight).run(requirements, payment(requirements), inFlight.open()), {
+      abort: true,
+      reason: "preflight_unavailable: too many payments in flight; retry later",
+      message: "the in-flight payments are at their limit",
+    });
   });
 });
