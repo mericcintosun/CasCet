@@ -393,7 +393,9 @@ class TestSettleMain(unittest.TestCase):
 
 def refused_connection():
     """What requests raises when nothing listens on the facilitator's port."""
-    reason = urllib3.exceptions.NewConnectionError(None, "Failed to establish a new connection: [Errno 61] Connection refused")
+    reason = urllib3.exceptions.NewConnectionError(
+        None, "Failed to establish a new connection: [Errno 61] Connection refused"
+    )
     return requests.exceptions.ConnectionError(urllib3.exceptions.MaxRetryError(None, "/settle", reason))
 
 
