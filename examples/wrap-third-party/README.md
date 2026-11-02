@@ -142,6 +142,17 @@ needed: the hosted facilitator pays the gas.
   raw in the `Authorization` header (`"authScheme": "raw"`; the hosted
   facilitator does not take `Bearer `). Keep the filled-in copy out of git.
 - Fill in `payTo` as in step 1 above.
+- Keep `settlement.nodeUrl`: the gateway reads this testnet node before the
+  hosted facilitator verifies a payment, and refuses a payment whose nonce is
+  already used, whose token does not take `value` or has a different name than
+  the one signed, or that the payer's balance does not cover once the payer's
+  other payments in flight are counted. The hosted facilitator's own nonce
+  check does not work and it does not count payments in flight, so without a
+  node those payments pass its verify, the tools run, and their settles revert:
+  the seller is not paid and the hosted fee payer loses the gas. A node that
+  cannot be read within 5 s gets the payment refused (`preflight_unavailable`;
+  nothing is charged). See
+  [The hosted facilitator](../../packages/gateway/README.md#the-hosted-facilitator).
 - Skip step 2: the hosted facilitator pays the gas. The self-hosted
   facilitator settles Wrapped CSPR too (it sends `value` to `cep3009-value`
   tokens). To use it instead, run step 2 with the WCSPR package hash in
