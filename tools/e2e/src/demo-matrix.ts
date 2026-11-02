@@ -1,8 +1,14 @@
-import { DEFAULT_FACILITATOR_URL, normalizePackageHash, type AuthorizationStyle } from "@cascet/core";
+import {
+  DEFAULT_FACILITATOR_URL,
+  DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE,
+  normalizePackageHash,
+  type AuthorizationStyle,
+} from "@cascet/core";
 import type { CasperRpc } from "@cascet/gateway";
 import { formatCspr } from "./amounts.js";
 import { NETWORKS } from "./facilitator-env.js";
 import { normalizePayTo } from "./facilitator-core.js";
+import type { TransactionKind } from "./gas-report.js";
 import { SETTLEABLE_STYLES } from "./settlement.js";
 import { parseCli, readCsprBalance, UsageError } from "./testnet-tx.js";
 import { TESTNET_WCSPR } from "./wcspr.js";
@@ -303,6 +309,26 @@ export async function hostedPreflight(deps: HostedPreflightDeps): Promise<Hosted
   const problem = hostedFeePayerProblem(feePayer, balanceMotes);
   if (problem) throw new HostedPreflightError(problem);
   return { feePayer, balanceMotes };
+}
+
+/**
+ * The gas limit demo-real set for a kind of transaction it measured, printed
+ * next to the suggestion: an anchor's (`anchoring.gasMotes`) and, with the
+ * self-hosted facilitator, a settle's: CASCET_SETTLE_PAYMENT_MOTES
+ * (`settlePaymentMotes`), else the default of the asset's style. A hosted
+ * settle has none (undefined): the hosted facilitator picks its own limit,
+ * which the measured row shows.
+ */
+export function demoConfiguredLimit(
+  kind: TransactionKind,
+  mode: Pick<DemoMode, "facilitator" | "asset">,
+  limits: { anchorGasMotes: number; settlePaymentMotes?: number | undefined },
+): bigint | undefined {
+  if (kind.kind === "anchor") return BigInt(limits.anchorGasMotes);
+  if (kind.kind === "settle" && mode.facilitator === "self") {
+    return BigInt(limits.settlePaymentMotes ?? DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE[mode.asset.config.authorization]);
+  }
+  return undefined;
 }
 
 /** How to fund the buyer with the demo token (printed when its balance is too low). */

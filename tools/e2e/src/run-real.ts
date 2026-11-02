@@ -6,11 +6,13 @@ import {
   usdPriceToTokenUnits,
   type CascetConfig,
 } from "@cascet/core";
-import { createCasperRpc, startGateway, TokenProbe, type RunningGateway } from "@cascet/gateway";
+import { createCasperRpc, startGateway, TokenProbe } from "@cascet/gateway";
 import { createPayingFetch, PaidMcpHttpClient } from "@cascet/client";
 import { formatAmount, formatCspr } from "./amounts.js";
+import { ANCHOR_WAIT_MS, waitForAnchor } from "./demo-anchor.js";
 import {
   assertAssetAllowed,
+  demoConfiguredLimit,
   demoSeller,
   fundingHint,
   HOSTED_FACILITATOR_URL,
@@ -78,8 +80,6 @@ const TESTNET = NETWORKS["casper:casper-test"];
 const NODE_URL = TESTNET.rpcUrl;
 const TOOL = "get_cspr_market_data";
 const PRICE = "$0.01";
-/** The gateway confirms an anchor for up to 120 s (anchoring.confirmTimeoutMs). */
-const ANCHOR_WAIT_MS = 150_000;
 /**
  * A run-then-settle call is answered after up to facilitatorMs + upstreamMs +
  * settleMs (165 s with the gateway's defaults); a buyer that gives up earlier
@@ -87,7 +87,6 @@ const ANCHOR_WAIT_MS = 150_000;
  */
 const PAID_CALL_TIMEOUT_MS = 180_000;
 
-const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 interface ReceiptJson {
@@ -109,23 +108,6 @@ async function receiptById(id: string): Promise<ReceiptJson | undefined> {
 }
 
 const TX_HASH = /^[0-9a-f]{64}$/i;
-
-/** Wait until the receipt is anchored (or anchoring gave up); a failed anchor's hash comes from the anchorer's last error. */
-async function waitForAnchor(gateway: RunningGateway, paymentId: string): Promise<{ hash?: string; note: string }> {
-  const deadline = Date.now() + ANCHOR_WAIT_MS;
-  for (;;) {
-    const anchoring = gateway.health().anchoring; // read before the receipt: the hash is set before the anchor leaves flight
-    const receipt = await receiptById(paymentId);
-    if (receipt?.anchoredTxHash) return { hash: receipt.anchoredTxHash, note: "anchored" };
-    if (anchoring.state === "disabled") return { note: "anchoring is off" };
-    if (anchoring.queued === 0 && anchoring.inFlight === 0) {
-      const failed = anchoring.lastError?.match(/\b[0-9a-f]{64}\b/)?.[0];
-      return { ...(failed ? { hash: failed } : {}), note: `the anchor did not execute: ${anchoring.lastError ?? "skipped"}` };
-    }
-    if (Date.now() >= deadline) return { note: `still anchoring after ${ANCHOR_WAIT_MS / 1000} s` };
-    await sleep(2_000);
-  }
-}
 
 async function main(): Promise<number> {
   const mode: DemoMode = resolveDemoMode(process.env, process.argv.slice(2));
@@ -289,7 +271,7 @@ async function main(): Promise<number> {
     }
     if (settled) {
       console.log(`\n[demo] waiting for the receipt's anchor (up to ${ANCHOR_WAIT_MS / 1000} s)…`);
-      const anchor = await waitForAnchor(gateway, settled.id);
+      const anchor = await waitForAnchor(settled.id, { health: () => gateway.health().anchoring, receiptById });
       if (anchor.hash) {
         console.log(`anchor tx: ${anchor.hash}\n  ${TESTNET.explorer}/transaction/${anchor.hash}`);
         rows.push({ label: "anchor", report: await readTransactionReport(rpc, anchor.hash, { deadlineMs: Date.now() + 60_000 }) });
@@ -300,11 +282,8 @@ async function main(): Promise<number> {
       console.log("\n──────── measured gas (read-only RPC) ────────");
       for (const row of rows) if (row.report.kind.kind !== "other") row.label = kindLabel(row.report.kind);
       for (const line of formatCostTable(rows)) console.log(line);
-      const configured = (kind: TransactionReport["kind"]): bigint | undefined => {
-        if (kind.kind === "anchor") return BigInt(dataConfig.anchoring!.gasMotes);
-        if (kind.kind === "settle" && fac) return BigInt(fac.paymentMotes);
-        return undefined;
-      };
+      const configured = (kind: TransactionReport["kind"]) =>
+        demoConfiguredLimit(kind, mode, { anchorGasMotes: dataConfig.anchoring!.gasMotes, settlePaymentMotes: fac?.paymentMotes });
       for (const line of formatGasSuggestions(gasSuggestions(rows.map(r => r.report), configured))) console.log(line);
       console.log(
         `default settle limit for ${style}: ${formatCspr(BigInt(DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE[style]), 2)} CSPR ` +

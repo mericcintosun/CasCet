@@ -4,6 +4,7 @@ import { cascetConfigSchema, facilitatorAuthorization, facilitatorFor, usdPriceT
 import { createCasperRpc } from "@cascet/gateway";
 import {
   assertAssetAllowed,
+  demoConfiguredLimit,
   DemoConfigError,
   demoSeller,
   fetchHostedSupported,
@@ -257,3 +258,29 @@ describe("demo-real: hosted facilitator preflight", () => {
   });
 });
 
+describe("demo-real: configured gas limits next to the measured suggestions", () => {
+  const legacySelf = { facilitator: "self" as const, asset: TESTNET_DEMO_ASSETS.legacy };
+  const wcsprSelf = { facilitator: "self" as const, asset: TESTNET_DEMO_ASSETS.wcspr };
+  const wcsprHosted = { facilitator: "hosted" as const, asset: TESTNET_DEMO_ASSETS.wcspr };
+  const limits = { anchorGasMotes: 2_500_000_000, settlePaymentMotes: 4_200_000_000 };
+
+  test("anchors: anchoring.gasMotes in every mode", () => {
+    for (const mode of [legacySelf, wcsprSelf, wcsprHosted]) {
+      assert.equal(demoConfiguredLimit({ kind: "anchor" }, mode, limits), 2_500_000_000n);
+    }
+  });
+
+  test("self-hosted settles: CASCET_SETTLE_PAYMENT_MOTES, else the default of the asset's style", () => {
+    assert.equal(demoConfiguredLimit({ kind: "settle", style: "legacy-amount" }, legacySelf, limits), 4_200_000_000n);
+    const unset = { anchorGasMotes: 2_500_000_000, settlePaymentMotes: undefined };
+    assert.equal(demoConfiguredLimit({ kind: "settle", style: "legacy-amount" }, legacySelf, unset), 4_000_000_000n);
+    assert.equal(demoConfiguredLimit({ kind: "settle" }, wcsprSelf, { anchorGasMotes: 1 }), 3_500_000_000n);
+  });
+
+  test("hosted settles: none (the hosted facilitator picks its own limit); other kinds: none", () => {
+    assert.equal(demoConfiguredLimit({ kind: "settle", style: "cep3009-value" }, wcsprHosted, limits), undefined);
+    assert.equal(demoConfiguredLimit({ kind: "wrap" }, legacySelf, limits), undefined);
+    assert.equal(demoConfiguredLimit({ kind: "transfer" }, legacySelf, limits), undefined);
+    assert.equal(demoConfiguredLimit({ kind: "other", entryPoint: "x" }, legacySelf, limits), undefined);
+  });
+});
