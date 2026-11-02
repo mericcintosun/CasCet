@@ -92,9 +92,11 @@ official Wrapped CSPR (cep3009-value, settled by the hosted facilitator):
 - Verify and settle go to the facilitator of the token the buyer paid in
   (x402 itself would pick one facilitator per network). A payment in a token
   the tool does not accept is refused before any facilitator is asked.
-- Startup fails when a facilitator does not answer `/supported` or does not
-  support x402 v2 `exact` payments on the gateway's network, and when a price
-  rounds to zero units of one of its tokens.
+- Startup fails when a facilitator does not answer `/supported`, does not
+  support x402 v2 `exact` payments on the gateway's network, or asks for a
+  payment flow the gateway does not support (see *Payment flow*), and when a
+  price rounds to zero units of one of its tokens. Each facilitator's own
+  answer is checked, and the error names the facilitator and the asset.
 - The hosted facilitator gets the raw access key, and requirements without
   CasCet's own `extra.authorizationStyle` (no facilitator needs it; buyers
   still see it). With a node configured, the gateway preflights its payments
@@ -161,9 +163,14 @@ warns at startup that this preflight is off.
    effects or that buy from other paid tools. A tool that fails after
    settlement is not refunded (the receipt notes it). x402's own
    settle-before-handler flows (`extra.paymentFlow` `upfront` or `escrow`)
-   are refused, whether a route or a facilitator's `/supported` extensions ask
-   for them: x402 would settle before the gateway's checks and write-ahead
-   record. Use `settleBeforeExecute` instead.
+   are refused: x402 would settle before the gateway's checks and write-ahead
+   record. Use `settleBeforeExecute` instead. A facilitator whose `/supported`
+   answer asks for such a flow (its kind's `extra.paymentFlow`, through the
+   `paymentFlow` extension), or for an asset transfer method
+   (`assetTransferMethod`), would make x402 refuse every paid call in its
+   assets, so the gateway refuses to start instead, with an error that names
+   the facilitator, the asset and the advertised flow. Nothing is verified,
+   settled or run.
 4. Settlement outcomes:
    - settled: the result, with `_meta.cascet.paymentId` and the
      `X-CASCET-PAYMENT-ID` / `PAYMENT-RESPONSE` headers;

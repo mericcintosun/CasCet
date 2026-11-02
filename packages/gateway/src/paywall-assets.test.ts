@@ -292,6 +292,40 @@ describe("a facilitator that cannot serve its asset stops the gateway", () => {
     }) as typeof fetch;
     await assert.rejects(createPaymentRail(twoAssetConfig(SELF, CEP), { fetch: failing }), /supported payment kinds.*facilitator "self".*HTTP 503/);
   });
+
+  /** /supported answers in which the facilitator at `origin` advertises `extra` through the extensions of the same names. */
+  const advertisingAt = (origin: string, extra: Record<string, unknown>) =>
+    memoryFacilitators(at =>
+      at === origin
+        ? { kinds: [{ x402Version: 2, scheme: "exact", network: "casper:casper-test", extra }], extensions: Object.keys(extra) }
+        : { kinds: [{ x402Version: 2, scheme: "exact", network: "casper:casper-test" }] },
+    );
+
+  it("names the facilitator, its asset and the flow when a facilitator asks for a flow x402 would refuse on every call", async () => {
+    // Only the hosted-style facilitator of Wrapped CSPR asks for "escrow". The other one lists no extension,
+    // so the merged answer x402 sees would hide it; the gateway checks each facilitator's own answer.
+    const memory = advertisingAt(CEP, { paymentFlow: "escrow" });
+    await assert.rejects(createPaymentRail(twoAssetConfig(SELF, CEP), { fetch: memory.fetch }), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.equal(
+        err.message,
+        `facilitator "default" (${CEP}) advertises payment flow "escrow" for x402 v2 "exact" payments on casper:casper-test, ` +
+          `which asset "wcspr" (${WCSPR_TOKEN}) needs: CasCet supports only the "authorization" flow (verify before the tool runs, ` +
+          "settle after the gateway's own checks), so x402 would refuse every paid call in that asset",
+      );
+      return true;
+    });
+    assert.deepEqual(memory.seen.map(request => request.path), ["/supported", "/supported"], "nothing was verified or settled");
+  });
+
+  it("names an asset transfer method the scheme does not have, and starts when the facilitator asks for the authorization flow", async () => {
+    await assert.rejects(
+      createPaymentRail(twoAssetConfig(SELF, CEP), { fetch: advertisingAt(SELF, { assetTransferMethod: "permit" }).fetch }),
+      new RegExp(`^Error: facilitator "self" \\(${SELF.replace(/\./g, "\\.")}\\) advertises asset transfer method "permit" .*which asset "cascet" \\(${LEGACY_TOKEN}\\) needs: the CasCet scheme has no asset transfer method on the wire`),
+    );
+    const rail = await createPaymentRail(twoAssetConfig(SELF, CEP), { fetch: advertisingAt(CEP, { paymentFlow: "authorization" }).fetch });
+    assert.equal(rail.assets.length, 2);
+  });
 });
 
 describe("the tool table offers every accepted asset", () => {

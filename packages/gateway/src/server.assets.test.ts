@@ -646,26 +646,39 @@ describe("x402 2.29 flow hooks", () => {
     }
   });
 
-  it("fails closed when the facilitators ask for x402's upfront flow: nothing is verified, settled or run", async () => {
+  it("fails closed when the facilitators ask for x402's upfront flow: it does not start, naming each facilitator, its asset and the flow; nothing is verified, settled or run", async () => {
     // @x402/casper copies a facilitator's extension values into the requirements; "upfront" would
-    // make x402 skip verify and settle before the gateway's checks. The CasCet scheme refuses it.
+    // make x402 skip verify and settle before the gateway's checks. The CasCet scheme refuses it, and
+    // x402 would refuse every paid call with a generic error, so the gateway refuses to start instead.
     const askForUpfront = (facilitator: FakeFacilitator) => {
       facilitator.onSupported = () => ({
         json: { kinds: [{ x402Version: 2, scheme: "exact", network: "casper:casper-test", extra: { paymentFlow: "upfront" } }], extensions: ["paymentFlow"], signers: {} },
       });
     };
-    const onFacilitators = ({ legacy, cep }: { legacy: FakeFacilitator; cep: FakeFacilitator }) => {
-      askForUpfront(legacy);
-      askForUpfront(cep);
-    };
-    await withTwoAssets({ onFacilitators }, async h => {
-      const res = await h.rpc("tools/call", { name: "paid_tool", arguments: {} });
-      assert.equal(res.status, 502);
-      assert.match(res.body.error?.message ?? "", /nothing was charged/);
-      assert.equal(res.headers.get("payment-required"), null);
-      assert.deepEqual([...work(h.legacy.calls), ...work(h.cep.calls)], []);
-      assert.equal(h.upstream.calls.length, 0);
-    });
+    const legacy = await startFakeFacilitator({ label: "legacy" });
+    const cep = await startFakeFacilitator({ label: "cep" });
+    askForUpfront(legacy);
+    askForUpfront(cep);
+    const upstream = createFakeUpstream({ tools: [{ name: "paid_tool" }] });
+    const refused = (facilitator: string, url: string, asset: string, hash: string) =>
+      `facilitator "${facilitator}" (${url}) advertises payment flow "upfront" for x402 v2 "exact" payments on casper:casper-test, ` +
+      `which asset "${asset}" (${hash}) needs: CasCet supports only the "authorization" flow (verify before the tool runs, ` +
+      `settle after the gateway's own checks), so x402 would refuse every paid call in that asset`;
+    try {
+      await assert.rejects(
+        startGateway(twoAssetConfig(legacy.url, cep.url), { createUpstreamTransport: () => upstream.createTransport(), preemptionChecker: null }),
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.equal(err.message, `${refused("self", legacy.url, "cascet", LEGACY_TOKEN)}; ${refused("default", cep.url, "wcspr", WCSPR_TOKEN)}`);
+          return true;
+        },
+      );
+      assert.deepEqual([...legacy.calls, ...cep.calls].map(call => call.op), ["supported", "supported"], "only asked for /supported");
+      assert.equal(upstream.connections, 0, "the upstream is not started either");
+    } finally {
+      await legacy.close();
+      await cep.close();
+    }
   });
 
   it("never settles twice: a before-handler settlement x402 hands over is passed back, and x402 echoes it", async () => {

@@ -1,5 +1,5 @@
 import { x402HTTPResourceServer, x402ResourceServer, type FacilitatorClient, type RoutesConfig } from "@x402/core/server";
-import type { AssetAmount, Network } from "@x402/core/types";
+import type { AssetAmount, Network, SupportedKind } from "@x402/core/types";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   AUTHORIZATION_STYLE_EXTRA_KEY,
@@ -25,7 +25,7 @@ import { TimeoutFacilitatorClient } from "./facilitator.js";
 import { AssetRoutingFacilitatorClient, ExtraStrippingFacilitatorClient, type AssetRoute } from "./facilitator-router.js";
 import { HOSTED_PREFLIGHT_DEADLINE_MS, hostedPreflightHook } from "./hosted-preflight.js";
 import { PREEMPTION_CHECK_TIMEOUT_MS } from "./preemption.js";
-import { CascetCasperServerScheme } from "./server-scheme.js";
+import { CascetCasperServerScheme, type UnsupportedFlow } from "./server-scheme.js";
 import { TokenProbe } from "./token-probe.js";
 
 /** Seconds an authorization must still be valid when settlement starts (inclusion + execution on Casper). */
@@ -343,11 +343,26 @@ export function assetRoutes(cfg: CascetConfig, network: Network, options: Paymen
 }
 
 /**
+ * The startup error of an asset whose facilitator asks for a payment flow (or
+ * asset transfer method) the CasCet scheme does not support, as its own
+ * /supported answer describes `kind`: it names the facilitator, the asset and
+ * what the facilitator advertises.
+ */
+function unsupportedFlowMessage(route: AssetRoute, asset: ResolvedAsset | undefined, kind: SupportedKind, refused: UnsupportedFlow): string {
+  const named = asset ? `asset "${asset.id}" (${asset.packageHash})` : `asset ${normalizePackageHash(route.asset)}`;
+  return (
+    `${route.label} advertises ${refused.advertised} for x402 v${kind.x402Version} "${kind.scheme}" payments on ${kind.network}, ` +
+    `which ${named} needs: ${refused.supported}, so x402 would refuse every paid call in that asset`
+  );
+}
+
+/**
  * Create the x402 resource server: every asset's facilitator behind one
  * AssetRoutingFacilitatorClient, the CasCet scheme with every asset, the
  * on-chain preflight of payments the hosted facilitator settles (when a node
  * is configured), and the startup checks (payTo, every price converts, every
- * facilitator answers and supports "exact" payments on this network).
+ * facilitator answers, supports "exact" payments on this network and asks for
+ * no payment flow the CasCet scheme refuses).
  */
 export async function createPaymentRail(cfg: CascetConfig, options: PaymentRailOptions = {}): Promise<PaymentRail> {
   const network = cfg.network as Network;
@@ -371,7 +386,13 @@ export async function createPaymentRail(cfg: CascetConfig, options: PaymentRailO
     const reason = err instanceof Error && err.cause instanceof Error ? err.cause.message : err instanceof Error ? err.message : String(err);
     throw new Error(`cannot load the supported payment kinds of the facilitators: ${reason}`, { cause: err });
   }
-  await router.assertCoverage();
+  // x402 would refuse a payment flow the scheme does not support on every paid call (a generic
+  // error, nothing verified): refuse it here instead, naming the facilitator, the asset and the flow.
+  const byHash = new Map(assets.map(asset => [asset.packageHash, asset]));
+  await router.assertCoverage(2, scheme.scheme, (route, kind, extensions) => {
+    const refused = scheme.unsupportedFacilitatorFlow(kind, extensions);
+    return refused && unsupportedFlowMessage(route, byHash.get(normalizePackageHash(route.asset)), kind, refused);
+  });
   return { resourceServer, network, payTo, assets, preflightAssets, maxTimeoutSeconds: maxTimeoutSecondsFor(cfg) };
 }
 

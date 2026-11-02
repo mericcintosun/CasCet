@@ -1,3 +1,4 @@
+import { resolvePaymentFlow } from "@x402/core/server";
 import type {
   AssetAmount,
   Network,
@@ -9,6 +10,7 @@ import type {
 } from "@x402/core/types";
 import { ExactCasperScheme } from "@x402/casper/exact/server";
 import { normalizePackageHash } from "@cascet/core";
+import { logSafe } from "./log.js";
 
 /**
  * Payment flows a CasCet route may use: only "authorization" (verify before
@@ -22,11 +24,36 @@ import { normalizePackageHash } from "@cascet/core";
  * verify and settles inside processHTTPRequest, before any of those gateway
  * steps, and a failed or indeterminate settle would come back looking like a
  * refused payment, so the gateway would release the authorization and answer
- * "nothing was charged" after money may have moved.
+ * "nothing was charged" after money may have moved. A facilitator that asks
+ * for another flow stops the gateway at startup (see
+ * {@link CascetCasperServerScheme.unsupportedFacilitatorFlow}).
  */
 export const CASCET_PAYMENT_FLOWS = {
   default: { supported: ["authorization"], default: "authorization" },
 } as const satisfies Record<string, PaymentFlowConfig>;
+
+/** x402's protocol-reserved requirement fields that choose how a payment is verified and settled. */
+const PAYMENT_FLOW_KEYS = ["assetTransferMethod", "paymentFlow"] as const;
+
+/**
+ * The payment flow fields (`extra.assetTransferMethod`, `extra.paymentFlow`)
+ * that a facilitator's /supported answer puts into the requirements of its
+ * `kind`'s payments. @x402/casper copies `kind.extra[key]` into every such
+ * requirement for each extension key the facilitator lists, and the CasCet
+ * scheme keeps them (they are none of the gateway's own extra fields).
+ */
+export function advertisedPaymentFlow(kind: SupportedKind, extensions: readonly string[]): Record<string, unknown> {
+  const extra = kind.extra ?? {};
+  return Object.fromEntries(PAYMENT_FLOW_KEYS.filter(key => extensions.includes(key) && Object.hasOwn(extra, key)).map(key => [key, extra[key]]));
+}
+
+/** What a facilitator asks for that the CasCet scheme refuses (see {@link CascetCasperServerScheme.unsupportedFacilitatorFlow}). */
+export interface UnsupportedFlow {
+  /** What the facilitator advertises, e.g. `payment flow "upfront"`. */
+  advertised: string;
+  /** What CasCet supports instead. */
+  supported: string;
+}
 
 /** One token a CasCet gateway prices in. */
 export interface ServerSchemeAsset {
@@ -102,5 +129,40 @@ export class CascetCasperServerScheme implements SchemeNetworkServer {
     const enhanced = await this.inner.enhancePaymentRequirements(paymentRequirements, supportedKind, facilitatorExtensions);
     // The gateway's own fields win; the facilitator may only add fields of its own.
     return { ...enhanced, extra: { ...enhanced.extra, ...paymentRequirements.extra } };
+  }
+
+  /**
+   * The payment flow or asset transfer method that a facilitator's /supported
+   * answer (`kind`, with the facilitator's `extensions`) asks for with the
+   * payments of that kind, when this scheme does not support it; undefined
+   * when it asks for none, or for one this scheme supports.
+   *
+   * x402 refuses such a flow on every paid call: it throws while it builds the
+   * requirements, before anything is verified, and every call ends in a
+   * generic error. The gateway runs this check at startup instead, on each
+   * facilitator's own answer (see createPaymentRail), with x402's own
+   * resolvePaymentFlow: the check x402 runs on every call.
+   */
+  unsupportedFacilitatorFlow(kind: SupportedKind, extensions: readonly string[]): UnsupportedFlow | undefined {
+    const advertised = advertisedPaymentFlow(kind, extensions);
+    if (Object.keys(advertised).length === 0) return undefined;
+    try {
+      resolvePaymentFlow(this, { scheme: kind.scheme, network: kind.network, asset: "", amount: "0", payTo: "", maxTimeoutSeconds: 0, extra: advertised });
+      return undefined;
+    } catch {
+      // Facilitator values: bounded and control-free, they end up in a startup error.
+      const shown = (value: unknown): string => logSafe(JSON.stringify(value) ?? String(value), 80);
+      const method = advertised.assetTransferMethod;
+      if (typeof method === "string" && !Object.hasOwn(this.paymentFlows, method)) {
+        return {
+          advertised: `asset transfer method ${shown(method)}`,
+          supported: `the CasCet scheme has no asset transfer method on the wire (only x402's "${this.defaultAssetTransferMethod}")`,
+        };
+      }
+      return {
+        advertised: `payment flow ${shown(advertised.paymentFlow)}`,
+        supported: `CasCet supports only the "authorization" flow (verify before the tool runs, settle after the gateway's own checks)`,
+      };
+    }
   }
 }
