@@ -50,6 +50,14 @@ import type { RealFacilitatorOptions } from "./real-facilitator.js";
  *   CASCET_RPC_URL                Casper node JSON-RPC URL (default: the network's public endpoint, which is
  *                                 load-balanced; mainnet warns). Use ONE node you run or trust, so balance reads
  *                                 already include the settlements this facilitator observed
+ *   CASCET_FACILITATOR_STATE_FILE path of the state file that keeps every authorization the facilitator submitted a
+ *                                 transaction for across restarts, so a retry never submits a second one (REQUIRED on
+ *                                 mainnet; "none" runs without one, with a warning; testnet warns when unset). One
+ *                                 file per facilitator, on persistent storage, in an existing directory
+ *   CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE
+ *                                 requests one client IP may send a minute, on every route, before authentication
+ *                                 (default 600); raise it when one gateway sends a lot of traffic, and keep it
+ *                                 above the 300 /verify + /settle requests a minute allowed after authentication
  *   CASCET_FACILITATOR_HOST       bind address (default 127.0.0.1; any other address requires the token)
  *   PORT                          port (default 4501)
  */
@@ -112,6 +120,15 @@ export const DEFAULT_DAILY_GAS_CAP_MOTES = 500_000_000_000n;
  * outcome and the buyer gets no result). casper-x402 1.0.0 polled up to 60 s too.
  */
 export const DEFAULT_SETTLE_WAIT_MS = 60_000;
+
+/** /verify + /settle requests a minute from all callers together, after authentication. */
+export const DEFAULT_MAX_REQUESTS_PER_MINUTE = 300;
+/**
+ * Requests a minute from one client IP, on every route, before authentication.
+ * It cannot tell a settle retry of a known transaction from other requests, so
+ * it stays well above {@link DEFAULT_MAX_REQUESTS_PER_MINUTE}.
+ */
+export const DEFAULT_MAX_REQUESTS_PER_IP_PER_MINUTE = 600;
 
 /**
  * Accounts a hot key must never be, nor be able to sign for: the configured
@@ -220,6 +237,28 @@ function rpcUrl(env: Env, network: CasperNetwork, warnings: string[]): string {
   return raw;
 }
 
+/**
+ * CASCET_FACILITATOR_STATE_FILE: an absolute path, or `false` for "none" (run
+ * without a state file, explicitly). Unset is refused on mainnet (F11).
+ */
+function stateFile(env: Env, mainnet: boolean): string | false | undefined {
+  const raw = value(env, "CASCET_FACILITATOR_STATE_FILE");
+  if (raw === undefined) {
+    if (!mainnet) return undefined;
+    throw new FacilitatorConfigError(
+      "CASCET_FACILITATOR_STATE_FILE is required on mainnet: the path of a file on persistent storage where the " +
+        "facilitator keeps every authorization it submitted a transaction for, so a restart never submits a second one " +
+        "(it would revert and burn its gas). Set it to none to run without one anyway (not recommended)",
+    );
+  }
+  if (raw.toLowerCase() === "none") return false;
+  // A switch-like value is a mistake, not a file name: say so instead of creating ./off.
+  if (/^(off|false|no|0|disabled?)$/i.test(raw)) {
+    throw new FacilitatorConfigError(`CASCET_FACILITATOR_STATE_FILE must be a path, or none to run without one; got "${raw.slice(0, 40)}"`);
+  }
+  return resolve(raw);
+}
+
 /** Network from CASCET_NETWORK (CAIP-2) or the legacy CASCET_NET=mainnet|testnet. Default testnet. */
 export function resolveNetwork(env: Env): CasperNetwork {
   const caip = value(env, "CASCET_NETWORK");
@@ -264,6 +303,13 @@ export interface FacilitatorEnvConfig {
   tokenVersion: string;
   /** Pinned EIP-712 domain name of the single allowlisted asset, when known. */
   tokenName?: string;
+  /**
+   * CASCET_FACILITATOR_STATE_FILE: an absolute path, `false` for "none" (no
+   * state file, chosen explicitly), undefined when unset (testnet only).
+   */
+  stateFile?: string | false;
+  /** CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE. */
+  maxRequestsPerIpPerMinute: number;
   /** Non-fatal notes for the operator (never contain secrets). */
   warnings: string[];
 }
@@ -302,6 +348,7 @@ export function readFacilitatorEnv(env: Env, repoRoot: string, forceNetwork?: Ca
   if (mainnet && !authToken) {
     throw new FacilitatorConfigError("CASCET_FACILITATOR_TOKEN is required on mainnet (generate one with: openssl rand -hex 32)");
   }
+  const statePath = stateFile(env, mainnet);
 
   let allowedPayTo: string[];
   try {
@@ -437,6 +484,14 @@ export function readFacilitatorEnv(env: Env, repoRoot: string, forceNetwork?: Ca
     preflightDeadlineMs: integer(env, "CASCET_PREFLIGHT_DEADLINE_MS", DEFAULT_PREFLIGHT_DEADLINE_MS, 1_000, 60_000),
     tokenVersion,
     ...(singleName !== undefined ? { tokenName: singleName } : {}),
+    ...(statePath !== undefined ? { stateFile: statePath } : {}),
+    maxRequestsPerIpPerMinute: integer(
+      env,
+      "CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE",
+      DEFAULT_MAX_REQUESTS_PER_IP_PER_MINUTE,
+      1,
+      1_000_000,
+    ),
     warnings,
   };
 }
@@ -464,5 +519,7 @@ export function facilitatorOptionsFromEnv(cfg: FacilitatorEnvConfig): RealFacili
     settleWaitMs: cfg.settleWaitMs,
     preflight: cfg.preflight,
     preflightDeadlineMs: cfg.preflightDeadlineMs,
+    ...(cfg.stateFile !== undefined ? { stateFile: cfg.stateFile } : {}),
+    maxRequestsPerIpPerMinute: cfg.maxRequestsPerIpPerMinute,
   };
 }

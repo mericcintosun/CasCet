@@ -24,6 +24,9 @@ import { startRealFacilitator } from "./real-facilitator.js";
  * the key-roles script of this package):
  *   CASCET_FACILITATOR_KEY      fee-payer PEM (required; must not be the owner or the seller)
  *   CASCET_FACILITATOR_TOKEN    shared facilitator token (required, at least 32 characters)
+ *   CASCET_FACILITATOR_STATE_FILE
+ *                               the facilitator's state file (required; "none" runs without one, with a
+ *                               warning): every settlement is saved there before it is broadcast
  *   CASCET_SELLER_ACCOUNT_HASH  payTo (default: the deployer account, as before)
  *   CASCET_OWNER_ACCOUNT_HASH   further owner accounts (the deployer account always counts as one)
  *   CASCET_RECORDER_KEY         authorized ReceiptRegistry recorder PEM (optional; no anchoring without it;

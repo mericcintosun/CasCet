@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,14 +11,24 @@ import { HTTPFacilitatorClient, x402ResourceServer } from "@x402/core/server";
 import type { PaymentPayload, PaymentRequirements, SettleResponse, VerifyResponse } from "@x402/core/types";
 import { clientSignerFromPem, createCasperClientScheme } from "@cascet/client";
 import { balanceItemKey, CascetCasperServerScheme, dictionaryAddress } from "@cascet/gateway";
-import type { CoreResult, FacilitatorCore, FacilitatorLogger, KnownTransaction, ParsedPayment } from "./facilitator-core.js";
+import {
+  parsePaymentRequest,
+  paymentFingerprint,
+  type CoreResult,
+  type FacilitatorCore,
+  type FacilitatorLogger,
+  type KnownTransaction,
+  type ParsedPayment,
+} from "./facilitator-core.js";
 import { NETWORKS } from "./facilitator-env.js";
+import { serializeFacilitatorState } from "./facilitator-state.js";
 import {
   closeGracefully,
   createFacilitatorApp,
   InFlightRequests,
   startRealFacilitator,
   type FacilitatorAppOptions,
+  type RealFacilitatorHandle,
   type RealFacilitatorOptions,
 } from "./real-facilitator.js";
 import * as fx from "./rpc-fixtures.js";
@@ -404,6 +414,7 @@ describe("startRealFacilitator start-up rules (M07)", () => {
     allowedAssets: ["8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41"],
     ownerAccountHashes: [OWNER],
     rpcUrl: node.url,
+    stateFile: join(dir, "mainnet-state.json"),
     logger: quiet,
   });
 
@@ -541,6 +552,78 @@ describe("startRealFacilitator start-up rules (M07)", () => {
     // Without an asset allowlist any style may come: the shared limit must suit both.
     await assert.rejects(startRealFacilitator({ ...testnet, paymentMotes: 2_000_000_000 }), /at least 3000000000 without an asset allowlist/);
   });
+
+  test("mainnet refuses to start without a state file; none (false) starts with a loud warning; testnet only warns (F11)", async () => {
+    const { stateFile: _state, ...noState } = mainnet();
+    await assert.rejects(startRealFacilitator(noState), /mainnet requires a state file \(stateFile, CASCET_FACILITATOR_STATE_FILE\)/);
+
+    const warnings: string[] = [];
+    const optedOut = await startRealFacilitator({ ...mainnet(), stateFile: false, logger: { ...quiet, warn: m => warnings.push(m) } });
+    await optedOut.close();
+    assert.ok(warnings.some(w => /^RUNNING ON MAINNET WITHOUT A STATE FILE \(CASCET_FACILITATOR_STATE_FILE=none\).*second transaction/.test(w)));
+
+    const testnetWarnings: string[] = [];
+    const testnet = await startRealFacilitator({
+      port: 0,
+      keyPath: feePayerPem,
+      preflight: false,
+      tokenName: "CasCet X402 Token",
+      logger: { ...quiet, warn: m => testnetWarnings.push(m) },
+    });
+    await testnet.close();
+    assert.ok(testnetWarnings.some(w => /^no state file \(CASCET_FACILITATOR_STATE_FILE\).*testnet only/.test(w)));
+  });
+
+  test("a corrupt, unreadable or unwritable state file refuses the start-up, before the key is loaded", async () => {
+    const stateDir = join(dir, "refused");
+    mkdirSync(stateDir);
+    const path = join(stateDir, "state.json");
+    // A key file that does not exist: the state file is refused first.
+    const testnet = { port: 0, keyPath: join(dir, "missing.pem"), preflight: false, tokenName: "CasCet X402 Token", stateFile: path, logger: quiet };
+
+    writeFileSync(path, '{"format":"cascet-facilitator-state","version":1,"network":"casper:casper-test","authorizations":[');
+    await assert.rejects(startRealFacilitator(testnet), /refusing to start: the state file .*state\.json is not a valid facilitator state: it is not valid JSON/);
+    writeFileSync(path, serializeFacilitatorState("casper:casper", []));
+    await assert.rejects(startRealFacilitator(testnet), /kept for "casper:casper", not casper:casper-test/);
+    assert.equal(readFileSync(path, "utf8"), serializeFacilitatorState("casper:casper", []), "a refused file is never rewritten");
+    await assert.rejects(startRealFacilitator({ ...testnet, stateFile: stateDir }), /cannot read the state file .*: EISDIR/);
+    await assert.rejects(
+      startRealFacilitator({ ...testnet, stateFile: join(stateDir, "no-such-dir", "state.json") }),
+      /refusing to start: cannot write the state file .*no-such-dir.*its directory must exist and be writable/,
+    );
+    await assert.rejects(startRealFacilitator({ ...testnet, stateFile: "" }), /stateFile must be a path, or false/);
+    // A missing file in an existing directory is an empty state: created at start-up, mode 0600.
+    rmSync(path);
+    await assert.rejects(startRealFacilitator(testnet), /cannot read the fee-payer key file/, "now the key is the problem");
+    assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
+      format: "cascet-facilitator-state",
+      version: 1,
+      network: "casper:casper-test",
+      authorizations: [],
+    });
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+  });
+
+  test("the per-IP limit is a positive whole number that reaches the HTTP layer; at or below the post-auth limit it warns", async () => {
+    const base = { port: 0, keyPath: feePayerPem, preflight: false, tokenName: "CasCet X402 Token", logger: quiet };
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      await assert.rejects(startRealFacilitator({ ...base, maxRequestsPerIpPerMinute: bad }), /maxRequestsPerIpPerMinute .* must be a positive whole number/);
+    }
+    const warnings: string[] = [];
+    const fac = await startRealFacilitator({ ...base, maxRequestsPerIpPerMinute: 2, logger: { ...quiet, warn: m => warnings.push(m) } });
+    try {
+      assert.ok(warnings.some(w => /per-IP limit \(2 a minute.*not above the 300 \/verify and \/settle requests/.test(w)));
+      assert.equal((await fetch(`${fac.url}/health`)).status, 200);
+      assert.equal((await fetch(`${fac.url}/health`)).status, 200);
+      assert.equal((await fetch(`${fac.url}/health`)).status, 429);
+    } finally {
+      await fac.close();
+    }
+    const quietStart: string[] = [];
+    const raised = await startRealFacilitator({ ...base, maxRequestsPerIpPerMinute: 6_000, logger: { ...quiet, warn: m => quietStart.push(m) } });
+    await raised.close();
+    assert.ok(!quietStart.some(w => w.includes("per-IP limit")));
+  });
 });
 
 describe("startRealFacilitator end to end against a local fake node (no network)", () => {
@@ -593,6 +676,8 @@ describe("startRealFacilitator end to end against a local fake node (no network)
   const submitted: Array<{ Version1: Record<string, any> }> = [];
   /** Whether info_get_transaction shows submitted transactions as executed (false: "no such transaction" yet). */
   let executed = true;
+  /** Called with each transaction as the node receives it. */
+  let onSubmit: ((tx: { Version1: Record<string, any> }) => void) | undefined;
 
   /** Both tokens as the testnet node serves them, with `overrides` on top. */
   function nodeRoutes(payerKey: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -611,6 +696,7 @@ describe("startRealFacilitator end to end against a local fake node (no network)
       query_global_state: fx.testnetUnusedNonceResponse,
       account_put_transaction: (params: Record<string, unknown>) => {
         const tx = params["transaction"] as { Version1: Record<string, any> };
+        onSubmit?.(tx);
         submitted.push(tx);
         return { jsonrpc: "2.0", id: 1, result: { api_version: "2.0.0", transaction_hash: { Version1: tx.Version1["hash"] } } };
       },
@@ -911,6 +997,124 @@ describe("startRealFacilitator end to end against a local fake node (no network)
     } finally {
       executed = true;
       await fac.close();
+    }
+  });
+
+  const authorizationOf = (body: Awaited<ReturnType<typeof signedByBuyer>>) =>
+    (body.paymentPayload.payload as { authorization: Record<string, string> }).authorization;
+  const fingerprintOf = (body: unknown) => {
+    const parsed = parsePaymentRequest(body, NETWORK);
+    assert.ok(parsed.ok);
+    return paymentFingerprint(parsed.value, NETWORK);
+  };
+  const savedAuthorizations = (path: string) =>
+    (JSON.parse(readFileSync(path, "utf8")) as { authorizations: Array<Record<string, unknown>> }).authorizations;
+
+  test("restart (F11): a settle left pending by one instance is followed by the next one from the same state file; nothing is submitted again", async () => {
+    const stateFile = join(dir, "restart-state.json");
+    const body = await signedByBuyer(requirements());
+    const auth = authorizationOf(body);
+    const before = submitted.length;
+    let hash = "";
+    executed = false; // the node does not show the transaction before the first instance stops
+    const first = await start({ settleWaitMs: 1_500, stateFile });
+    try {
+      const pending = await post(first.url, "/settle", body);
+      assert.deepEqual([pending.status, pending.body["errorReason"]], [200, "settlement_pending"]);
+      hash = pending.body["transaction"];
+      assert.equal(hash, submitted.at(-1)!.Version1["hash"]);
+    } finally {
+      await first.close();
+    }
+    // What the first instance leaves behind: the pending transaction and the payment it settles.
+    assert.deepEqual(savedAuthorizations(stateFile), [
+      {
+        asset: TOKEN_PKG,
+        from: `00${payer.publicKey.accountHash().toHex()}`,
+        nonce: auth["nonce"],
+        txHash: hash,
+        state: "submitted",
+        validBefore: Number(auth["validBefore"]),
+        value: PRICE,
+        status: "pending",
+        fingerprint: fingerprintOf(body),
+        style: "legacy-amount",
+      },
+    ]);
+
+    executed = true; // the transaction executes while the facilitator restarts
+    const logs: string[] = [];
+    const second = await start({ settleWaitMs: 1_500, stateFile, logger: { ...quiet, info: m => logs.push(m) } });
+    try {
+      assert.ok(logs.some(l => /1 authorization\(s\) with a transaction restored, 1 pending/.test(l)), logs.join("\n"));
+      // The gateway's settle retry gets the outcome of the same transaction; nothing is broadcast.
+      const retry = await post(second.url, "/settle", body);
+      assert.deepEqual([retry.status, retry.body["success"], retry.body["transaction"]], [200, true, hash]);
+      assert.deepEqual(retry.body["extra"], {
+        settlementStatus: "success",
+        authorizationStyle: "legacy-amount",
+        gasCostMotes: "3010000000",
+        reconciled: true,
+      });
+      assert.equal(submitted.length, before + 1, "the second instance submitted nothing");
+      // Anything else about the authorization is a duplicate carrying the hash.
+      const again = await post(second.url, "/settle", body);
+      assert.deepEqual([again.body["errorReason"], again.body["transaction"]], ["duplicate_nonce", hash]);
+      const verify = await post(second.url, "/verify", body);
+      assert.deepEqual([verify.body["isValid"], verify.body["invalidReason"]], [false, "duplicate_nonce"]);
+    } finally {
+      await second.close();
+    }
+    assert.deepEqual(
+      savedAuthorizations(stateFile).map(a => [a["state"], a["txHash"]]),
+      [["settled", hash]],
+    );
+    assert.equal(submitted.length, before + 1);
+  });
+
+  test("restart without a state file (the opt-out): the same retry broadcasts a second transaction, as F11 describes", async () => {
+    const body = await signedByBuyer(requirements());
+    const before = submitted.length;
+    executed = false;
+    const first = await start({ settleWaitMs: 1_500, stateFile: false });
+    try {
+      assert.equal((await post(first.url, "/settle", body)).body["errorReason"], "settlement_pending");
+    } finally {
+      await first.close();
+    }
+    const second = await start({ settleWaitMs: 1_500, stateFile: false });
+    try {
+      await post(second.url, "/settle", body);
+      assert.equal(submitted.length, before + 2, "two transactions for one authorization: on-chain, one reverts and burns its gas");
+    } finally {
+      executed = true;
+      await second.close();
+    }
+  });
+
+  test("write-ahead (F11): the transaction is in the state file before the node receives it, so an instance that dies right after leaves enough", async () => {
+    const stateFile = join(dir, "crash-state.json");
+    const body = await signedByBuyer(requirements());
+    const before = submitted.length;
+    const onDisk: boolean[] = [];
+    onSubmit = tx => onDisk.push(existsSync(stateFile) && readFileSync(stateFile, "utf8").includes(tx.Version1["hash"]));
+    executed = false;
+    const first = await start({ settleWaitMs: 1_500, stateFile });
+    let second: RealFacilitatorHandle | undefined;
+    try {
+      const pending = await post(first.url, "/settle", body);
+      assert.deepEqual(onDisk, [true], "saved before the broadcast");
+      // The first instance dies here (no graceful close, no final save): the next one starts from what is on disk.
+      executed = true;
+      second = await start({ settleWaitMs: 1_500, stateFile });
+      const retry = await post(second.url, "/settle", body);
+      assert.deepEqual([retry.body["success"], retry.body["transaction"]], [true, pending.body["transaction"]]);
+      assert.equal(submitted.length, before + 1);
+    } finally {
+      onSubmit = undefined;
+      executed = true;
+      await second?.close();
+      await first.close();
     }
   });
 

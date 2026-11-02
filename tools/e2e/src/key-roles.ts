@@ -135,9 +135,12 @@ export function renderPlan(keys: RoleKeyInfo[], opts: { network: CasperNetwork; 
     "   or an associated key of one):",
     `   CASCET_NETWORK=${opts.network} CASCET_FACILITATOR_KEY=${fee.pemPath} \\`,
     `   CASCET_FACILITATOR_TOKEN=$(openssl rand -hex 32) CASCET_SELLER_ACCOUNT_HASH=${sel.accountKey} \\`,
+    "   CASCET_FACILITATOR_STATE_FILE=<persistent dir>/facilitator-state.json \\",
     `   CASCET_OWNER_ACCOUNT_HASH=${owner} pnpm --filter @cascet/e2e facilitator`,
     "   Add the new ReceiptRegistry owner from 5a to CASCET_OWNER_ACCOUNT_HASH (comma list); on mainnet the deployer",
-    "   always counts as an owner. Give every gateway the same token as facilitator.apiKey.",
+    "   always counts as an owner. Give every gateway the same token as facilitator.apiKey. The state file (required",
+    "   on mainnet) keeps the settlements this facilitator submitted across restarts: one file per facilitator, on",
+    "   persistent storage, never shared with another facilitator.",
     "",
     "Key compromise runbook: docs/mainnet-readiness.md.",
   ].join("\n");
