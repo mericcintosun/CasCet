@@ -186,8 +186,10 @@ This is not a portable pattern dressed in Casper branding — it leans on things
 > [`docs/buidl-page.md`](docs/buidl-page.md) lists every contract package hash and
 > sample transaction with descriptions.
 
-Requirements: Node.js 22 or newer, pnpm 10 (`corepack enable` provisions the
-pinned version), and Rust + [`cargo-odra`](https://odra.dev) only for the contracts.
+Requirements: Node.js 22 or newer (CI uses 24; see
+[`CONTRIBUTING.md`](CONTRIBUTING.md#prerequisites) for a Node 22 caveat), pnpm 10
+(`corepack enable` provisions the pinned version), and Rust +
+[`cargo-odra`](https://odra.dev) only for the contracts.
 
 ### 1. Build and test (no keys, no chain)
 
