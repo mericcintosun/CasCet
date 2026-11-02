@@ -78,6 +78,21 @@ describe("config assets: the single-asset form parses unchanged", () => {
     assert.equal(cfg.facilitator.url, "http://127.0.0.1:4501");
   });
 
+  it("parses an asset with an empty symbol, which earlier versions only displayed; its id is the package hash", () => {
+    const cfg = cascetConfigSchema.parse({ ...base, asset: { ...wcsprAsset, symbol: "" } });
+    assert.equal(cfg.asset.symbol, "");
+    assert.equal(cfg.asset.id, WCSPR_TESTNET);
+    assert.equal(cascetConfigSchema.parse({ ...base, asset: { ...wcsprAsset, symbol: "  " } }).asset.id, WCSPR_TESTNET);
+    const two = cascetConfigSchema.parse({
+      ...base,
+      assets: [{ ...legacyAsset, symbol: "", facilitator: "self" }, { ...wcsprAsset, symbol: "" }],
+      facilitators: { self: { url: DEFAULT_SELF_HOSTED_FACILITATOR_URL } },
+      pricing: { tools: { a: { price: "$0.01", assets: [WCSPR_TESTNET] } } },
+    });
+    assert.deepEqual(two.assets.map(a => a.id), [LEGACY_TESTNET, WCSPR_TESTNET]);
+    assert.deepEqual(assetsForPrice(two, two.pricing.tools.a ?? {}).map(a => a.id), [WCSPR_TESTNET]);
+  });
+
   it("keeps accepting the hosted facilitator for CEP-3009 tokens, and a missing facilitator section", () => {
     const cfg = cascetConfigSchema.parse({ ...base, asset: wcsprAsset, facilitator: { url: DEFAULT_FACILITATOR_URL, apiKey: "cspr-cloud-key" } });
     assert.equal(cfg.asset.authorization, "cep3009-value");

@@ -84,13 +84,15 @@ const MAX_TIMER_MS = 2_147_483_647;
 export const assetSchema = z.object({
   /**
    * Short handle used by `pricing.*.assets`. Defaults to the lower-cased
-   * symbol, so two assets with the same symbol need explicit ids.
+   * symbol (the package hash when the symbol is blank), so two assets with
+   * the same symbol need explicit ids.
    */
   id: z.string().regex(ASSET_ID, 'asset id must be 1-64 lower-case letters, digits, ".", "_" or "-"').optional(),
   packageHash: packageHashSchema,
   /** EIP-712 domain name: must equal the token's on-chain `name`. */
   name: z.string().min(1),
-  symbol: z.string().min(1),
+  /** Display only (receipts, the 402's `extra`); may be empty, as in earlier versions. */
+  symbol: z.string(),
   decimals: z.number().int().min(0).max(18).default(9),
   /** EIP-712 domain version ("1" for every Casper x402 token seen so far). */
   version: z.string().min(1).default("1"),
@@ -382,7 +384,7 @@ function resolveConfig(raw: RawConfig, issues: Issues) {
   const hashes = new Map<string, number>();
   const assets: ResolvedAsset[] = (list ?? [single!]).map((entry, index) => {
     const resolved: ResolvedAsset = {
-      id: entry.id ?? entry.symbol.toLowerCase(),
+      id: entry.id ?? (entry.symbol.trim() === "" ? entry.packageHash : entry.symbol.toLowerCase()),
       packageHash: entry.packageHash,
       name: entry.name,
       symbol: entry.symbol,
