@@ -11,6 +11,7 @@
  * bought) until the operator fixes the environment.
  */
 
+import { normalizeNetworks } from "@cascet/client";
 import { MAX_PURCHASES } from "./analysis.js";
 import { analysisBudget } from "./spend-ledger.js";
 
@@ -223,10 +224,28 @@ function checkNetwork(network: string): string | undefined {
   if (network.includes("*")) {
     return `CASCET_NETWORK: wildcard "${short(network)}" is not allowed, list each network (e.g. ${DEFAULT_NETWORK})`;
   }
-  if (!/^casper:[a-z0-9][a-z0-9-]{0,62}$/.test(network)) {
-    return `CASCET_NETWORK: "${short(network)}" is not a Casper CAIP-2 network id (e.g. casper:casper-test, casper:casper)`;
+  if (!/^casper:[a-z0-9][a-z0-9-]{0,62}$/.test(network) || !isClientNetwork(network)) {
+    return (
+      `CASCET_NETWORK: "${short(network)}" is not a Casper CAIP-2 network id ` +
+      '(e.g. casper:casper-test, casper:casper; at most 32 characters after "casper:")'
+    );
   }
   return undefined;
+}
+
+/**
+ * Whether @cascet/client takes `network`. The paying fetch validates its
+ * networks again, with the CAIP-2 limit of 32 characters for the part after
+ * "casper:": a network it refuses would fail every analysis as an internal
+ * error, so it is reported here, at startup.
+ */
+function isClientNetwork(network: string): boolean {
+  try {
+    normalizeNetworks([network]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** A remote data gateway over plain http:// can be MITM'd (forged data, swapped challenges). */
