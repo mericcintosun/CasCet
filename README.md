@@ -222,11 +222,17 @@ it they stay empty.
 
 ### Maintainer demos
 
-The scripts in `tools/e2e` that move tokens (`fund-token`, `wrap-wcspr`, `demo`,
-`demo-real`, `demo-real-wcspr`, `demo-real-mainnet`, `agent`, `connect-demo`)
-sign with the CasCet operator's keys in `contracts/keys/`, which are not part of
-the repository, so they only run on a maintainer's machine. They produced the
-transactions linked in this README.
+The demos in `tools/e2e` (`demo`, `demo-real`, `demo-real-wcspr`, `agent`,
+`connect-demo`) sign with the CasCet operator's keys in `contracts/keys/` by
+default, which are not part of the repository, so they run on a maintainer's
+machine. `demo-real-mainnet` does not read `contracts/keys/`: it takes each
+role's key from its own environment variable and settles a real payment on
+mainnet (see [`docs/mainnet-readiness.md`](docs/mainnet-readiness.md)). These
+demos produced the transactions linked in this README. `fund-token` and
+`wrap-wcspr` also default to the operator key, but sign with your own testnet
+key when you pass `--key /absolute/path/to/key.pem`: that is how a buyer wraps
+testnet CSPR in the
+[Wrapped CSPR example](examples/wrap-third-party/README.md#variant-wrapped-cspr-through-the-hosted-facilitator).
 
 ```bash
 pnpm --filter @cascet/e2e gen-keys                                # throwaway testnet keys in tools/e2e/keys/
