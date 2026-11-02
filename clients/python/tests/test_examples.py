@@ -567,21 +567,52 @@ class TestSettleOutcome(unittest.TestCase):
         self.assert_failed(code, out)
         self.assertIn("https://testnet.cspr.live/transaction/" + tx, out)
 
-    def test_a_hosted_failure_without_a_transaction_hash_carries_the_caution(self):
-        # @x402/casper 2.29's facilitator drops the hash when anything fails after the broadcast.
-        failed = SettleResponse(200, {}, body={
-            "success": False, "errorReason": "invalid_exact_casper_facilitator_settle_failed", "transaction": "",
-            "errorMessage": "Timed out waiting for transaction", "network": TESTNET})
+    def hosted_answer(self, status, reason, message="", transaction=""):
+        return SettleResponse(status, {}, body={"success": False, "errorReason": reason, "errorMessage": message,
+                                                "transaction": transaction, "network": TESTNET})
+
+    def test_a_hosted_settle_failure_that_did_not_revert_is_an_unknown_outcome(self):
+        # @x402/casper 2.29's facilitator answers any failure after it built the transaction this way, and
+        # drops the hash: a transfer it broadcast and then stopped waiting for may still execute.
+        hosted = ["--asset", "wcspr", "--facilitator", "hosted"]
+        for status, message in (
+            (200, "Timed out waiting for transaction 1234"),
+            (200, "HttpError: RPC error: transaction not found"),
+            (200, "putTransaction failed: socket hang up"),
+            (400, "Timed out waiting for transaction 1234"),
+        ):
+            failed = self.hosted_answer(status, "invalid_exact_casper_facilitator_settle_failed", message)
+            with self.subTest(status=status, message=message):
+                code, out = self.run_main(hosted, self.hosted_env, response=failed)
+                self.assert_unknown(code, out)
+                self.assertIn(f"invalid_exact_casper_facilitator_settle_failed: {message}", out)
+        # The same answer from CasCet's self-hosted facilitator says nothing was broadcast.
+        code, out = self.run_main([], self.env, response=self.hosted_answer(
+            200, "invalid_exact_casper_facilitator_settle_failed", "Timed out waiting for transaction 1234"))
+        self.assert_failed(code, out)
+
+    def test_hosted_failures_that_say_nothing_moved(self):
+        hosted = ["--asset", "wcspr", "--facilitator", "hosted"]
+        for reason, message in (
+            ("invalid_exact_casper_facilitator_settle_failed", "transaction execution failed: User error: 64658"),
+            ("invalid_exact_casper_facilitator_insufficient_balance", "balance 0 < 500000000"),
+            ("invalid_exact_casper_facilitator_invalid_signature", ""),
+            ("invalid_exact_casper_facilitator_expired", "validBefore=1 < now=2"),
+        ):
+            with self.subTest(reason=reason):
+                code, out = self.run_main(hosted, self.hosted_env, response=self.hosted_answer(200, reason, message))
+                self.assert_failed(code, out)
+                self.assertIn(f"settle failed: {reason}", out)
+
+    def test_a_hosted_failure_it_does_not_recognize_carries_the_caution(self):
+        failed = self.hosted_answer(200, "something_new", "no idea")
         code, out = self.run_main(["--asset", "wcspr", "--facilitator", "hosted"], self.hosted_env, response=failed)
         self.assertEqual(code, example_settle.EXIT_FAILED, out)
-        self.assertIn("settle failed: invalid_exact_casper_facilitator_settle_failed", out)
+        self.assertIn("settle failed: something_new", out)
         self.assertIn("no transaction hash", out)
         self.assertIn("may still execute", out)
         self.assertIn("can pay twice", out)
         self.assertIn(self.authorization["nonce"], out)
-        # The same answer from CasCet's self-hosted facilitator says nothing was broadcast.
-        code, out = self.run_main([], self.env, response=failed)
-        self.assert_failed(code, out)
 
     def test_facilitator_text_is_escaped(self):
         hostile = SettleResponse(200, {}, body={"success": False, "errorReason": "bad\x1b[2Jreason", "transaction": "",

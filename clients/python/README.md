@@ -263,18 +263,24 @@ variable and never shows the value.
 | Exit status | Meaning |
 |---|---|
 | `0` | Settled. The script prints the transaction and its explorer link. |
-| `1` | Not settled: a setting or a refusal (before anything is signed), a facilitator that could not be reached, or a settle the facilitator reports failed (see below for a hosted failure without a transaction hash). |
+| `1` | Not settled: a setting or a refusal (before anything is signed), a facilitator that could not be reached, or a settle the facilitator reports failed (see below for the hosted facilitator's failures). |
 | `2` | Invalid options. |
-| `3` | Outcome unknown. The request may have reached the facilitator but no answer came back (a read timeout, a dropped connection, a TLS error other than a certificate that does not verify, an answer that cannot be parsed), or the facilitator could not confirm the transfer (`settlement_pending`, `settlement_unknown`, or a server error such as a proxy's 504 that does not say what happened). |
+| `3` | Outcome unknown. The request may have reached the facilitator but no answer came back (a read timeout, a dropped connection, a TLS error other than a certificate that does not verify, an answer that cannot be parsed), or the facilitator could not confirm the transfer (`settlement_pending`, `settlement_unknown`, the hosted facilitator's `invalid_exact_casper_facilitator_settle_failed` other than a revert, or a server error such as a proxy's 504 that does not say what happened). |
 
 After an unknown outcome the settle may still execute. Check the payer's token
 balance and the explorer before you run the script again: a re-run signs a new
 authorization and can pay twice. The script prints the payer's account hash,
 the transaction when the facilitator named one, the authorization's nonce, and
-the time after which the authorization can no longer execute. The hosted
-facilitator answers any failure after the broadcast (for example when it stops
-waiting for the transaction) without a transaction hash, so after a hosted
-failure without one the script prints the same caution.
+the time after which the authorization can no longer execute.
+
+The hosted facilitator answers any failure after it built the transaction
+with `invalid_exact_casper_facilitator_settle_failed` and no transaction hash,
+even when it only stopped waiting for a transfer it had already broadcast. The
+script reads these answers as CasCet's gateway does: unless the message says
+the transaction reverted (`transaction execution failed`), the outcome is
+unknown (exit 3). Its other `invalid_exact_casper_facilitator_*` reasons come
+before anything is submitted (exit 1). A hosted failure the script does not
+recognize, without a transaction hash, exits 1 with the same caution.
 
 ## Tests
 

@@ -80,16 +80,18 @@ Exit status:
     0  settled
     1  not settled: a setting or a refusal (before anything is signed), a
        facilitator that could not be reached, or a settle it reports failed
-       (a hosted failure without a transaction hash prints the caution of 3)
+       (a hosted failure this script does not recognize, without a
+       transaction hash, prints the caution of 3)
     2  invalid options
     3  outcome unknown: the request may have reached the facilitator but no
        answer came back (a timeout, a dropped connection, a TLS error other
        than a certificate that does not verify, an answer that cannot be
        parsed), or the facilitator could not tell whether the transfer
-       executed (settlement_pending, settlement_unknown, or a server error
-       that does not say). The settle may still execute. Check the payer's
-       token balance and the explorer before running again: a re-run signs a
-       new authorization and can pay twice.
+       executed (settlement_pending, settlement_unknown, the hosted
+       facilitator's invalid_exact_casper_facilitator_settle_failed other than
+       a revert, or a server error that does not say). The settle may still
+       execute. Check the payer's token balance and the explorer before
+       running again: a re-run signs a new authorization and can pay twice.
 """
 from __future__ import annotations
 
@@ -155,6 +157,13 @@ EXIT_OUTCOME_UNKNOWN = 3
 #: submission it cannot confirm (tools/e2e/src/facilitator-core.ts).
 UNKNOWN_OUTCOME_REASONS = frozenset({"settlement_pending", "settlement_unknown"})
 UNKNOWN_SETTLEMENT_STATUSES = frozenset({"pending", "unknown"})
+#: errorReason with which @x402/casper 2.29's facilitator (the hosted facilitator runs it) answers any failure
+#: after it built the transaction, without a transaction hash: signing, submitting it, or waiting for it to
+#: execute ("Timed out waiting for transaction ..."). Only a revert ("transaction execution failed: ...") is final.
+#: Its other invalid_exact_casper_facilitator_* reasons come before anything is submitted.
+HOSTED_SETTLE_FAILED = "invalid_exact_casper_facilitator_settle_failed"
+_HOSTED_REASON_PREFIX = "invalid_exact_casper_facilitator_"
+_REVERTED_RE = re.compile(r"transaction execution failed", re.IGNORECASE)  # used with match: the message starts so
 _TX_HASH_RE = re.compile(r"[0-9a-fA-F]{64}")
 #: A facilitator key: one line of printable ASCII without spaces (used with fullmatch).
 _FACILITATOR_KEY_RE = re.compile(r"[\x21-\x7e]{1,256}")
@@ -488,18 +497,45 @@ def settlement_status(data: Any) -> Optional[str]:
     return status if isinstance(status, str) else None
 
 
-def outcome_unknown(status_code: int, data: Any) -> bool:
+def hosted_failure(data: Any) -> Optional[str]:
+    """
+    What an unsuccessful /settle answer of the hosted facilitator says about
+    the transfer, as CasCet's gateway reads it (classifySettleFailure in
+    @cascet/gateway): "unknown" when it was submitted, or may have been, and
+    did not revert (a transaction hash, or HOSTED_SETTLE_FAILED), "failed"
+    for a revert or a reason given before anything is submitted, and None for
+    an answer it does not recognize.
+    """
+    if not isinstance(data, Mapping) or data.get("success") is True:
+        return None
+    reason = data.get("errorReason")
+    message = data.get("errorMessage")
+    reverted = isinstance(message, str) and _REVERTED_RE.match(message) is not None
+    if transaction_hash(data) and not reverted:
+        return "unknown"
+    if reason == HOSTED_SETTLE_FAILED:
+        return "failed" if reverted else "unknown"
+    if isinstance(reason, str) and reason.startswith(_HOSTED_REASON_PREFIX):
+        return "failed"
+    return None
+
+
+def outcome_unknown(status_code: int, data: Any, *, hosted: bool = False) -> bool:
     """
     Whether a /settle answer leaves open whether the transfer executes.
 
     True for settlement_pending / settlement_unknown (as errorReason, or
-    pending / unknown as extra.settlementStatus), and for a server error
-    (5xx, such as a proxy's 502 or 504) that does not say what happened: the
-    facilitator may already have broadcast the transaction.
+    pending / unknown as extra.settlementStatus), for a hosted facilitator's
+    failure that may hide a transfer that still executes (see
+    hosted_failure), and for a server error (5xx, such as a proxy's 502 or
+    504) that does not say what happened: the facilitator may already have
+    broadcast the transaction.
     """
     reason = data.get("errorReason") if isinstance(data, Mapping) else None
     status = settlement_status(data)
     if (isinstance(reason, str) and reason in UNKNOWN_OUTCOME_REASONS) or status in UNKNOWN_SETTLEMENT_STATUSES:
+        return True
+    if hosted and hosted_failure(data) == "unknown":
         return True
     return status_code >= 500 and status is None
 
@@ -593,7 +629,7 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
         print(f"[python] facilitator response (HTTP {resp.status_code}): {data}")
     tx = transaction_hash(data)
 
-    if outcome_unknown(resp.status_code, data):
+    if outcome_unknown(resp.status_code, data, hosted=hosted):
         if isinstance(data, dict):
             reason = data.get("errorReason") or data.get("error") or settlement_status(data)
             detail = shown(reason) if reason else "no reason given"
@@ -629,9 +665,9 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
     print(f"\n❌ settle failed: {shown(data.get('errorReason'))} — {shown(data.get('errorMessage') or '')}")
     if tx:
         print(f"   tx: {tx}\n   {explorer}{tx}")
-    elif hosted:
-        # @x402/casper 2.29's facilitator answers any failure after the broadcast (such as giving up waiting for
-        # the transaction) with success false and an empty transaction, so this one may still execute.
+    elif hosted and hosted_failure(data) is None:
+        # A failure this script does not recognize: the hosted facilitator names no transaction even for a
+        # transfer it had already broadcast, so this one may still execute.
         print("   The hosted facilitator gives no transaction hash even for a transfer it had already broadcast.")
         print(caution)
     return EXIT_FAILED
