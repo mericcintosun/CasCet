@@ -206,7 +206,7 @@ export const corsSchema = z
 export const timeoutsSchema = z
   .object({
     /** Facilitator /verify and /supported calls. */
-    facilitatorMs: z.number().int().positive().default(15_000),
+    facilitatorMs: z.number().int().positive().max(MAX_TIMER_MS).default(15_000),
     /**
      * Facilitator /settle call. Longer than `facilitatorMs` because a Casper
      * facilitator only answers once the transfer has executed on-chain
@@ -215,9 +215,9 @@ export const timeoutsSchema = z
      * facilitator reports the settlement as pending; the gateway keeps both
      * calls within this timeout.
      */
-    settleMs: z.number().int().positive().default(90_000),
+    settleMs: z.number().int().positive().max(MAX_TIMER_MS).default(90_000),
     /** One upstream MCP request (tools/list page, tools/call). */
-    upstreamMs: z.number().int().positive().default(60_000),
+    upstreamMs: z.number().int().positive().max(MAX_TIMER_MS).default(60_000),
   })
   .prefault({});
 
