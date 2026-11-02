@@ -1228,7 +1228,9 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   const address = server.address() as AddressInfo;
   const urlHost = address.family === "IPv6" ? `[${address.address}]` : address.address;
   const url = `http://${urlHost}:${address.port}/mcp`;
-  log.info(`⛩️  CasCet gateway "${logSafe(cfg.name, 80)}" listening on ${url}`);
+  // Every stdout line starts with ASCII: the Node 22 test runner reads bytes 2-5 of output that directly follows one
+  // of its own messages as a message length, and a byte above 0x7f there fails the whole test file.
+  log.info(`CasCet gateway "${logSafe(cfg.name, 80)}" listening on ${url} ⛩️`);
   log.info(
     `    priced: ${logSafe(table.pricedToolNames.join(", ") || "none")}` +
       ` | free: ${logSafe(table.freeToolNames.join(", ") || "none")}` +
