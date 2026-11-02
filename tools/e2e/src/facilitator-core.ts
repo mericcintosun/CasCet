@@ -8,7 +8,7 @@ import {
   type AuthorizationStyle,
 } from "@cascet/core";
 import { TokenStateError, TokenUnsupportedError, type TokenProbe } from "@cascet/gateway";
-import type { AuthorizationId, AuthorizationLedger, FollowClaim } from "./authorization-ledger.js";
+import type { AuthorizationId, AuthorizationLedger, FollowClaim, LedgerState } from "./authorization-ledger.js";
 import type { DailyGasBudget } from "./gas-budget.js";
 import {
   AMOUNT_ARGUMENT_BY_STYLE,
@@ -48,7 +48,9 @@ import {
  * and never reports a failure for a transaction whose outcome is merely
  * unknown (M22). A settle retry of a payment whose earlier settle answered
  * "pending" or "unknown" follows that transaction (the pending-settlement
- * store in the ledger) instead of submitting another one.
+ * store in the ledger) instead of submitting another one; every other settle
+ * of an authorization that already has a transaction here is a duplicate
+ * carrying its hash. Both are decided before any other check.
  *
  * HTTP statuses: every verdict about a payment, including allowlist and
  * duplicate rejections, is HTTP 200 with `isValid: false` / `success: false`
@@ -110,10 +112,18 @@ export const Reason = {
  *                   earlier submission when there is one), or its nonce is
  *                   already used on-chain (`nonce_already_used`). The earlier
  *                   transaction may have charged the payer: reconcile by its
- *                   hash or by the nonce instead of treating this as a failure
+ *                   hash or by the nonce instead of treating this as a failure.
+ *                   Once a transaction was submitted for an authorization, every
+ *                   other settle of it is answered this way, before any check
+ *                   that only matters for a new settlement (validity window,
+ *                   signature, preflight)
  *  - success:       the transfer executed (determinate)
  *  - failed:        the transaction executed and reverted; nothing moved (determinate)
- *  - pending:       accepted by the node, execution not observed before the deadline
+ *  - pending:       accepted by the node, execution not observed before the
+ *                   deadline; also the answer while shutting down (HTTP 503) to a
+ *                   settle of an authorization this facilitator already submitted
+ *                   a transaction for, which then reports that transaction's hash
+ *                   but not its outcome
  *  - unknown:       the outcome is indeterminate (ambiguous submission the node
  *                   never showed, or an internal error on the /settle route)
  * For pending/unknown the response carries the transaction hash when one
@@ -518,9 +528,25 @@ export function paymentFingerprint(p: ParsedPayment, network: string): string {
   return createHash("sha256").update(JSON.stringify(fields)).digest("hex");
 }
 
+/** A transaction this facilitator already submitted for an authorization. */
+export interface KnownTransaction {
+  /** The authorization's ledger state: submitted (no final outcome here yet), settled or failed. */
+  state: LedgerState;
+  txHash: string;
+}
+
 export interface FacilitatorCore {
   verify(p: ParsedPayment): Promise<CoreResult<VerifyResponse>>;
   settle(p: ParsedPayment): Promise<CoreResult<SettleResponse>>;
+  /**
+   * The transaction this facilitator already submitted for the payment's
+   * authorization, if any. A lookup only: no claim is taken and nothing is
+   * read on-chain. A settle of such an authorization can only follow that
+   * transaction or be answered as a duplicate with its hash; it never builds
+   * or submits anything, so the HTTP layer neither rate-limits it nor answers
+   * it "not submitted".
+   */
+  knownTransaction(p: ParsedPayment): KnownTransaction | undefined;
   supported(): SupportedResponse;
 }
 
@@ -834,6 +860,12 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
     return unresolvedResult(hash, payer, unresolved.style, status);
   }
 
+  function knownTransaction(p: ParsedPayment): KnownTransaction | undefined {
+    const id = authorizationIdOf(p, network);
+    const entry = id ? deps.ledger.peek(id) : undefined;
+    return entry?.txHash ? { state: entry.state, txHash: entry.txHash } : undefined;
+  }
+
   async function settle(p: ParsedPayment): Promise<CoreResult<SettleResponse>> {
     const startedMs = deps.now();
 
@@ -843,6 +875,15 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
     const retryId = authorizationIdOf(p, network);
     const follow = retryId ? deps.ledger.followUnresolved(retryId, paymentFingerprint(p, network)) : undefined;
     if (retryId && follow) return followSettlement(retryId, follow, retryId.from, startedMs);
+    // Any other settle of an authorization this facilitator already submitted a
+    // transaction for (a retry while another request follows that transaction,
+    // another payment for the same nonce, a settle after the outcome is known)
+    // is a duplicate carrying that transaction's hash. It is answered before the
+    // checks below, which only matter for a NEW settlement: near validBefore the
+    // window check would otherwise answer "expires too soon, not submitted" for
+    // a transaction that can still charge the payer.
+    const known = knownTransaction(p);
+    if (retryId && known) return settlementRejected(duplicate(known.state, known.txHash), retryId.from);
 
     const checked = checkAuthorization(p, config, nowSec());
     if (!checked.ok) return settlementRejected(checked.rejection);
@@ -956,6 +997,7 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
   return {
     verify,
     settle,
+    knownTransaction,
     supported() {
       const feePayer = deps.chain.feePayerAccountHash;
       return {

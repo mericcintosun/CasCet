@@ -30,6 +30,7 @@ import {
   type AssetPolicy,
   type FacilitatorCore,
   type FacilitatorLogger,
+  type KnownTransaction,
   type ParsedPayment,
   type SettlementStatus,
 } from "./facilitator-core.js";
@@ -67,7 +68,11 @@ export const TOKEN_STATE_CACHE_MS = 5 * 60_000;
  *   - requires a bearer token (constant-time compare) on /verify and /settle —
  *     always on mainnet, where it must be ≥ 32 characters;
  *   - rate-limits per client IP before authentication, and globally plus per
- *     payer on /verify and /settle (express-rate-limit);
+ *     payer on /verify and /settle (express-rate-limit); a settle of an
+ *     authorization it already submitted a transaction for passes the limits
+ *     after authentication (it only follows that transaction or is answered as
+ *     a duplicate with its hash), so the x402 `settlement_pending` retry never
+ *     loses the hash to a 429;
  *   - only settles to allowlisted payees and assets (required on mainnet);
  *   - reads every allowlisted token's ABI, chain_name and name at start-up and
  *     refuses to start when the chain contradicts the configured style or name;
@@ -82,7 +87,9 @@ export const TOKEN_STATE_CACHE_MS = 5 * 60_000;
  *   - keeps an in-flight ledger of (network, asset, from, nonce) until the
  *     authorization can no longer execute, answering duplicates with
  *     `duplicate_nonce`; a settle retry of a payment whose earlier settle
- *     answered "pending" follows that transaction instead of submitting again;
+ *     answered "pending" follows that transaction instead of submitting again,
+ *     and no answer about an authorization with a transaction (a duplicate, a
+ *     shutdown, an internal error) leaves out its hash;
  *   - checks on-chain, before submitting, that the nonce is unused, that the
  *     payer's balance covers the value plus everything already in flight, and
  *     that the EIP-712 domain name is the token's (required on mainnet; a
@@ -317,11 +324,20 @@ type RouteKind = "verify" | "settle" | "other";
 const routeKind = (req: Request): RouteKind =>
   req.path === "/verify" ? "verify" : req.path === "/settle" ? "settle" : "other";
 
-/**
- * Send a rejection in the shape the caller's x402 client parses for this route.
- * `settlementStatus` (settle only) defaults to not_submitted: everything that is
- * rejected before the core runs has submitted nothing.
- */
+/** What a /settle rejection says about the authorization's transaction. */
+interface SettleRejectionDetails {
+  /**
+   * `extra.settlementStatus`. Default not_submitted: a request rejected before
+   * the core runs submitted nothing, and its authorization has no transaction
+   * here (otherwise `transaction` is set).
+   */
+  settlementStatus?: SettlementStatus;
+  /** Hash of the transaction this facilitator already submitted for the authorization. */
+  transaction?: string;
+  payer?: string;
+}
+
+/** Send a rejection in the shape the caller's x402 client parses for this route. */
 function sendRejection(
   req: Request,
   res: Response,
@@ -329,7 +345,7 @@ function sendRejection(
   status: number,
   reason: string,
   message: string,
-  settlementStatus: SettlementStatus = "not_submitted",
+  settle: SettleRejectionDetails = {},
 ): void {
   const kind = routeKind(req);
   if (kind === "verify") {
@@ -339,9 +355,10 @@ function sendRejection(
       success: false,
       errorReason: reason,
       errorMessage: message,
-      transaction: "",
+      transaction: settle.transaction ?? "",
       network,
-      extra: { settlementStatus },
+      ...(settle.payer ? { payer: settle.payer } : {}),
+      extra: { settlementStatus: settle.settlementStatus ?? ("not_submitted" satisfies SettlementStatus) },
     });
   } else {
     res.status(status).json({ error: reason, message });
@@ -364,7 +381,10 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     sendRejection(req, res, network, 429, Reason.rateLimited, "too many requests; retry after the window resets");
   };
 
-  // 1) Per client IP, before anything else (also shields the token check).
+  // 1) Per client IP, before anything else (also shields the token check). It
+  // runs before the request is authenticated, so it cannot tell a settle retry
+  // of a known transaction from any other request: keep it well above the
+  // limits after authentication (default 600 against 300 a minute).
   app.use(
     rateLimit({
       windowMs: 60_000,
@@ -393,11 +413,33 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     sendRejection(req, res, network, parsed.status, parsed.reason, parsed.message);
   };
 
+  /** The transaction the core already holds for this request's authorization (after parsePayment). */
+  const knownTransactionOf = (res: Response): KnownTransaction | undefined => {
+    const payment = res.locals["payment"] as ParsedPayment | undefined;
+    if (!payment) return undefined;
+    try {
+      return core.knownTransaction(payment);
+    } catch (err) {
+      logger.error(`known-transaction lookup failed: ${logText(err)}`);
+      return undefined;
+    }
+  };
+  /**
+   * A settle of an authorization that already has a transaction here can only
+   * follow that transaction or be answered as a duplicate with its hash: it
+   * never builds or submits anything. No limit may answer it "rate_limited,
+   * not submitted" instead, which would lose the hash: x402 resource servers
+   * retry `settlement_pending` once, at once, and keep only that answer.
+   */
+  const settlesKnownTransaction = (req: Request, res: Response): boolean =>
+    routeKind(req) === "settle" && knownTransactionOf(res) !== undefined;
+
   // 2) After authentication: all callers together, and per payer.
   const allCallersLimiter = rateLimit({
     windowMs: 60_000,
     limit: opts.maxRequestsPerMinute,
     keyGenerator: () => "all-callers",
+    skip: settlesKnownTransaction,
     standardHeaders: "draft-8",
     legacyHeaders: false,
     handler: onLimit,
@@ -406,6 +448,7 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     windowMs: 60_000,
     limit: opts.maxRequestsPerPayerPerMinute,
     keyGenerator: (_req, res) => `payer:${(res.locals["payment"] as ParsedPayment).authorization.from.toLowerCase()}`,
+    skip: settlesKnownTransaction,
     standardHeaders: "draft-8",
     legacyHeaders: false,
     handler: onLimit,
@@ -414,6 +457,7 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     windowMs: 60_000,
     limit: opts.maxSettlesPerMinute,
     keyGenerator: () => "settles",
+    skip: settlesKnownTransaction,
     standardHeaders: "draft-8",
     legacyHeaders: false,
     handler: onLimit,
@@ -430,6 +474,22 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
   const refuseWhenClosing = (req: Request, res: Response, next: NextFunction): void => {
     if (!inFlight.isClosing) return next();
     res.set("connection", "close");
+    const known = routeKind(req) === "settle" ? knownTransactionOf(res) : undefined;
+    if (known) {
+      // Not followed while shutting down, but never "not submitted": the hash lets the caller reconcile it.
+      const payer = (res.locals["payment"] as ParsedPayment).authorization.from.toLowerCase();
+      logger.warn(`settle while shutting down: answered with the known tx=${logText(known.txHash)} (${known.state})`);
+      sendRejection(
+        req,
+        res,
+        network,
+        503,
+        Reason.shuttingDown,
+        `the facilitator is shutting down; transaction ${known.txHash} was already submitted for this authorization: reconcile it by hash`,
+        { settlementStatus: "pending", transaction: known.txHash, payer },
+      );
+      return;
+    }
     sendRejection(req, res, network, 503, Reason.shuttingDown, "the facilitator is shutting down; retry later");
   };
 
@@ -443,7 +503,9 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     }
   });
 
-  app.post("/settle", refuseWhenClosing, requireToken, parsePayment, allCallersLimiter, perPayerLimiter, settleLimiter, async (_req, res) => {
+  // The shutdown check runs after authentication and parsing here, so a settle of
+  // an authorization that already has a transaction still learns its hash.
+  app.post("/settle", requireToken, parsePayment, refuseWhenClosing, allCallersLimiter, perPayerLimiter, settleLimiter, async (_req, res) => {
     inFlight.enter();
     try {
       const result = await core.settle(res.locals["payment"] as ParsedPayment);
@@ -470,15 +532,19 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     }
     logger.error(`internal error on ${routeKind(req)}: ${logText(err)}`);
     if (routeKind(req) === "settle") {
-      // The core may already have submitted a transaction: never claim "not submitted".
+      // The core may already have submitted a transaction: never claim "not submitted",
+      // and hand back the hash when this facilitator holds one for the authorization.
+      const known = knownTransactionOf(res);
       sendRejection(
         req,
         res,
         network,
         500,
         Reason.unknown,
-        "internal facilitator error; the settlement outcome is unknown: reconcile by the authorization nonce",
-        "unknown",
+        known
+          ? `internal facilitator error; the settlement outcome is unknown: reconcile transaction ${known.txHash} by hash`
+          : "internal facilitator error; the settlement outcome is unknown: reconcile by the authorization nonce",
+        { settlementStatus: "unknown", ...(known ? { transaction: known.txHash } : {}) },
       );
       return;
     }

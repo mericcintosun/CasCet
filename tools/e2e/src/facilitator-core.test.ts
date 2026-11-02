@@ -738,6 +738,69 @@ describe("pending settlements: a settle retry follows the earlier transaction (n
     assert.deepEqual([retry.body.success, retry.body.transaction], [true, first.body.transaction]);
   });
 
+  test("near expiry, a concurrent retry (the follow claim is taken) is a duplicate with the hash, never 'expires too soon'", async () => {
+    let releaseWait!: () => void;
+    const gate = new Promise<void>(r => (releaseWait = r));
+    const outcomes: Array<() => Promise<ExecutionOutcome>> = [
+      async () => ({ kind: "pending", seen: true }),
+      async () => {
+        await gate;
+        return { kind: "success", costMotes: 3n * CSPR };
+      },
+    ];
+    let n = 0;
+    const h = harness({ outcome: () => outcomes[n++]!() });
+    const now = Math.floor(T0 / 1000);
+    const payment = () => parsed({ validBefore: now + 60 });
+    const first = await h.core.settle(payment());
+    assert.equal(first.body.errorReason, Reason.pending);
+    h.clock.advance(50_000); // 10 s left: inside the 20 s settle window
+
+    const follower = h.core.settle(payment());
+    const concurrent = await h.core.settle(payment());
+    assert.deepEqual(
+      [concurrent.status, concurrent.body.success, concurrent.body.errorReason, concurrent.body.transaction, concurrent.body.payer],
+      [200, false, Reason.duplicateNonce, first.body.transaction, PAYER],
+    );
+    assert.deepEqual(concurrent.body.extra, { settlementStatus: "duplicate" }, "not not_submitted: the transaction can still charge the payer");
+    releaseWait();
+    assert.deepEqual([(await follower).body.success, (await follower).body.transaction], [true, first.body.transaction]);
+
+    // After the outcome, still near expiry: another payment for the nonce and the same payment again.
+    const other = await h.core.settle(parsed({ validBefore: now + 60, signature: `01${"ac".repeat(64)}` }));
+    const again = await h.core.settle(payment());
+    for (const r of [other, again]) {
+      assert.deepEqual([r.body.errorReason, r.body.transaction], [Reason.duplicateNonce, first.body.transaction]);
+      assert.deepEqual(r.body.extra, { settlementStatus: "duplicate" });
+    }
+    assert.deepEqual([h.chain.builds.length, h.chain.submits], [1, 1]);
+    assert.equal(h.signatureChecks.count, 1, "answered before any check of a new settlement");
+  });
+
+  test("knownTransaction: a lookup of the transaction submitted for an authorization, without claiming it", async () => {
+    const h = scripted([
+      { kind: "pending", seen: true },
+      { kind: "success", costMotes: 3n * CSPR },
+    ]);
+    assert.equal(h.core.knownTransaction(parsed()), undefined, "nothing yet");
+    assert.equal((await h.core.verify(parsed())).body.isValid, true);
+    assert.equal(h.core.knownTransaction(parsed()), undefined, "verified: no transaction");
+    const first = await h.core.settle(parsed());
+    const hash = first.body.transaction;
+    assert.deepEqual(h.core.knownTransaction(parsed()), { state: "submitted", txHash: hash });
+    // Any payment for the same (asset, payer, nonce) sees it, however its fields are spelled.
+    assert.deepEqual(h.core.knownTransaction(parsed({ asset: `hash-${ASSET.toUpperCase()}`, signature: `01${"ac".repeat(64)}` })), {
+      state: "submitted",
+      txHash: hash,
+    });
+    assert.equal(h.core.knownTransaction(parsed({ nonce: "01".repeat(32) })), undefined);
+    assert.equal(h.core.knownTransaction(parsed({ asset: WCSPR })), undefined);
+    // The lookup took no claim: the retry still follows the transaction.
+    const retry = await h.core.settle(parsed());
+    assert.deepEqual([retry.body.success, retry.body.extra?.["reconciled"]], [true, true]);
+    assert.deepEqual(h.core.knownTransaction(parsed()), { state: "settled", txHash: hash });
+  });
+
   test("only the identical payment may follow: another payment for the same nonce is a duplicate", async () => {
     const h = scripted([{ kind: "pending", seen: true }]);
     const first = await h.core.settle(parsed());

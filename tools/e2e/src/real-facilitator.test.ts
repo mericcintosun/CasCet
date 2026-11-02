@@ -11,7 +11,7 @@ import { HTTPFacilitatorClient, x402ResourceServer } from "@x402/core/server";
 import type { PaymentPayload, PaymentRequirements, SettleResponse, VerifyResponse } from "@x402/core/types";
 import { clientSignerFromPem, createCasperClientScheme } from "@cascet/client";
 import { balanceItemKey, CascetCasperServerScheme, dictionaryAddress } from "@cascet/gateway";
-import type { CoreResult, FacilitatorCore, FacilitatorLogger, ParsedPayment } from "./facilitator-core.js";
+import type { CoreResult, FacilitatorCore, FacilitatorLogger, KnownTransaction, ParsedPayment } from "./facilitator-core.js";
 import { NETWORKS } from "./facilitator-env.js";
 import {
   closeGracefully,
@@ -60,6 +60,8 @@ class FakeCore implements FacilitatorCore {
   /** Simulate a bug in the core (an exception after it may have submitted). */
   throws = false;
   calls: string[] = [];
+  /** Transactions "already submitted", by authorization nonce. */
+  known = new Map<string, KnownTransaction>();
   async verify(p: ParsedPayment): Promise<CoreResult<VerifyResponse>> {
     this.calls.push(`verify ${p.authorization.from.slice(0, 6)}`);
     if (this.throws) throw new Error("boom\nwith a second line");
@@ -69,6 +71,9 @@ class FakeCore implements FacilitatorCore {
     this.calls.push(`settle ${p.authorization.from.slice(0, 6)}`);
     if (this.throws) throw new Error("boom after submission");
     return { status: 200, body: { success: true, transaction: "aa".repeat(32), network: NETWORK, payer: p.authorization.from } };
+  }
+  knownTransaction(p: ParsedPayment): KnownTransaction | undefined {
+    return this.known.get(p.authorization.nonce);
   }
   supported() {
     return { kinds: [{ x402Version: 2, scheme: "exact", network: NETWORK, extra: { feePayer: "fe" } }], extensions: [], signers: {} };
@@ -171,6 +176,13 @@ describe("HTTP surface: authentication (CodeQL js/user-controlled-bypass)", () =
       assert.doesNotMatch(String(st.body["errorMessage"]), /boom/, "no raw error text");
       const v = await s.post("/verify", requestBody());
       assert.deepEqual([v.status, v.body["isValid"], v.body["invalidReason"]], [500, false, "internal_error"]);
+
+      // When the facilitator holds a transaction for the authorization, the answer carries its hash.
+      core.known.set("9c".repeat(32), { state: "submitted", txHash: "ab".repeat(32) });
+      const withHash = await s.post("/settle", requestBody());
+      assert.deepEqual([withHash.status, withHash.body["errorReason"], withHash.body["transaction"]], [500, "settlement_unknown", "ab".repeat(32)]);
+      assert.deepEqual(withHash.body["extra"], { settlementStatus: "unknown" });
+      assert.match(String(withHash.body["errorMessage"]), /reconcile transaction abab/);
     } finally {
       await s.close();
     }
@@ -216,6 +228,30 @@ describe("HTTP surface: rate limits (CodeQL js/missing-rate-limiting)", () => {
       const global = await s.post("/verify", requestBody(`00${"04".repeat(32)}`));
       assert.equal(global.status, 429, "3 requests used the global budget");
       assert.equal(global.body["invalidReason"], "rate_limited");
+    } finally {
+      await s.close();
+    }
+  });
+
+  test("a settle of an authorization that already has a transaction passes every post-auth limit (it only follows it or is a duplicate)", async () => {
+    const core = new FakeCore();
+    const s = await serve(core, { maxRequestsPerMinute: 1, maxRequestsPerPayerPerMinute: 1, maxSettlesPerMinute: 1 });
+    try {
+      const alice = `00${"a1".repeat(32)}`;
+      assert.equal((await s.post("/settle", requestBody(alice, "01".repeat(32)))).status, 200);
+      // Every budget is spent: a new settle (another payer, another nonce) is limited, and loses nothing.
+      const limited = await s.post("/settle", requestBody(`00${"b2".repeat(32)}`, "02".repeat(32)));
+      assert.deepEqual([limited.status, limited.body["errorReason"], limited.body["transaction"]], [429, "rate_limited", ""]);
+      assert.deepEqual(limited.body["extra"], { settlementStatus: "not_submitted" });
+
+      // The first authorization now has a transaction: settling it again (the
+      // @x402/core settlement_pending retry) reaches the core, however often.
+      core.known.set("01".repeat(32), { state: "submitted", txHash: "ab".repeat(32) });
+      for (let i = 0; i < 3; i++) assert.equal((await s.post("/settle", requestBody(alice, "01".repeat(32)))).status, 200, `retry ${i}`);
+      assert.equal(core.calls.filter(c => c.startsWith("settle")).length, 4);
+      // /verify of it, and settles of other authorizations, are still limited.
+      assert.equal((await s.post("/verify", requestBody(alice, "01".repeat(32)))).status, 429);
+      assert.equal((await s.post("/settle", requestBody(alice, "03".repeat(32)))).status, 429);
     } finally {
       await s.close();
     }
@@ -280,6 +316,33 @@ describe("graceful shutdown", () => {
       assert.deepEqual(st.body["extra"], { settlementStatus: "not_submitted" });
       assert.equal((await s.post("/verify", requestBody())).status, 503);
       assert.equal(core.calls.length, 0);
+    } finally {
+      await s.close();
+    }
+  });
+
+  test("while shutting down, a settle of an authorization that has a transaction gets its hash, never 'not submitted'", async () => {
+    const core = new FakeCore();
+    core.known.set("9c".repeat(32), { state: "submitted", txHash: "ab".repeat(32) });
+    const inFlight = new InFlightRequests();
+    inFlight.close();
+    const s = await serve(core, { inFlight });
+    try {
+      const st = await s.post("/settle", requestBody());
+      assert.deepEqual(
+        [st.status, st.body["success"], st.body["errorReason"], st.body["transaction"], st.body["payer"]],
+        [503, false, "facilitator_shutting_down", "ab".repeat(32), `00${"65".repeat(32)}`],
+      );
+      assert.deepEqual(st.body["extra"], { settlementStatus: "pending" }, "an outcome to reconcile by hash");
+      assert.match(String(st.body["errorMessage"]), /transaction abab.* reconcile it by hash/);
+      // Authentication and parsing still come first.
+      assert.equal((await s.post("/settle", requestBody(), "Bearer nope")).status, 401);
+      assert.equal((await s.post("/settle", { paymentPayload: {} })).status, 400);
+      // Another authorization: nothing here, so "not submitted".
+      const other = await s.post("/settle", requestBody(undefined, "01".repeat(32)));
+      assert.deepEqual([other.status, other.body["transaction"]], [503, ""]);
+      assert.deepEqual(other.body["extra"], { settlementStatus: "not_submitted" });
+      assert.equal(core.calls.length, 0, "nothing reaches the core while shutting down");
     } finally {
       await s.close();
     }
@@ -618,6 +681,18 @@ describe("startRealFacilitator end to end against a local fake node (no network)
     return { status: res.status, body: (await res.json()) as Record<string, any> };
   }
 
+  /** An @x402/core 2.29 resource server (what a CasCet gateway runs) settling through the facilitator at `url`. */
+  async function resourceServer(url: string) {
+    const auth = { Authorization: TOKEN };
+    const facilitator = new HTTPFacilitatorClient({ url, createAuthHeaders: async () => ({ verify: auth, settle: auth, supported: auth }) });
+    const server = new x402ResourceServer(facilitator).register(
+      NETWORK,
+      new CascetCasperServerScheme([{ network: NETWORK, asset: TOKEN_PKG, decimals: 9 }]),
+    );
+    await server.initialize();
+    return server;
+  }
+
   const argsOf = (tx: { Version1: Record<string, any> }) =>
     Object.fromEntries(tx.Version1["payload"].fields.args.Named as Array<[string, { bytes: string; cl_type: unknown }]>);
 
@@ -793,17 +868,7 @@ describe("startRealFacilitator end to end against a local fake node (no network)
     const fac = await start({ settleWaitMs: 1_500, logger: { ...quiet, info: m => logs.push(m) } });
     executed = false; // the node never shows the transaction while the gateway waits
     try {
-      const auth = { Authorization: TOKEN };
-      const facilitator = new HTTPFacilitatorClient({
-        url: fac.url,
-        createAuthHeaders: async () => ({ verify: auth, settle: auth, supported: auth }),
-      });
-      const server = new x402ResourceServer(facilitator).register(
-        NETWORK,
-        new CascetCasperServerScheme([{ network: NETWORK, asset: TOKEN_PKG, decimals: 9 }]),
-      );
-      await server.initialize();
-
+      const server = await resourceServer(fac.url);
       const body = await signedByBuyer(requirements());
       const before = submitted.length;
       const result = await server.settlePayment(
@@ -815,6 +880,34 @@ describe("startRealFacilitator end to end against a local fake node (no network)
       // The retry's answer: the same transaction, still pending (not a duplicate_nonce rejection).
       assert.deepEqual([result.success, result.errorReason, result.transaction], [false, "settlement_pending", hash]);
       assert.ok(logs.some(l => l.includes(`following pending tx=${hash}`)), "the retry followed the stored transaction");
+    } finally {
+      executed = true;
+      await fac.close();
+    }
+  });
+
+  test("rate limits never cost @x402/core 2.29's settlement_pending retry its transaction hash", async () => {
+    // Each limit after authentication allows one request a minute: the retry is the second.
+    const fac = await start({ settleWaitMs: 1_500, maxSettlesPerMinute: 1, maxRequestsPerMinute: 1, maxRequestsPerPayerPerMinute: 1 });
+    executed = false; // the node never shows the transaction while the gateway waits
+    try {
+      const server = await resourceServer(fac.url);
+      const body = await signedByBuyer(requirements());
+      const before = submitted.length;
+      const result = await server.settlePayment(
+        body.paymentPayload as unknown as PaymentPayload,
+        body.paymentRequirements as unknown as PaymentRequirements,
+      );
+      assert.equal(submitted.length, before + 1, "one broadcast");
+      const hash = submitted.at(-1)!.Version1["hash"];
+      // Not SettleError(429, rate_limited, transaction ""): the gateway keeps the hash to reconcile.
+      assert.deepEqual([result.success, result.errorReason, result.transaction], [false, "settlement_pending", hash]);
+      assert.equal(result.extra?.["settlementStatus"], "pending");
+
+      // A settle of a new payment is still limited, and loses nothing.
+      const other = await post(fac.url, "/settle", await signedByBuyer(requirements()));
+      assert.deepEqual([other.status, other.body["errorReason"], other.body["transaction"]], [429, "rate_limited", ""]);
+      assert.equal(submitted.length, before + 1);
     } finally {
       executed = true;
       await fac.close();

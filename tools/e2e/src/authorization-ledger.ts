@@ -236,8 +236,10 @@ export class AuthorizationLedger {
    * an unresolved transaction, was submitted for the SAME payment
    * (`fingerprint`) and no other request is following it, claim it and return
    * its hash. Anything else (no entry, a final outcome, another payment for the
-   * same nonce, a concurrent follower) returns `undefined`, and the request
-   * goes through the normal checks, which answer it as a duplicate.
+   * same nonce, a concurrent follower) returns `undefined`. The facilitator
+   * core then answers every settle of an entry that has a transaction hash
+   * ({@link peek}) as a duplicate carrying that hash, before any other check,
+   * so a retry near validBefore is never told "not submitted".
    */
   followUnresolved(id: AuthorizationId, fingerprint: string): FollowClaim | undefined {
     const entry = this.peek(id);
