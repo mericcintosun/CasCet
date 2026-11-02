@@ -9,7 +9,7 @@ import { join } from "node:path";
 import {
   clientAllowedPayTo,
   createDataBuyer,
-  paymentGuard,
+  paymentLog,
   withAbortSignal,
   type BuyerContext,
   type FetchLike,
@@ -74,25 +74,11 @@ describe("clientAllowedPayTo", () => {
   });
 });
 
-describe("paymentGuard", () => {
-  const info = { amountRaw: "500000000", payTo: `00${"a".repeat(64)}`, network: "casper:casper-test" };
-
-  it("lets an allowed payment through and logs it", () => {
+describe("paymentLog", () => {
+  it("logs each signed payment", () => {
     const lines: string[] = [];
-    paymentGuard({ networks: ["casper:casper-test"], signal: new AbortController().signal, log: l => lines.push(l) })(info);
-    assert.equal(lines.length, 1);
-  });
-
-  it("vetoes a network that is not in CASCET_NETWORK", () => {
-    const guard = paymentGuard({ networks: ["casper:casper-test"], signal: new AbortController().signal, log: () => {} });
-    assert.throws(() => guard({ ...info, network: "casper:casper" }), /network casper:casper is not in CASCET_NETWORK/);
-  });
-
-  it("refuses to sign once the analysis is aborted", () => {
-    const ac = new AbortController();
-    const guard = paymentGuard({ networks: ["casper:casper-test"], signal: ac.signal, log: () => {} });
-    ac.abort();
-    assert.throws(() => guard(info), /aborted, not paying/);
+    paymentLog(l => lines.push(l))({ amountRaw: "500000000", payTo: `00${"a".repeat(64)}`, network: "casper:casper-test" });
+    assert.deepEqual(lines, [`💸 buying data: 500000000 raw → 00aaaaaaaa… on casper:casper-test`]);
   });
 });
 
@@ -232,6 +218,23 @@ describe("createDataBuyer with the real paying fetch", { timeout: 15_000 }, () =
   it("refuses a 402 for a network outside CASCET_NETWORK before signing", async () => {
     const { err, gateway } = await refusal({ network: "casper:casper" });
     assertRefused(err, gateway);
+  });
+
+  it("refuses a testnet 402 when CASCET_NETWORK lists mainnet only", async () => {
+    const { err, gateway } = await refusal({}, { CASCET_NETWORK: "casper:casper" });
+    assertRefused(err, gateway, /casper:casper-test/);
+  });
+
+  it("pays on the networks CASCET_NETWORK lists, mainnet included", async () => {
+    // The fake gateway answers the paid retry with another 402, so the purchase
+    // fails after paying; what matters is that the signed payment was sent.
+    const gateway = await startFakeGateway({ challenge: challenge({ network: "casper:casper" }) });
+    try {
+      await buyOnce(gateway, configFor(gateway.url, { CASCET_NETWORK: "casper:casper" }));
+      assert.deepEqual(gateway.requests, [{ paid: false }, { paid: true }]);
+    } finally {
+      await gateway.close();
+    }
   });
 
   it("refuses a payee that is not allowlisted", async () => {
