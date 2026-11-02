@@ -210,9 +210,10 @@ Run from the repo root (the script finds its files from any directory):
 pnpm --filter @cascet/e2e facilitator     # in one terminal (fee-sponsored)
 clients/python/venv/bin/python clients/python/example_settle.py
 
-# Wrapped CSPR on testnet, through the hosted CSPR.cloud facilitator (its default)
+# Wrapped CSPR on testnet, through the hosted CSPR.cloud facilitator (named:
+# the self-hosted facilitator is the default for both tokens)
 CSPR_CLOUD_TOKEN=<CSPR.cloud access key> \
-clients/python/venv/bin/python clients/python/example_settle.py --asset wcspr
+clients/python/venv/bin/python clients/python/example_settle.py --asset wcspr --facilitator hosted
 ```
 
 This moves 0.5 of the chosen token. The script builds the payment requirements
@@ -231,10 +232,12 @@ and still burn the whole gas limit:
 | `wcspr` (Wrapped CSPR, `cep3009-value`) | CasCet's self-hosted facilitator (the default), or the hosted facilitator | none: both pass `value` to it |
 
 Any facilitator URL other than the hosted one is taken for CasCet's
-self-hosted facilitator. A Wrapped CSPR payment needs a WCSPR balance on the
-payer's account (wrap some testnet CSPR first). On 2026-11-01 the hosted
-facilitator's testnet fee payer held less CSPR than a settle needs, so hosted
-testnet settles fail until it is refilled.
+self-hosted facilitator. That facilitator settles Wrapped CSPR only once its
+package hash is in `CASCET_ALLOWED_ASSETS` (by default it allows only the
+CasCet X402 Token; see `tools/e2e/src/run-facilitator.ts`). A Wrapped CSPR
+payment needs a WCSPR balance on the payer's account (wrap some testnet CSPR
+first). On 2026-11-01 the hosted facilitator's testnet fee payer held less
+CSPR than a settle needs, so hosted testnet settles fail until it is refilled.
 
 `CASCET_NET=mainnet` moves real funds on mainnet, with the CasCet X402 Token
 only, and there it has no defaults: the script stops unless `CASCET_KEY_PATH`
@@ -245,7 +248,7 @@ Settings:
 | Option / variable | Meaning |
 |---|---|
 | `--asset`, `CASCET_ASSET` | `legacy` (default: the CasCet X402 Token) or `wcspr` (the official Wrapped CSPR, testnet only). |
-| `--facilitator`, `FACILITATOR` | Facilitator base URL (without a query or a fragment), or `self` (`http://127.0.0.1:4501`, the default for `legacy`) or `hosted` (`https://x402-facilitator.cspr.cloud`, the default for `wcspr`). |
+| `--facilitator`, `FACILITATOR` | Facilitator base URL (without a query or a fragment), or `self` (`http://127.0.0.1:4501`, the default for both tokens) or `hosted` (`https://x402-facilitator.cspr.cloud`). |
 | `CSPR_CLOUD_TOKEN` | CSPR.cloud access key for the hosted facilitator. Sent raw as `Authorization: <key>` (never `Bearer`), and to the hosted facilitator only. |
 | `CASCET_FACILITATOR_TOKEN` | Token of any other facilitator, sent as `Authorization: Bearer …`. The self-hosted facilitator requires it on mainnet. Never sent to the hosted facilitator. |
 | `CASCET_KEY_PATH` | Payer key. Testnet default: `tools/e2e/keys/agent.pem`. Required on mainnet. |

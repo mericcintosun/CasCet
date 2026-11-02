@@ -203,6 +203,16 @@ class TestSettleSettings(unittest.TestCase):
         self.assertEqual(example_settle.default_facilitator(example_settle.token_for("legacy", TESTNET)), "self")
         self.assertEqual(example_settle.default_facilitator(example_settle.token_for("wcspr", TESTNET)), "self")
 
+    def test_the_help_names_the_default_facilitator(self):
+        # Every token defaults to the self-hosted facilitator; the hosted one is used only when named.
+        defaults = {example_settle.default_facilitator(token)
+                    for by_network in example_settle.TOKENS.values() for token in by_network.values()}
+        self.assertEqual(defaults, {"self"})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            example_settle.load_settings(["--help"], {})
+        self.assertIn("(default: self, for both tokens)", " ".join(out.getvalue().split()))
+
     def test_a_default_hosted_facilitator_needs_the_cspr_cloud_key(self):
         # For a token the self-hosted facilitator does not settle, the hosted one is picked by default and
         # needs CSPR_CLOUD_TOKEN; the error says why.

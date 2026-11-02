@@ -29,9 +29,15 @@ script finds its files from any directory):
     pnpm --filter @cascet/e2e facilitator
     clients/python/venv/bin/python clients/python/example_settle.py
 
-Testnet, Wrapped CSPR, hosted facilitator (--facilitator hosted is implied):
+Testnet, Wrapped CSPR, hosted facilitator (name it: the self-hosted
+facilitator is the default for both tokens):
     CSPR_CLOUD_TOKEN=<CSPR.cloud access key> \\
-    clients/python/venv/bin/python clients/python/example_settle.py --asset wcspr
+    clients/python/venv/bin/python clients/python/example_settle.py --asset wcspr --facilitator hosted
+
+Without --facilitator hosted, Wrapped CSPR goes to the self-hosted
+facilitator, which settles it only once its package hash is in that
+facilitator's CASCET_ALLOWED_ASSETS (by default it allows only the CasCet
+token; see tools/e2e/src/run-facilitator.ts).
 
 Mainnet (CasCet token only) has no defaults: name the payer key and the payee
 yourself. The repo's demo key (tools/e2e/keys/agent.pem) is a throwaway key,
@@ -43,9 +49,9 @@ the facilitator for mainnet as tools/e2e/src/run-facilitator.ts describes, then:
 
 Options (each overrides its environment variable):
     --asset legacy|wcspr          CASCET_ASSET (default legacy)
-    --facilitator URL|self|hosted FACILITATOR (default: self for legacy, hosted
-                                  for wcspr; self is http://127.0.0.1:4501,
-                                  hosted is https://x402-facilitator.cspr.cloud)
+    --facilitator URL|self|hosted FACILITATOR (default self, for both tokens;
+                                  self is http://127.0.0.1:4501, hosted is
+                                  https://x402-facilitator.cspr.cloud)
 
 Environment:
     CASCET_NET=mainnet           settle on Casper mainnet instead of testnet
@@ -349,7 +355,7 @@ def load_settings(argv: Optional[Sequence[str]], env: Mapping[str, str]) -> Sett
     )
     parser.add_argument("--asset", help="legacy (CasCet X402 Token, the default) or wcspr (testnet Wrapped CSPR)")
     parser.add_argument(
-        "--facilitator", help="facilitator base URL, or self or hosted (default: self for legacy, hosted for wcspr)"
+        "--facilitator", help="facilitator base URL, or self or hosted (default: self, for both tokens)"
     )
     args = parser.parse_args(argv)
 
