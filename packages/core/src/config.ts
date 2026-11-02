@@ -520,7 +520,12 @@ function resolveConfig(raw: RawConfig, issues: Issues) {
  * one-entry list, also kept as `asset`), each with its authorization style and
  * facilitator resolved, and every facilitator in `facilitators`, the top-level
  * `facilitator` as "default". Configs written for earlier versions parse
- * unchanged.
+ * unchanged, except those that could not work, which the schema now refuses:
+ * every payment would fail (a legacy-amount token or the bearer scheme on
+ * the hosted facilitator, a timeout setTimeout cannot hold) or every CasCet
+ * buyer would refuse to pay (an authorization window above
+ * {@link DEFAULT_MAX_AUTHORIZATION_SECONDS}, a token name or version they
+ * refuse).
  */
 export const cascetConfigSchema = rawConfigSchema.transform((raw, ctx) => {
   const issues: Issues = [];
