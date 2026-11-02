@@ -49,7 +49,9 @@ class TestPayloadShape(unittest.TestCase):
         payload = build(requirements=make_requirements(amount="000500"))
         self.assertEqual(payload["payload"]["authorization"]["value"], "000500")
 
-    def test_default_window_follows_the_typescript_scheme(self):
+    def test_default_window_back_dates_valid_after(self):
+        # As @make-software/casper-x402 1.0.0 did. The @x402/casper 2.29 client signs 0, which valid_after=0
+        # reproduces (test_styles.py: test_valid_after_may_be_0).
         auth = build()["payload"]["authorization"]
         self.assertEqual(auth["validAfter"], str(NOW - 600))
         self.assertEqual(auth["validBefore"], str(NOW + 300))

@@ -132,7 +132,10 @@ DEFAULT_NETWORKS: Tuple[str, ...] = (NETWORK_CASPER_TESTNET,)
 #: Deadline for one PayingClient call (first request, 402, signing, paid retry
 #: and reading the response), the TypeScript client's `timeoutMs: 30000`.
 DEFAULT_TIMEOUT_SECONDS = 30.0
-#: validAfter is back-dated by this much to tolerate clock skew (same as the TS scheme).
+#: By default validAfter is back-dated by this much to tolerate clock skew, as
+#: @make-software/casper-x402 1.0.0 did. @x402/casper 2.29, the TypeScript
+#: client since the 2.29 migration, signs validAfter 0: pass valid_after=0 to
+#: build_payment_payload for byte parity with it.
 VALID_AFTER_SKEW_SECONDS = 600
 #: Upper bound on how long a signed authorization stays valid, whatever
 #: `maxTimeoutSeconds` a server asks for (a hostile 402 could ask for years).
