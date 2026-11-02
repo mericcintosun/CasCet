@@ -1452,6 +1452,18 @@ describe("refusalReason", () => {
       /^the gateway asks for payment on casper:casper, casper:casper\\nfake, but this client only pays on casper:casper-test/,
     );
   });
+
+  it("escapes separator, bidi, C1 and DEL characters in the networks it names, as JSON leaves them raw", () => {
+    const esc = (code: number): string => "\\" + "u" + code.toString(16).padStart(4, "0");
+    const codes = [0x2028, 0x202e, 0x2066, 0x0085, 0x009b, 0x007f];
+    const network = `casper:casper${codes.map(code => String.fromCharCode(code)).join("")}fake`;
+    const reason = refusalReason(policy, [requirement({ network })]) ?? "";
+    assert.ok(
+      reason.startsWith(`the gateway asks for payment on casper:casper${codes.map(esc).join("")}fake, but this client only pays on`),
+      reason,
+    );
+    for (const code of codes) assert.ok(!reason.includes(String.fromCharCode(code)), `U+${code.toString(16)} is escaped`);
+  });
 });
 
 describe("PendingReservations", () => {
