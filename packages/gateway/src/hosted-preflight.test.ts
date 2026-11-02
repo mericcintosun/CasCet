@@ -126,6 +126,16 @@ describe("on-chain preflight of payments the hosted facilitator settles", () => 
     assert.equal(HOSTED_PREFLIGHT_DEADLINE_MS, 5_000);
   });
 
+  it("fails closed when the node answers a read without a stored value: a spent nonce never reads as unused", async () => {
+    const routes = wcsprNodeRoutes({ balances: { [PAYER]: 1_000_000_000n }, usedNonces: [{ payer: PAYER, nonce: NONCE }] });
+    routes[wcsprNonceCall(PAYER, NONCE)] = { jsonrpc: "2.0", id: 1, result: null };
+    assert.deepEqual(await preflight({ routes }).run(), {
+      abort: true,
+      reason: PreflightReason.preflightUnavailable,
+      message: "could not read the token state; retry later",
+    });
+  });
+
   it("refuses a token that cannot be used for x402 payments", async () => {
     const missing = { ...wcsprNodeRoutes({}), [`query_global_state hash-${WCSPR_TESTNET}`]: fx.testnetUnusedNonceResponse };
     assert.equal((await preflight({ routes: missing }).run())?.reason, PreflightReason.unsupportedAsset);

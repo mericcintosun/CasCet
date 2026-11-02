@@ -36,7 +36,9 @@ const { byteHash } = casperSdk;
  * Node errors: -32003 "value was not found in the global state" means the item
  * does not exist (unused nonce, zero balance); -32018 "dictionary URef not
  * found" means the token has no such dictionary (unsupported). Every other
- * failure is indeterminate: the probe throws and callers must fail closed.
+ * failure is indeterminate, and so is an answer without a stored value (a null
+ * result from a broken node or proxy): the probe throws and callers must fail
+ * closed.
  */
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -203,6 +205,18 @@ interface CLValueJson {
   parsed?: unknown;
 }
 
+/**
+ * The result of a `query_global_state` call that succeeded, which always
+ * carries a stored value. Anything else (null, false, 0, "", an object without
+ * one) is a malformed answer, never "no entry": only the node's explicit
+ * "value was not found" error means that. Throws {@link TokenStateError}.
+ */
+function storedValueOf(result: unknown, what: string): StoredValueEnvelope {
+  const storedValue = typeof result === "object" && result !== null ? (result as { stored_value?: unknown }).stored_value : undefined;
+  if (typeof storedValue !== "object" || storedValue === null) throw new TokenStateError(`${what}: the node's answer carries no stored value`);
+  return result as StoredValueEnvelope;
+}
+
 function clValueOf(result: StoredValueEnvelope, what: string): CLValueJson {
   const clv = result.stored_value?.["CLValue"];
   if (typeof clv !== "object" || clv === null) throw new TokenStateError(`${what}: stored value is not a CLValue`);
@@ -320,13 +334,13 @@ export class TokenProbe {
    * caller has to answer "unavailable", if the deadline leaves time for it; an
    * answer from the node is never retried.
    */
-  private async read(key: string, opts: TokenReadOptions): Promise<StoredValueEnvelope> {
+  private async read(key: string, opts: TokenReadOptions): Promise<unknown> {
     const params = { key, path: [] };
     const left = () => (opts.deadlineMs === undefined ? undefined : opts.deadlineMs - this.now());
     const attempt = () => {
       const budget = left();
       if (budget !== undefined && budget <= 0) throw new TokenStateError("preflight deadline exceeded");
-      return this.rpc.call<StoredValueEnvelope>("query_global_state", params, budget !== undefined ? { timeoutMs: budget } : undefined);
+      return this.rpc.call<unknown>("query_global_state", params, budget !== undefined ? { timeoutMs: budget } : undefined);
     };
     try {
       return await attempt();
@@ -340,20 +354,23 @@ export class TokenProbe {
 
   /** Read a value that must exist (a package, a contract, a named key). */
   private async query(key: string, what: string, opts: TokenReadOptions): Promise<StoredValueEnvelope> {
+    let result: unknown;
     try {
-      return await this.read(key, opts);
+      result = await this.read(key, opts);
     } catch (err) {
       if (err instanceof TokenStateError) throw err;
       const detail = `${what}: ${err instanceof Error ? err.message : String(err)}`;
       if (classifyTokenRpcError(err) === "unavailable") throw new TokenStateError(detail, { cause: err });
       throw new TokenUnsupportedError(detail, { cause: err });
     }
+    return storedValueOf(result, what);
   }
 
-  /** Query a dictionary item; `undefined` when the node says it does not exist. */
+  /** Query a dictionary item; `undefined` only when the node says it does not exist. */
   private async queryItem(address: string, what: string, opts: TokenReadOptions): Promise<StoredValueEnvelope | undefined> {
+    let result: unknown;
     try {
-      return await this.read(address, opts);
+      result = await this.read(address, opts);
     } catch (err) {
       if (err instanceof TokenStateError) throw err;
       const kind = classifyTokenRpcError(err);
@@ -362,6 +379,7 @@ export class TokenProbe {
       if (kind === "unsupported") throw new TokenUnsupportedError(detail, { cause: err });
       throw new TokenStateError(detail, { cause: err });
     }
+    return storedValueOf(result, what);
   }
 
   /** Resolve the token's current contract, its named keys and its ABI (cached; concurrent calls share one lookup). */

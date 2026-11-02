@@ -174,6 +174,27 @@ describe("TokenProbe (recorded RPC fixtures)", () => {
     assert.equal(answered.filter(c => c.endsWith(addr)).length, 1);
   });
 
+  test("an answer without a stored value is indeterminate, never an unused nonce or a zero balance", async () => {
+    const nonceRead = `query_global_state ${dictionaryAddress(namedKey(fx.testnetContractResponse, "used_nonces"), usedNonceItemKey(PAYER, TESTNET_NONCE))}`;
+    const balanceRead = `query_global_state ${dictionaryAddress(namedKey(fx.testnetContractResponse, "balances"), balanceItemKey(PAYER))}`;
+    // A broken node or proxy answering `result` null (or another falsy value) for the used nonce and the funded balance.
+    for (const result of [null, false, 0, "", {}, { stored_value: null }]) {
+      const answer = { jsonrpc: "2.0", id: 1, result };
+      const reader = testnetReader({ [nonceRead]: answer, [balanceRead]: answer });
+      await assert.rejects(reader.isNonceUsed(TESTNET_TOKEN, PAYER, TESTNET_NONCE), TokenStateError, `nonce read as ${JSON.stringify(result)}`);
+      await assert.rejects(reader.balanceOf(TESTNET_TOKEN, PAYER), TokenStateError, `balance read as ${JSON.stringify(result)}`);
+    }
+    // A value that must exist (the token package) fails the same way: indeterminate, not an unsupported token.
+    for (const result of [null, {}]) {
+      const reader = testnetReader({ [`query_global_state hash-${TESTNET_TOKEN}`]: { jsonrpc: "2.0", id: 1, result } });
+      await assert.rejects(reader.balanceOf(TESTNET_TOKEN, PAYER), (err: unknown) => {
+        assert.ok(err instanceof TokenStateError && !(err instanceof TokenUnsupportedError), `package read as ${JSON.stringify(result)}: ${String(err)}`);
+        assert.match((err as Error).message, /token package: the node's answer carries no stored value/);
+        return true;
+      });
+    }
+  });
+
   test("an unexpected value type is rejected rather than guessed", async () => {
     const balSeed = namedKey(fx.testnetContractResponse, "balances");
     const reader = testnetReader({
