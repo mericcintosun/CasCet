@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { readFacilitatorEnv } from "./facilitator-env.js";
+import { facilitatorOptionsFromEnv, readFacilitatorEnv } from "./facilitator-env.js";
 import { startRealFacilitator } from "./real-facilitator.js";
 
 /**
@@ -41,23 +41,8 @@ try {
 for (const warning of cfg.warnings) console.warn(`[run-facilitator] warning: ${warning}`);
 
 try {
-  const fac = await startRealFacilitator({
-    port: cfg.port,
-    host: cfg.host,
-    network: cfg.network,
-    keyPath: cfg.keyPath,
-    keyAlgo: cfg.keyAlgo,
-    rpcUrl: cfg.rpcUrl,
-    ...(cfg.authToken ? { authToken: cfg.authToken } : {}),
-    allowedPayTo: cfg.allowedPayTo,
-    // Per asset: declared style, pinned name and version, gas limit.
-    assets: cfg.assets,
-    ownerAccountHashes: cfg.ownerAccountHashes,
-    dailyGasCapMotes: cfg.dailyGasCapMotes,
-    settleWaitMs: cfg.settleWaitMs,
-    preflight: cfg.preflight,
-    preflightDeadlineMs: cfg.preflightDeadlineMs,
-  });
+  // Every setting, per asset too: declared style, pinned name and version, gas limit.
+  const fac = await startRealFacilitator(facilitatorOptionsFromEnv(cfg));
   console.log(`facilitator up at ${fac.url} (net=${fac.network})`);
   // A running /settle may already have submitted a transaction: the first
   // signal lets running requests finish and answer (new ones get 503); a

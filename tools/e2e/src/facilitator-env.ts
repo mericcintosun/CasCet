@@ -9,6 +9,7 @@ import {
 } from "./facilitator-assets.js";
 import { DEFAULT_PREFLIGHT_DEADLINE_MS, knownAuthorizationStyle, normalizeAsset, normalizePayTo } from "./facilitator-core.js";
 import { normalizeAccountHash } from "./facilitator-roles.js";
+import type { RealFacilitatorOptions } from "./real-facilitator.js";
 
 /**
  * Environment configuration of the self-hosted facilitator (and of the
@@ -437,5 +438,31 @@ export function readFacilitatorEnv(env: Env, repoRoot: string, forceNetwork?: Ca
     tokenVersion,
     ...(singleName !== undefined ? { tokenName: singleName } : {}),
     warnings,
+  };
+}
+
+/**
+ * The `startRealFacilitator` options of an environment configuration. Every
+ * script that starts the facilitator from the environment (the standalone
+ * facilitator and the real-settlement demos) passes these, so no setting is
+ * dropped on the way: each asset carries its declared style, pinned name and
+ * version, and gas limit (`assets`, never the `allowedAssets` shorthand).
+ */
+export function facilitatorOptionsFromEnv(cfg: FacilitatorEnvConfig): RealFacilitatorOptions {
+  return {
+    port: cfg.port,
+    host: cfg.host,
+    network: cfg.network,
+    keyPath: cfg.keyPath,
+    keyAlgo: cfg.keyAlgo,
+    rpcUrl: cfg.rpcUrl,
+    ...(cfg.authToken ? { authToken: cfg.authToken } : {}),
+    allowedPayTo: cfg.allowedPayTo,
+    assets: cfg.assets,
+    ownerAccountHashes: cfg.ownerAccountHashes,
+    dailyGasCapMotes: cfg.dailyGasCapMotes,
+    settleWaitMs: cfg.settleWaitMs,
+    preflight: cfg.preflight,
+    preflightDeadlineMs: cfg.preflightDeadlineMs,
   };
 }

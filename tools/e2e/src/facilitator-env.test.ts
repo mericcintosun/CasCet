@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { FacilitatorConfigError, NETWORKS, ownerAccountsFor, readFacilitatorEnv, resolveNetwork } from "./facilitator-env.js";
+import {
+  facilitatorOptionsFromEnv,
+  FacilitatorConfigError,
+  NETWORKS,
+  ownerAccountsFor,
+  readFacilitatorEnv,
+  resolveNetwork,
+} from "./facilitator-env.js";
 import { checkRecorderSeparation, checkRoleSeparation, normalizeAccountHash } from "./facilitator-roles.js";
 
 const ROOT = "/repo";
@@ -233,6 +240,38 @@ describe("facilitator environment", () => {
     // Without the preflight, the known testnet tokens need nothing more.
     const off = readFacilitatorEnv({ CASCET_PREFLIGHT: "off", CASCET_ALLOWED_ASSETS: `${LEGACY},${WCSPR}` }, ROOT);
     assert.deepEqual(off.assets.map(a => a.name), ["CasCet X402 Token", "Wrapped CSPR"]);
+  });
+
+  test("the start options every script passes carry each per-asset setting (none is dropped)", () => {
+    const LEGACY = NETWORKS["casper:casper-test"].token;
+    const cfg = readFacilitatorEnv(
+      {
+        CASCET_FACILITATOR_KEY: "/k.pem",
+        CASCET_FACILITATOR_TOKEN: TOKEN,
+        CASCET_FACILITATOR_HOST: "10.0.0.5",
+        PORT: "4600",
+        CASCET_ALLOWED_ASSETS: `${LEGACY},${WCSPR}`,
+        CASCET_ASSET_STYLES: `${WCSPR}=cep3009-value`,
+        CASCET_ASSET_NAMES: `${WCSPR}=Wrapped CSPR`,
+        CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET: `${WCSPR}=2_000_000_000`,
+        CASCET_SETTLE_WAIT_MS: "45000",
+      },
+      ROOT,
+    );
+    const options = facilitatorOptionsFromEnv(cfg);
+    assert.deepEqual(options.assets, [
+      { packageHash: LEGACY, name: "CasCet X402 Token", version: "1" },
+      { packageHash: WCSPR, authorization: "cep3009-value", name: "Wrapped CSPR", version: "1", paymentMotes: 2_000_000_000 },
+    ]);
+    // Never the allowedAssets shorthand, which carries none of the per-asset settings.
+    for (const dropped of ["allowedAssets", "paymentMotes", "tokenName", "tokenVersion"]) assert.ok(!(dropped in options), dropped);
+    assert.deepEqual(
+      [options.network, options.host, options.port, options.keyPath, options.authToken, options.settleWaitMs, options.preflight],
+      ["casper:casper-test", "10.0.0.5", 4600, "/k.pem", TOKEN, 45_000, true],
+    );
+    assert.deepEqual(options.allowedPayTo, cfg.allowedPayTo);
+    assert.deepEqual(options.ownerAccountHashes, cfg.ownerAccountHashes);
+    assert.equal(options.dailyGasCapMotes, cfg.dailyGasCapMotes);
   });
 
   test("per-asset settings are validated against the allowlist", () => {
