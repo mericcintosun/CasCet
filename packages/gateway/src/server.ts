@@ -599,8 +599,10 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
    *   facilitator that lost track of its own transfer): settled by a third
    *   party when `settlement.acceptThirdPartySettlement` is on, else unknown.
    *   The events do not say which transaction executed it: the hash of a
-   *   transfer the facilitator reported as broadcast for this payment is kept,
-   *   as possibly the one that paid;
+   *   transfer the facilitator reported as broadcast but not executed for this
+   *   payment (an unknown outcome) is kept, as possibly the one that paid. A
+   *   transfer it reported as reverted (a failed outcome) cannot be that one:
+   *   another transaction used the nonce first;
    * - the payer canceled the nonce: failed (the cancel event alone proves the
    *   transfer can never execute);
    * - the nonce was used without the expected transfer right after it: noted,
@@ -629,16 +631,19 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       });
       switch (found.kind) {
         case "paid": {
-          // A transfer the facilitator reported as broadcast (pending) may well be the one that paid.
-          const through = outcome.txHash ? `possibly through transaction ${outcome.txHash}, which this gateway's facilitator broadcast` : undefined;
+          // A transfer the facilitator reported as broadcast (pending) may well be the one that paid; one it
+          // reported as reverted never is.
+          const pendingTx = outcome.status === "unknown" ? outcome.txHash : undefined;
+          const through = pendingTx ? `possibly through transaction ${pendingTx}, which this gateway's facilitator broadcast` : undefined;
           if (cfg.settlement.acceptThirdPartySettlement) {
+            const reverted = outcome.txHash && !pendingTx ? `; transaction ${outcome.txHash} of this gateway's facilitator reverted` : "";
             // Not the settle answer's headers: its PAYMENT-RESPONSE reports a failure.
             return {
               status: "settled",
               settledBy: "third-party",
               payer: auth.from,
-              txHash: outcome.txHash,
-              note: `facilitator answered "${clip(outcome.reason ?? "", 200)}", but token event #${found.eventIndex} shows this exact authorization paid payTo (${through ?? "settled by another submitter"})`,
+              txHash: pendingTx,
+              note: `facilitator answered "${clip(outcome.reason ?? "", 200)}", but token event #${found.eventIndex} shows this exact authorization paid payTo (${through ?? `settled by another submitter${reverted}`})`,
               nonceUsed: true,
             };
           }

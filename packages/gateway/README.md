@@ -245,7 +245,10 @@ Wrapped CSPR).
   `acceptThirdPartySettlement` is on, otherwise recorded as `unknown`. The
   events do not say which transaction executed it: when the facilitator had
   reported a transfer of its own for the payment as pending, the receipt
-  keeps that `txHash`, noted as possibly the one that paid.
+  keeps that `txHash`, noted as possibly the one that paid. A transfer it
+  reported as reverted never is (another transaction used the nonce first):
+  a settled receipt then has no `txHash`, and its note names the reverted
+  transaction.
   Leave it off when several gateways share this `payTo` without sharing one
   facilitator nonce cache: a buyer could present one authorization to each.
 - Nonce canceled by the payer: failed.

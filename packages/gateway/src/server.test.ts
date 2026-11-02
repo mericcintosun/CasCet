@@ -4,6 +4,7 @@ import { describe, it, mock } from "node:test";
 import { decodePaymentResponseHeader } from "@x402/core/http";
 import { x402HTTPResourceServer } from "@x402/core/server";
 import type { PaymentRequired } from "@x402/core/types";
+import type { AnchorChain } from "./anchor.js";
 import type { PreemptionOutcome, SettlementPreemptionChecker } from "./preemption.js";
 import { SETTLE_TX } from "./testing/fake-facilitator.js";
 import {
@@ -592,6 +593,57 @@ describe("settlement preemption", () => {
       assert.equal(res.body.result, undefined);
       assert.equal((await receipts(h))[0]?.status, "unknown");
     });
+  });
+
+  it("never takes a transaction the facilitator reported as reverted for the one that paid", async () => {
+    // CasCet's self-hosted facilitator names the transaction that reverted: another one had used the nonce.
+    const REVERTED_TX = "ab".repeat(32);
+    const revertedWithHash = () => ({
+      json: {
+        success: false,
+        errorReason: "settlement_failed",
+        errorMessage: "transaction execution failed: User error: 64001",
+        transaction: REVERTED_TX,
+        network: "casper:casper-test",
+      },
+    });
+    const anchoring = { contractPackageHash: `hash-${"99".repeat(32)}`, keyPath: "/nonexistent/recorder.pem", nodeUrl: "http://127.0.0.1:9/rpc" };
+    for (const accept of [true, false]) {
+      const anchored: Array<string | undefined> = [];
+      const chain: AnchorChain = {
+        submit: async receipt => {
+          anchored.push(receipt.txHash);
+          return "cd".repeat(32);
+        },
+        status: async () => ({ state: "executed" }),
+      };
+      await withHarness(
+        {
+          config: { settlement: { acceptThirdPartySettlement: accept }, anchoring },
+          gateway: { preemptionChecker: checker({ kind: "paid", eventIndex: 41 }), anchorChain: chain, anchorPollIntervalMs: 1 },
+        },
+        async h => {
+          h.facilitator.onSettle = revertedWithHash;
+          const { header } = await payFor(h, "paid_tool");
+          const res = await callPaid(h, "paid_tool", header);
+          const [receipt] = await receipts(h);
+          assert.doesNotMatch(String(receipt?.note), /possibly through/, `acceptThirdPartySettlement ${accept}`);
+          if (accept) {
+            assert.equal(res.status, 200, JSON.stringify(res.body));
+            assert.deepEqual([receipt?.status, receipt?.settledBy, receipt?.txHash], ["settled", "third-party", undefined]);
+            assert.equal((res.body.result?._meta as { cascet: Record<string, unknown> }).cascet.txHash, undefined);
+            assert.match(String(receipt?.note), new RegExp(`\\(settled by another submitter; transaction ${REVERTED_TX} of this gateway's facilitator reverted\\)`));
+            await eventually(async () => (await receipts(h))[0]?.anchoredTxHash !== undefined, 3_000, "the anchor");
+            assert.deepEqual(anchored, [undefined], "nor anchored with it");
+          } else {
+            assert.equal(res.body.error?.code, -32003);
+            assert.equal(receipt?.status, "unknown");
+            assert.match(String(receipt?.note), /paid payTo, executed by a submitter other than this gateway's facilitator;/);
+            assert.deepEqual(anchored, []);
+          }
+        },
+      );
+    }
   });
 
   it("records a failure when the payer canceled the nonce on-chain", async () => {

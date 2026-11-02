@@ -487,6 +487,42 @@ describe("x402's automatic retry of a settlement the facilitator reported as pen
     }
   });
 
+  it("does not take the pending transaction for the one that paid once the retry reports it reverted", async () => {
+    // On x402's retry the facilitator follows its pending transaction and finds it reverted: another transaction had
+    // used the nonce. The on-chain check then finds this exact authorization paid.
+    const paid: SettlementPreemptionChecker = { check: async () => ({ kind: "paid", eventIndex: 7 }) };
+    const reverted: Reply = {
+      json: {
+        success: false,
+        errorReason: "settlement_failed",
+        errorMessage: "transaction execution failed: User error: 64001",
+        transaction: PENDING_TX,
+        network: NETWORK,
+        extra: { settlementStatus: "failed", reconciled: true },
+      },
+    };
+    for (const accept of [true, false]) {
+      await withTwoAssets({ config: { settlement: { acceptThirdPartySettlement: accept } }, gateway: { preemptionChecker: paid } }, async h => {
+        pendingThen(h, reverted);
+        const { header } = await payInAsset(h, "paid_tool", LEGACY_TOKEN);
+        const res = await callPaid(h, "paid_tool", header);
+        assert.equal(h.legacy.count("settle"), 2, "x402 settled twice");
+        const [receipt] = await receipts(h);
+        assert.doesNotMatch(String(receipt?.note), /possibly through/, `acceptThirdPartySettlement ${accept}`);
+        if (accept) {
+          assert.equal(res.status, 200, JSON.stringify(res.body));
+          assert.deepEqual([receipt?.status, receipt?.settledBy, receipt?.txHash], ["settled", "third-party", undefined]);
+          assert.equal((res.body.result?._meta as { cascet: Record<string, unknown> }).cascet.txHash, undefined);
+          assert.match(String(receipt?.note), new RegExp(`settled by another submitter; transaction ${PENDING_TX} of this gateway's facilitator reverted`));
+        } else {
+          assert.equal(res.body.error?.code, -32003);
+          assert.equal(receipt?.status, "unknown");
+          assert.match(String(receipt?.note), /paid payTo, executed by a submitter other than this gateway's facilitator;/);
+        }
+      });
+    }
+  });
+
   it("gives the retry only what is left of the facilitator's settle timeout, and keeps the hash when it does not answer", async () => {
     const config = (urls: { legacy: string }) => ({
       facilitators: { self: { url: urls.legacy, apiKey: "self-key", authScheme: "bearer", timeoutMs: 600 } },
