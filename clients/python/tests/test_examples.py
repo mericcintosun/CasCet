@@ -21,8 +21,8 @@ from urllib3.util.ssl_match_hostname import CertificateError
 
 from helpers import (
     MAINNET, SELLER, TEST_KEY, TESTNET, TOKEN, OTHER_TOKEN, WCSPR, FakeResponse, FakeSession, LocalServer, TlsServer,
-    challenge, corrupt_tls, direct_session, legacy_requirements, make_payment_required, throwaway_certificates,
-    wcspr_requirements, x402,
+    challenge, corrupt_tls, direct_session, legacy_requirements, make_payment_required, proxy_environment, send,
+    throwaway_certificates, wcspr_requirements, x402,
 )
 
 import example_gateway  # noqa: E402  (helpers puts clients/python on sys.path)
@@ -669,6 +669,24 @@ class TestSettleOverSockets(unittest.TestCase):
         self.assertEqual(code, example_settle.EXIT_FAILED, out)
         self.assertIn("facilitator unreachable", out)
         self.assertNotIn("outcome unknown", out)
+
+    def test_a_facilitator_on_this_machine_is_reached_directly_whatever_the_proxy_settings(self):
+        # Through HTTP_PROXY or ALL_PROXY, the key and the signed authorization would cross the network in cleartext.
+        settled = json.dumps({"success": True, "transaction": "ab" * 32, "network": TESTNET}).encode()
+        env = {"CASCET_KEY_PATH": write_test_pem(self), "CASCET_FACILITATOR_TOKEN": "s3cret-token"}
+        for variable in ("HTTP_PROXY", "http_proxy", "ALL_PROXY"):
+            out = io.StringIO()
+            with self.subTest(variable=variable), \
+                    LocalServer(lambda handler, srv: send(handler, 502, body=b"proxy")) as proxy, \
+                    LocalServer(lambda handler, srv: send(handler, 200, {"Content-Type": "application/json"}, settled)) \
+                    as facilitator, \
+                    proxy_environment(proxy.url, variable):
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                    code = example_settle.main(["--facilitator", facilitator.url], env)  # the real requests.post
+                self.assertEqual(proxy.requests, [], "nothing reaches the proxy")
+                self.assertEqual(len(facilitator.requests), 1)
+                self.assertEqual(facilitator.requests[0]["headers"]["Authorization"], "Bearer s3cret-token")
+                self.assertEqual(code, example_settle.EXIT_SETTLED, out.getvalue())
 
     def test_an_answer_urllib3_cannot_parse(self):
         def conflicting_lengths(handler, server):  # a settle verdict whose Content-Length values disagree

@@ -1026,6 +1026,23 @@ def _is_loopback_host(host: Optional[str]) -> bool:
         return False
 
 
+def _direct_proxies(url: str) -> Optional[Dict[str, None]]:
+    """
+    requests' `proxies` for a plain http:// URL to this machine: none at all,
+    or None (requests' default) for any other URL. Plain http:// is safe only
+    while the request stays on this machine, and a proxy from the environment
+    (HTTP_PROXY, ALL_PROXY) would carry it, payment included, to another
+    machine in cleartext. A new dict each time: requests adds the
+    environment's other entries to the one it gets.
+    """
+    try:
+        parts = urlsplit(url)
+        loopback_http = parts.scheme.lower() == "http" and _is_loopback_host(parts.hostname)
+    except ValueError:  # requests reports a malformed URL itself
+        return None
+    return {"http": None, "https": None, "all": None} if loopback_http else None
+
+
 #: A deadline in seconds for a whole PayingClient call, or None for no deadline.
 Timeout = Optional[float]
 
@@ -1229,7 +1246,9 @@ class PayingClient:
       hold the call past the deadline. None disables it. A call that times
       out after the paid retry was sent may still settle.
     * `allow_insecure_http`: pay over plain http:// to a non-loopback host only
-      when this is True.
+      when this is True. Plain http:// to this machine is always reached
+      directly, never through a proxy from the environment (HTTP_PROXY,
+      ALL_PROXY) or the session, unless a call passes `proxies` itself.
     * `parent_id`: sent as x-cascet-parent-id so a cascade's receipts link up.
     * `on_payment`: called with {amount_raw, pay_to, asset, network} after each
       authorization is signed and encoded, before it is sent, plus
@@ -1562,6 +1581,10 @@ class PayingClient:
         headers = dict(kwargs.pop("headers", None) or {})
         if self._parent_id and not _has_header(headers, HEADER_CASCET_PARENT_ID):
             headers[HEADER_CASCET_PARENT_ID] = self._parent_id
+        if "proxies" not in kwargs:
+            direct = _direct_proxies(url)  # plain http:// to this machine never goes through a proxy
+            if direct is not None:
+                kwargs["proxies"] = direct
 
         response = self._send(http, method, url, headers, kwargs, deadline, timeout)
         if response.status_code != 402 or _has_header(headers, HEADER_PAYMENT_SIGNATURE):

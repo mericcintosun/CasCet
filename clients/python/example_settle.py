@@ -71,10 +71,12 @@ Environment:
                                  account-hash-<hex>); testnet default: the demo
                                  seller; required on mainnet
 
-A key is never sent over plain http:// to a host other than this machine. Each
-key must be one line of 1-256 printable ASCII characters without spaces
-(surrounding whitespace, such as the newline of a key read from a file, is
-dropped); an error about a key names its variable and never shows the value.
+A key is never sent over plain http:// to a host other than this machine, and
+plain http:// to this machine never goes through a proxy (HTTP_PROXY,
+ALL_PROXY). Each key must be one line of 1-256 printable ASCII characters
+without spaces (surrounding whitespace, such as the newline of a key read from
+a file, is dropped); an error about a key names its variable and never shows
+the value.
 
 Exit status:
     0  settled
@@ -336,6 +338,19 @@ def facilitator_headers(url: str, env: Mapping[str, str]) -> Dict[str, str]:
             "(or a facilitator on this machine)"
         )
     return {"Authorization": value}
+
+
+def settle_proxies(url: str) -> Optional[Dict[str, None]]:
+    """
+    The `proxies` of the /settle POST to `url`. Plain http:// goes only to
+    this machine, and then never through a proxy: through HTTP_PROXY or
+    ALL_PROXY, the facilitator key and the signed authorization would cross
+    the network in cleartext. None (requests' default) for anything else.
+    """
+    parts = urlsplit(url)
+    if parts.scheme == "http" and _is_loopback(parts.hostname):
+        return {"http": None, "https": None, "all": None}
+    return None
 
 
 def seller_pay_to(value: Optional[str], network: str) -> str:
@@ -609,6 +624,7 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
             headers=settings.headers,
             timeout=SETTLE_TIMEOUT,
             allow_redirects=False,  # never hand the signed authorization (or the key) to another origin
+            proxies=settle_proxies(settings.facilitator_url),
         )
     except requests.RequestException as exc:
         if request_never_left(exc):

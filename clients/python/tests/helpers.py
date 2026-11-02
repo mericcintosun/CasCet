@@ -1,6 +1,7 @@
 """Shared fixtures for the cascet_x402 tests (stdlib unittest only)."""
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import sys
@@ -8,7 +9,8 @@ import threading
 import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
+from unittest import mock
 
 CLIENT_DIR = Path(__file__).resolve().parents[1]
 if str(CLIENT_DIR) not in sys.path:
@@ -230,6 +232,20 @@ def direct_session() -> Any:
     session = requests.Session()
     session.trust_env = False
     return session
+
+
+@contextlib.contextmanager
+def proxy_environment(proxy_url: str, *names: str) -> Iterator[None]:
+    """os.environ with each proxy variable in `names` (e.g. HTTP_PROXY) set to `proxy_url`, and no other proxy setting."""
+    import os
+
+    with mock.patch.dict(os.environ):
+        for scheme in ("http", "https", "all", "no"):
+            os.environ.pop(f"{scheme}_proxy", None)
+            os.environ.pop(f"{scheme.upper()}_PROXY", None)
+        for name in names:
+            os.environ[name] = proxy_url
+        yield
 
 
 # ---- a TLS server on 127.0.0.1, with a throwaway certificate authority made for the test ----
