@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import { describe, test } from "node:test";
 import {
   facilitatorOptionsFromEnv,
@@ -12,6 +13,8 @@ import { checkRecorderSeparation, checkRoleSeparation, normalizeAccountHash } fr
 
 const ROOT = "/repo";
 const TOKEN = "f".repeat(64);
+/** Mainnet requires a state file (F11). */
+const STATE = "/var/lib/cascet/facilitator-state.json";
 const DEPLOYER = NETWORKS["casper:casper"].deployerAccount;
 const FEE_PAYER = "ab".repeat(32);
 const SELLER = `00${"5e".repeat(32)}`;
@@ -53,6 +56,7 @@ describe("key-role separation rules (M07)", () => {
         CASCET_NETWORK: "casper:casper",
         CASCET_FACILITATOR_KEY: "/secure/fee.pem",
         CASCET_FACILITATOR_TOKEN: TOKEN,
+        CASCET_FACILITATOR_STATE_FILE: STATE,
         CASCET_OWNER_ACCOUNT_HASH: NEW_OWNER,
         CASCET_SELLER_ACCOUNT_HASH: SELLER,
       },
@@ -112,7 +116,12 @@ describe("facilitator environment", () => {
 
   test("mainnet defaults: CasCet token with its known name, deployer as owner and seller, gas limit per style", () => {
     const cfg = readFacilitatorEnv(
-      { CASCET_NETWORK: "casper:casper", CASCET_FACILITATOR_KEY: "/secure/fee.pem", CASCET_FACILITATOR_TOKEN: TOKEN },
+      {
+        CASCET_NETWORK: "casper:casper",
+        CASCET_FACILITATOR_KEY: "/secure/fee.pem",
+        CASCET_FACILITATOR_TOKEN: TOKEN,
+        CASCET_FACILITATOR_STATE_FILE: STATE,
+      },
       ROOT,
     );
     assert.equal(cfg.rpcUrl, "https://node.mainnet.casper.network/rpc");
@@ -129,6 +138,8 @@ describe("facilitator environment", () => {
     assert.equal(cfg.tokenVersion, "1");
     assert.equal(cfg.host, "127.0.0.1");
     assert.equal(cfg.port, 4501);
+    assert.equal(cfg.stateFile, STATE);
+    assert.equal(cfg.maxRequestsPerIpPerMinute, 600);
     assert.ok(cfg.warnings.some(w => w.includes("CASCET_SELLER_ACCOUNT_HASH")));
   });
 
@@ -138,6 +149,7 @@ describe("facilitator environment", () => {
         CASCET_NETWORK: "casper:casper",
         CASCET_FACILITATOR_KEY: "/secure/fee.pem",
         CASCET_FACILITATOR_TOKEN: TOKEN,
+        CASCET_FACILITATOR_STATE_FILE: STATE,
         CASCET_SELLER_ACCOUNT_HASH: ` account-hash-${"5E".repeat(32)} , ${SELLER}`,
         CASCET_OWNER_ACCOUNT_HASH: `00${"0e".repeat(32)}, account-hash-${"0f".repeat(32)}`,
         CASCET_ALLOWED_ASSETS: `hash-${"cb".repeat(32)}`,
@@ -167,7 +179,7 @@ describe("facilitator environment", () => {
   });
 
   test("the EIP-712 domain name is pinned for the CasCet token; the preflight is required on mainnet", () => {
-    const mainnet = { CASCET_NETWORK: "casper:casper", CASCET_FACILITATOR_KEY: "/k.pem", CASCET_FACILITATOR_TOKEN: TOKEN };
+    const mainnet = { CASCET_NETWORK: "casper:casper", CASCET_FACILITATOR_KEY: "/k.pem", CASCET_FACILITATOR_TOKEN: TOKEN, CASCET_FACILITATOR_STATE_FILE: STATE };
     assert.equal(readFacilitatorEnv(mainnet, ROOT).tokenName, "CasCet X402 Token");
     assert.equal(readFacilitatorEnv({}, ROOT).tokenName, "CasCet X402 Token");
     assert.equal(readFacilitatorEnv({ CASCET_TOKEN_NAME: "Other Token" }, ROOT).tokenName, "Other Token");
@@ -315,7 +327,7 @@ describe("facilitator environment", () => {
     assert.equal(readFacilitatorEnv({}, ROOT).rpcUrl, NETWORKS["casper:casper-test"].rpcUrl);
 
     // The default mainnet endpoint is load-balanced: say so.
-    const mainnet = { CASCET_NETWORK: "casper:casper", CASCET_FACILITATOR_KEY: "/k.pem", CASCET_FACILITATOR_TOKEN: TOKEN };
+    const mainnet = { CASCET_NETWORK: "casper:casper", CASCET_FACILITATOR_KEY: "/k.pem", CASCET_FACILITATOR_TOKEN: TOKEN, CASCET_FACILITATOR_STATE_FILE: STATE };
     const lb = readFacilitatorEnv(mainnet, ROOT);
     assert.equal(lb.rpcUrl, NETWORKS["casper:casper"].rpcUrl);
     assert.ok(lb.warnings.some(w => w.includes("load-balanced")));
@@ -331,5 +343,43 @@ describe("facilitator environment", () => {
     assert.deepEqual(cfg.ownerAccountHashes, []);
     assert.equal(cfg.authToken, undefined);
     assert.ok(cfg.warnings.some(w => w.includes("deployer key")));
+  });
+
+  test("CASCET_FACILITATOR_STATE_FILE: required on mainnet, a path (made absolute) or none; optional on testnet (F11)", () => {
+    const mainnet = { CASCET_NETWORK: "casper:casper", CASCET_FACILITATOR_KEY: "/k.pem", CASCET_FACILITATOR_TOKEN: TOKEN };
+    assert.throws(() => readFacilitatorEnv(mainnet, ROOT), /CASCET_FACILITATOR_STATE_FILE is required on mainnet: .*none to run without one/);
+    assert.throws(() => readFacilitatorEnv({ ...mainnet, CASCET_FACILITATOR_STATE_FILE: "  " }, ROOT), /required on mainnet/);
+    assert.equal(readFacilitatorEnv({ ...mainnet, CASCET_FACILITATOR_STATE_FILE: ` ${STATE} ` }, ROOT).stateFile, STATE);
+    assert.equal(readFacilitatorEnv({ ...mainnet, CASCET_FACILITATOR_STATE_FILE: "state/facilitator.json" }, ROOT).stateFile, resolve("state/facilitator.json"));
+    // The explicit opt-out (the facilitator then warns loudly at start-up).
+    assert.equal(readFacilitatorEnv({ ...mainnet, CASCET_FACILITATOR_STATE_FILE: "none" }, ROOT).stateFile, false);
+    assert.equal(readFacilitatorEnv({ ...mainnet, CASCET_FACILITATOR_STATE_FILE: "NONE" }, ROOT).stateFile, false);
+    // A switch-like value is a mistake, not a file name.
+    for (const switchLike of ["off", "false", "0", "no", "disabled"]) {
+      assert.throws(() => readFacilitatorEnv({ ...mainnet, CASCET_FACILITATOR_STATE_FILE: switchLike }, ROOT), /must be a path, or none to run without one/);
+    }
+    // Testnet: optional; the facilitator warns at start-up when there is none.
+    assert.equal(readFacilitatorEnv({}, ROOT).stateFile, undefined);
+    assert.equal(readFacilitatorEnv({ CASCET_FACILITATOR_STATE_FILE: STATE }, ROOT).stateFile, STATE);
+
+    // Every script passes it on to the facilitator, the opt-out included.
+    assert.equal(facilitatorOptionsFromEnv(readFacilitatorEnv({ ...mainnet, CASCET_FACILITATOR_STATE_FILE: STATE }, ROOT)).stateFile, STATE);
+    assert.equal(facilitatorOptionsFromEnv(readFacilitatorEnv({ ...mainnet, CASCET_FACILITATOR_STATE_FILE: "none" }, ROOT)).stateFile, false);
+    assert.ok(!("stateFile" in facilitatorOptionsFromEnv(readFacilitatorEnv({}, ROOT))));
+  });
+
+  test("CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE: a positive whole number, default 600, passed to the facilitator", () => {
+    assert.equal(readFacilitatorEnv({}, ROOT).maxRequestsPerIpPerMinute, 600);
+    const raised = readFacilitatorEnv({ CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE: "6_000" }, ROOT);
+    assert.equal(raised.maxRequestsPerIpPerMinute, 6_000);
+    assert.equal(facilitatorOptionsFromEnv(raised).maxRequestsPerIpPerMinute, 6_000);
+    assert.equal(facilitatorOptionsFromEnv(readFacilitatorEnv({}, ROOT)).maxRequestsPerIpPerMinute, 600);
+    for (const bad of ["0", "-5", "1.5", "lots", "1e3", "1000001"]) {
+      assert.throws(
+        () => readFacilitatorEnv({ CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE: bad }, ROOT),
+        /CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE must be/,
+        bad,
+      );
+    }
   });
 });

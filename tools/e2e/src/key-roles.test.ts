@@ -66,6 +66,7 @@ describe("key-roles planner (M07)", () => {
       "set_action_threshold",
       "hash-f86bef35062e92d06b8171cf4131fdf557463589aca9112a348e5eb24159eb93",
       "CASCET_OWNER_ACCOUNT_HASH=00b9a38c827771d6bc510dd5f1e24fee61acdd4f97f758f4d68fe1dea13a7a140d",
+      "CASCET_FACILITATOR_STATE_FILE=",
     ]) {
       assert.ok(plan.includes(step), `plan mentions ${step}`);
     }

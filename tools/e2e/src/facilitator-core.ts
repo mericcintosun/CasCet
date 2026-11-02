@@ -8,7 +8,7 @@ import {
   type AuthorizationStyle,
 } from "@cascet/core";
 import { TokenStateError, TokenUnsupportedError, type TokenProbe } from "@cascet/gateway";
-import type { AuthorizationId, AuthorizationLedger, FollowClaim, LedgerState } from "./authorization-ledger.js";
+import type { AuthorizationId, AuthorizationLedger, FollowClaim, LedgerState, SubmissionRecord } from "./authorization-ledger.js";
 import type { DailyGasBudget } from "./gas-budget.js";
 import {
   AMOUNT_ARGUMENT_BY_STYLE,
@@ -44,19 +44,21 @@ import {
  * on-chain name). The validity window is checked again after the preflight,
  * because the reads can take seconds. /settle then caps the transaction's TTL
  * at the authorization's validBefore, builds it in the token's style with the
- * asset's own gas limit, reserves that gas only right before submission (M08)
- * and never reports a failure for a transaction whose outcome is merely
- * unknown (M22). A settle retry of a payment whose earlier settle answered
- * "pending" or "unknown" follows that transaction (the pending-settlement
- * store in the ledger) instead of submitting another one; every other settle
- * of an authorization that already has a transaction here is a duplicate
- * carrying its hash. Both are decided before any other check.
+ * asset's own gas limit, reserves that gas only right before submission (M08),
+ * records the transaction in the ledger and saves it to the state file before
+ * broadcasting it (write-ahead, F11), and never reports a failure for a
+ * transaction whose outcome is merely unknown (M22). A settle retry of a
+ * payment whose earlier settle answered "pending" or "unknown" follows that
+ * transaction (the pending-settlement store in the ledger, restored from the
+ * state file after a restart) instead of submitting another one; every other
+ * settle of an authorization that already has a transaction here is a
+ * duplicate carrying its hash. Both are decided before any other check.
  *
  * HTTP statuses: every verdict about a payment, including allowlist and
  * duplicate rejections, is HTTP 200 with `isValid: false` / `success: false`
  * (what x402 facilitator clients expect). Only conditions that a later retry
  * can clear answer 503: the token state could not be read, the ledger is
- * full, or the daily gas cap is reached.
+ * full, the daily gas cap is reached, or the state file could not be saved.
  */
 
 /** Machine-readable reasons returned in `invalidReason` / `errorReason`. */
@@ -93,6 +95,7 @@ export const Reason = {
   busy: "facilitator_busy",
   shuttingDown: "facilitator_shutting_down",
   gasCapReached: "daily_gas_cap_reached",
+  stateUnavailable: "facilitator_state_unavailable",
   buildFailed: "settlement_build_failed",
   rejectedByNode: "settlement_rejected",
   failedOnChain: "settlement_failed",
@@ -264,6 +267,12 @@ export interface FacilitatorCoreDeps {
   chain: SettlementChain;
   ledger: AuthorizationLedger;
   gas: DailyGasBudget;
+  /**
+   * Saves the ledger's transactions to the state file (F11); undefined keeps
+   * them in memory only. Awaited after a settlement is recorded and before it
+   * is broadcast: when the save fails, nothing is submitted (HTTP 503).
+   */
+  persist?: () => Promise<void>;
   log: FacilitatorLogger;
   now(): number;
 }
@@ -761,6 +770,28 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
     return { status: 200, body: { isValid: true, payer: a.from } };
   }
 
+  /**
+   * Write-ahead (F11): record the transaction, with the payment it settles, and
+   * save it to the state file before it is broadcast, so a restart can never
+   * forget a transaction that may have reached the node (a retry would submit a
+   * second one, which reverts and burns its gas). False when it could not be
+   * recorded or saved: then nothing may be submitted.
+   */
+  async function recordBeforeBroadcast(id: AuthorizationId, submission: SubmissionRecord): Promise<boolean> {
+    if (!deps.ledger.recordSubmission(id, submission)) {
+      deps.log.error(`settlement tx=${logText(submission.txHash)} not submitted: its claim is no longer in the ledger`);
+      return false;
+    }
+    if (!deps.persist) return true;
+    try {
+      await deps.persist();
+      return true;
+    } catch (err) {
+      deps.log.error(`settlement tx=${logText(submission.txHash)} not submitted: the state file could not be saved (${logText(err)})`);
+      return false;
+    }
+  }
+
   async function submitSafely(tx: BuiltTransaction): Promise<SubmitOutcome> {
     try {
       return await deps.chain.submit(tx);
@@ -963,6 +994,17 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
       return settlementRejected({ status: 503, reason: Reason.gasCapReached, message: "daily sponsored-gas cap reached" }, a.from);
     }
 
+    // On disk before any node can have it (F11); a failed save submits nothing.
+    const fingerprint = paymentFingerprint(p, network);
+    if (!(await recordBeforeBroadcast(id, { txHash: tx.hash, fingerprint, style }))) {
+      deps.gas.release(reservation);
+      deps.ledger.release(id);
+      return settlementRejected(
+        { status: 503, reason: Reason.stateUnavailable, message: "the facilitator could not save its state; nothing was submitted, retry later" },
+        a.from,
+      );
+    }
+
     const submitted = await submitSafely(tx);
     if (submitted.kind === "rejected") {
       deps.gas.release(reservation);
@@ -1001,7 +1043,7 @@ export function createFacilitatorCore(config: FacilitatorCoreConfig, deps: Facil
     const status: "pending" | "unknown" = submitted.kind === "unknown" && !outcome.seen ? "unknown" : "pending";
     deps.ledger.markUnresolved(id, hash, {
       status,
-      fingerprint: paymentFingerprint(p, network),
+      fingerprint,
       style,
       ...(charge ? { gas: charge } : {}),
     });

@@ -9,12 +9,18 @@ import { startRealFacilitator } from "./real-facilitator.js";
  *
  *   pnpm --filter @cascet/e2e facilitator
  *
- * Mainnet needs dedicated keys and a token (see docs/mainnet-readiness.md):
+ * Mainnet needs dedicated keys, a token and a state file (see docs/mainnet-readiness.md):
  *   CASCET_NETWORK=casper:casper \
  *   CASCET_FACILITATOR_KEY=/secure/fee-payer_secret_key.pem \
  *   CASCET_FACILITATOR_TOKEN=$(openssl rand -hex 32) \
  *   CASCET_SELLER_ACCOUNT_HASH=00<seller account hash> \
+ *   CASCET_FACILITATOR_STATE_FILE=/var/lib/cascet/facilitator-state.json \
  *   pnpm --filter @cascet/e2e facilitator
+ *
+ * The state file keeps every authorization the facilitator submitted a
+ * transaction for, saved before each broadcast: after a restart, a retried
+ * settle follows that transaction or learns its hash, and nothing is submitted
+ * twice. One file per facilitator, on persistent storage.
  *
  * It settles CasCet's x402 token (`amount`) and CEP-3009 tokens such as the
  * official Wrapped CSPR (`value`) side by side; add them to

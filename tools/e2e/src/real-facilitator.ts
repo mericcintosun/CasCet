@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { resolve } from "node:path";
 import express, { type NextFunction, type Request, type Response } from "express";
 // Default import on purpose: CodeQL's js/missing-rate-limiting model recognizes
 // invocations of the "express-rate-limit" module import as rate limiters.
@@ -34,8 +35,16 @@ import {
   type ParsedPayment,
   type SettlementStatus,
 } from "./facilitator-core.js";
-import { DEFAULT_DAILY_GAS_CAP_MOTES, DEFAULT_SETTLE_WAIT_MS, NETWORKS, ownerAccountsFor } from "./facilitator-env.js";
+import {
+  DEFAULT_DAILY_GAS_CAP_MOTES,
+  DEFAULT_MAX_REQUESTS_PER_IP_PER_MINUTE,
+  DEFAULT_MAX_REQUESTS_PER_MINUTE,
+  DEFAULT_SETTLE_WAIT_MS,
+  NETWORKS,
+  ownerAccountsFor,
+} from "./facilitator-env.js";
 import { checkRoleSeparation } from "./facilitator-roles.js";
+import { FacilitatorStateFile, loadFacilitatorState } from "./facilitator-state.js";
 import { accountsSignableBy } from "./account-keys.js";
 import { DailyGasBudget } from "./gas-budget.js";
 import { loadSecretKeyFile } from "./key-file.js";
@@ -92,6 +101,10 @@ export const TOKEN_STATE_CACHE_MS = 5 * 60_000;
  *     answered "pending" follows that transaction instead of submitting again,
  *     and no answer about an authorization with a transaction (a duplicate, a
  *     shutdown, an internal error) leaves out its hash;
+ *   - saves every authorization it holds a transaction for to a state file
+ *     before broadcasting the transaction, and restores them at start-up, so a
+ *     restart never submits a second transaction for one of them (F11; required
+ *     on mainnet unless turned off explicitly; a corrupt file refuses the start);
  *   - checks on-chain, before submitting, that the nonce is unused, that the
  *     payer's balance covers the value plus everything already in flight, and
  *     that the EIP-712 domain name is the token's (required on mainnet; a
@@ -153,8 +166,24 @@ export interface RealFacilitatorOptions {
   maxRequestsPerMinute?: number;
   /** Max /verify + /settle requests per payer per minute. Default 30. */
   maxRequestsPerPayerPerMinute?: number;
-  /** Max requests per client IP per minute on any route, before authentication. Default 600. */
+  /**
+   * Max requests per client IP per minute on any route, before authentication.
+   * Default 600. It cannot tell a settle retry of a known transaction from any
+   * other request: keep it above `maxRequestsPerMinute`, and raise it when one
+   * gateway sends a lot of traffic.
+   */
   maxRequestsPerIpPerMinute?: number;
+  /**
+   * State file (F11): every authorization this facilitator holds a settlement
+   * transaction for, saved before the transaction is broadcast and restored at
+   * start-up, so a restart never submits a second transaction for one of them
+   * (it would revert, the nonce being used, and burn its whole gas limit) and a
+   * retry still learns the hash. One file per facilitator, on persistent
+   * storage, in an existing directory. A corrupt or unreadable file refuses the
+   * start-up; a missing one is an empty state. Required on mainnet; `false`
+   * runs without one (memory only), with a warning.
+   */
+  stateFile?: string | false;
   /** Cap on sponsored gas (motes) per UTC day; settles get 503 past it. Default 500 CSPR. */
   dailyGasCapMotes?: bigint;
   /**
@@ -241,7 +270,8 @@ export interface FacilitatorAppOptions {
  * Counts /verify and /settle requests whose core work is still running. A
  * settle may already have submitted a transaction: a shutdown waits for it
  * (see {@link closeGracefully}) instead of cutting the connection, which would
- * leave the gateway with an indeterminate outcome and lose the ledger entry.
+ * leave the gateway with an indeterminate outcome and, without a state file,
+ * lose the ledger entry.
  */
 export class InFlightRequests {
   private count = 0;
@@ -568,6 +598,39 @@ function listen(app: express.Express, port: number, host: string): Promise<Serve
   });
 }
 
+/**
+ * Start-up with a state file (F11): put the authorizations an earlier run
+ * holds transactions for back into the ledger, then save at once, which drops
+ * the expired ones and proves the file can be written before anything is
+ * settled. A corrupt, unreadable or unwritable file refuses the start-up: it
+ * may hold transactions that can still execute.
+ */
+async function openStateFile(stateFile: FacilitatorStateFile, ledger: AuthorizationLedger, network: Network, logger: FacilitatorLogger): Promise<void> {
+  let loaded: Awaited<ReturnType<typeof loadFacilitatorState>>;
+  try {
+    loaded = await loadFacilitatorState(stateFile.path, network);
+  } catch (err) {
+    throw new Error(`refusing to start: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!loaded.found) {
+    logger.warn(
+      `state file ${stateFile.path} does not exist yet: starting with an empty state ` +
+        "(expected on the first start; otherwise check CASCET_FACILITATOR_STATE_FILE)",
+    );
+  }
+  const restored = ledger.restore(loaded.records);
+  try {
+    await stateFile.save();
+  } catch (err) {
+    throw new Error(`refusing to start: cannot write the state file ${stateFile.path} (${logText(err)}); its directory must exist and be writable`);
+  }
+  const pending = ledger.persistedAuthorizations().filter(r => r.state === "submitted").length;
+  logger.info(
+    `state file ${stateFile.path}: ${restored} authorization(s) with a transaction restored` +
+      (pending > 0 ? `, ${pending} pending (a settle retry of the same payment follows its transaction)` : ""),
+  );
+}
+
 export async function startRealFacilitator(opts: RealFacilitatorOptions): Promise<RealFacilitatorHandle> {
   const network = (opts.network ?? "casper:casper-test") as Network;
   if (network !== "casper:casper" && network !== "casper:casper-test") {
@@ -620,6 +683,42 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   if (!preflight && !assetSpecs && tokenName === undefined) {
     throw new Error("with the preflight off, set tokenName (CASCET_TOKEN_NAME) so the EIP-712 domain name is still checked");
   }
+  // A restart must not forget the transactions this facilitator submitted
+  // (F11): a retried settle would submit a second one, which reverts (the
+  // nonce is used) and burns its whole gas limit.
+  if (opts.stateFile === undefined && mainnet) {
+    throw new Error(
+      "mainnet requires a state file (stateFile, CASCET_FACILITATOR_STATE_FILE): without one a restart forgets pending " +
+        "settlements, and a retried settle submits a second transaction that reverts and burns its gas. Set it to a file " +
+        "on persistent storage, or to none (stateFile: false) to run without one anyway",
+    );
+  }
+  if (typeof opts.stateFile === "string" && opts.stateFile.trim() === "") throw new Error("stateFile must be a path, or false");
+  const statePath = typeof opts.stateFile === "string" ? resolve(opts.stateFile) : undefined;
+  if (statePath === undefined) {
+    logger.warn(
+      mainnet
+        ? "RUNNING ON MAINNET WITHOUT A STATE FILE (CASCET_FACILITATOR_STATE_FILE=none): the transactions this facilitator " +
+            "submits are remembered in memory only. If it restarts while a settle is pending, a retried settle submits a " +
+            "second transaction, which reverts and burns its full gas limit, and the gateway never learns the first one's " +
+            "hash. Set CASCET_FACILITATOR_STATE_FILE to a file on persistent storage"
+        : "no state file (CASCET_FACILITATOR_STATE_FILE): submitted transactions are remembered in memory only; a restart " +
+            "while a settle is pending can submit a second transaction for it, which reverts and burns its gas " +
+            "(testnet only: mainnet requires a state file)",
+    );
+  }
+  const maxRequestsPerMinute = opts.maxRequestsPerMinute ?? DEFAULT_MAX_REQUESTS_PER_MINUTE;
+  const maxRequestsPerIpPerMinute = opts.maxRequestsPerIpPerMinute ?? DEFAULT_MAX_REQUESTS_PER_IP_PER_MINUTE;
+  if (!Number.isSafeInteger(maxRequestsPerIpPerMinute) || maxRequestsPerIpPerMinute < 1) {
+    throw new Error("maxRequestsPerIpPerMinute (CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE) must be a positive whole number");
+  }
+  if (maxRequestsPerIpPerMinute <= maxRequestsPerMinute) {
+    logger.warn(
+      `the per-IP limit (${maxRequestsPerIpPerMinute} a minute, CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE) is not above ` +
+        `the ${maxRequestsPerMinute} /verify and /settle requests a minute allowed after authentication: it is checked first, ` +
+        "so a gateway's settle retry of a known transaction can be refused and lose its hash",
+    );
+  }
   // Every allowlisted asset, checked before the key is loaded or the chain is read.
   let plans: AssetPlan[] | undefined;
   if (assetSpecs) {
@@ -649,6 +748,13 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     throw new Error("preflightDeadlineMs must be a whole number of milliseconds from 1000 to 60000");
   }
   const owners = ownerAccountsFor(network, opts.ownerAccountHashes ?? []);
+
+  // --- the ledger, with the transactions an earlier run left in the state file (F11) ---
+  const stateFile: FacilitatorStateFile | undefined = statePath
+    ? new FacilitatorStateFile({ path: statePath, network, snapshot: () => ledger.persistedAuthorizations(), log: logger })
+    : undefined;
+  const ledger: AuthorizationLedger = new AuthorizationLedger(stateFile ? { onChange: () => stateFile.schedule() } : {});
+  if (stateFile) await openStateFile(stateFile, ledger, network, logger);
 
   // --- fee payer and key-role separation (M07) ---
   const privateKey = loadSecretKeyFile(opts.keyPath, opts.keyAlgo ?? "ed25519", "fee-payer", m => logger.warn(m));
@@ -720,9 +826,8 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     chainName: NETWORKS[network].chainName,
     log: m => logger.warn(m),
   });
-  const ledger = new AuthorizationLedger();
   const gas = new DailyGasBudget({ capMotes: dailyGasCapMotes });
-  if (!preflight) logger.warn("on-chain preflight disabled: replayed or unfunded authorizations are only caught by the in-memory ledger");
+  if (!preflight) logger.warn("on-chain preflight disabled: replayed or unfunded authorizations are only caught by this facilitator's ledger");
 
   const core = createFacilitatorCore(
     {
@@ -742,6 +847,8 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
       chain,
       ledger,
       gas,
+      // Each settlement is on disk before it is broadcast.
+      ...(stateFile ? { persist: () => stateFile.save() } : {}),
       log: logger,
       now: Date.now,
     },
@@ -752,15 +859,18 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     network,
     ...(opts.authToken ? { authToken: opts.authToken } : {}),
     maxSettlesPerMinute: opts.maxSettlesPerMinute ?? 60,
-    maxRequestsPerMinute: opts.maxRequestsPerMinute ?? 300,
+    maxRequestsPerMinute,
     maxRequestsPerPayerPerMinute: opts.maxRequestsPerPayerPerMinute ?? 30,
-    maxRequestsPerIpPerMinute: opts.maxRequestsPerIpPerMinute ?? 600,
+    maxRequestsPerIpPerMinute,
     logger,
     inFlight,
   });
 
   const server = await listen(app, opts.port, host);
-  const sweeper = setInterval(() => ledger.sweep(), 60_000);
+  const sweeper = setInterval(() => {
+    ledger.sweep(); // a state file drops what expired at its next save
+    if (stateFile?.stale) stateFile.schedule(); // a failed save is retried at least every minute
+  }, 60_000);
   sweeper.unref();
 
   const address = server.address();
@@ -770,17 +880,27 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   logger.info(
     `listening on http://${urlHost}:${port} (feePayer=${feePayer.slice(0, 12)}…, net=${network}, ` +
       `auth=${opts.authToken ? "on" : "off"}, allowlist=${allowedPayTo && assets ? "on" : "off"}, ` +
-      `preflight=${preflight ? "on" : "off"}, assets=${assets ? assets.length : "any"})`,
+      `preflight=${preflight ? "on" : "off"}, assets=${assets ? assets.length : "any"}, state=${stateFile ? "file" : "memory"})`,
   );
 
   // Longest a settle can run: its preflight, submission and polling (until
   // settleWaitMs after it started) plus one last RPC call.
   const drainTimeoutMs = settleWaitMs + preflightDeadlineMs + 2 * rpcTimeoutMs;
+  /** After the last request has answered: every outcome it observed goes to the state file. */
+  const saveFinalState = async (): Promise<void> => {
+    if (!stateFile) return;
+    try {
+      await stateFile.save();
+    } catch (err) {
+      logger.error(`could not save the state file ${stateFile.path} at shutdown: ${logText(err)}`);
+      throw err;
+    }
+  };
   let closing: Promise<void> | undefined;
   return {
     close: () => {
       clearInterval(sweeper);
-      closing ??= closeGracefully(server, inFlight, drainTimeoutMs, logger);
+      closing ??= closeGracefully(server, inFlight, drainTimeoutMs, logger).then(saveFinalState);
       return closing;
     },
     url: `http://${urlHost}:${port}`,
