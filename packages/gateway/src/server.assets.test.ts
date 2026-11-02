@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, mock } from "node:test";
@@ -74,6 +74,12 @@ function spyOnCancellations(): { reasons: Array<VerifiedPaymentCancelOptions["re
     },
   );
   return { reasons, restore: () => patched.mock.restore() };
+}
+
+/** Make the receipt log unwritable (a directory where the file was). */
+function breakLog(path: string): void {
+  rmSync(path, { force: true });
+  mkdirSync(path);
 }
 
 /** Facilitator calls other than /supported, as "<op> <asset>" lines. */
@@ -506,6 +512,97 @@ describe("x402 2.29 flow hooks", () => {
       });
     } finally {
       cancels.restore();
+    }
+  });
+
+  it("cancels a verified payment whose authorization cannot be recorded (write-ahead failure), and runs nothing", async () => {
+    const cancels = spyOnCancellations();
+    try {
+      await withTwoAssets({}, async h => {
+        const { header } = await payInAsset(h, "paid_tool", WCSPR_TOKEN);
+        breakLog(h.receiptsPath);
+        const res = await callPaid(h, "paid_tool", header);
+        assert.equal(res.status, 503);
+        assert.match(res.body.error?.message ?? "", /cannot record payments right now; the tool was not run and nothing was charged/);
+        assert.deepEqual(cancels.reasons, ["after_verify_aborted"]);
+        assert.deepEqual([h.cep.count("verify"), h.cep.count("settle")], [1, 0]);
+        assert.equal(h.upstream.calls.length, 0);
+      });
+    } finally {
+      cancels.restore();
+    }
+  });
+
+  it("cancels a payment x402 verified without the gateway's local checks (no payment header it could read), and runs nothing", async () => {
+    const cancels = spyOnCancellations();
+    const original = x402HTTPResourceServer.prototype.processHTTPRequest;
+    let smuggled: string | undefined;
+    const patched = mock.method(
+      x402HTTPResourceServer.prototype,
+      "processHTTPRequest",
+      async function (this: x402HTTPResourceServer, ...args: Parameters<typeof original>) {
+        const [context, ...rest] = args;
+        const header = smuggled;
+        if (header === undefined) return original.apply(this, args);
+        // x402 reads a payment the gateway never saw (as if their decoders disagreed).
+        smuggled = undefined;
+        const adapter = { ...context.adapter, getHeader: (name: string) => (/^payment-signature$/i.test(name) ? header : context.adapter.getHeader(name)) };
+        return original.call(this, { ...context, adapter }, ...rest);
+      },
+    );
+    try {
+      await withTwoAssets({}, async h => {
+        const { header } = await payInAsset(h, "paid_tool", WCSPR_TOKEN);
+        smuggled = header;
+        const res = await h.rpc("tools/call", { name: "paid_tool", arguments: {} });
+        assert.equal(res.status, 500);
+        assert.match(res.body.error?.message ?? "", /payment could not be verified; the tool was not run and nothing was charged/);
+        assert.deepEqual(cancels.reasons, ["after_verify_aborted"]);
+        assert.deepEqual([h.cep.count("verify"), h.cep.count("settle")], [1, 0]);
+        assert.equal(h.upstream.calls.length, 0);
+      });
+    } finally {
+      patched.mock.restore();
+      cancels.restore();
+    }
+  });
+
+  it("answers the same when the cancellation dispatcher throws or rejects", async () => {
+    let dispatchers = 0;
+    const patched = mock.method(x402ResourceServer.prototype, "createPaymentCancellationDispatcher", () => {
+      dispatchers++;
+      const first = dispatchers === 1;
+      return {
+        cancel: (): Promise<void> => {
+          if (first) throw new Error("cancel hook exploded");
+          return Promise.reject(new Error("cancel hook rejected"));
+        },
+      };
+    });
+    const tools = [
+      {
+        name: "boom",
+        handler: () => {
+          throw new Error("upstream exploded");
+        },
+      },
+      { name: "soft", handler: () => ({ isError: true, content: [{ type: "text" as const, text: "nope" }] }) },
+    ];
+    const config = { pricing: { tools: { boom: { price: "$0.01" }, soft: { price: "$0.01" } } } };
+    try {
+      await withTwoAssets({ config, tools }, async h => {
+        const boom = await callPaid(h, "boom", (await payInAsset(h, "boom", WCSPR_TOKEN)).header);
+        assert.equal(boom.status, 200);
+        assert.match(boom.body.error?.message ?? "", /^upstream tool failed \(not charged\): .*upstream exploded/);
+        const soft = await callPaid(h, "soft", (await payInAsset(h, "soft", LEGACY_TOKEN)).header);
+        assert.equal(soft.status, 200);
+        assert.deepEqual([soft.body.result?.isError, soft.body.result?.content?.[0]?.text], [true, "nope"]);
+        assert.equal(dispatchers, 2, "both payments were verified and canceled");
+        assert.deepEqual([h.legacy.count("settle"), h.cep.count("settle")], [0, 0]);
+        assert.deepEqual(await receipts(h), []);
+      });
+    } finally {
+      patched.mock.restore();
     }
   });
 
