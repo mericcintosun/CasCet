@@ -24,6 +24,7 @@ import { createCasperRpc } from "./casper-rpc.js";
 import { TimeoutFacilitatorClient } from "./facilitator.js";
 import { AssetRoutingFacilitatorClient, ExtraStrippingFacilitatorClient, type AssetRoute } from "./facilitator-router.js";
 import { HOSTED_PREFLIGHT_DEADLINE_MS, hostedPreflightHook } from "./hosted-preflight.js";
+import { InFlightPayments } from "./in-flight.js";
 import { PREEMPTION_CHECK_TIMEOUT_MS } from "./preemption.js";
 import { CascetCasperServerScheme, type UnsupportedFlow } from "./server-scheme.js";
 import { TokenProbe } from "./token-probe.js";
@@ -51,6 +52,12 @@ export interface PaymentRail {
    * a node is configured (see {@link hostedPreflightAssets}).
    */
   preflightAssets: readonly ResolvedAsset[];
+  /**
+   * The payments that passed that preflight and whose calls have not ended.
+   * Every paid call opens a hold here and hands it to x402 with its request
+   * context (see in-flight.ts); the gateway releases it when the call ends.
+   */
+  inFlight: InFlightPayments;
   /** Validity window the gateway asks buyers to sign (x402 maxTimeoutSeconds). */
   maxTimeoutSeconds: number;
 }
@@ -375,9 +382,12 @@ export async function createPaymentRail(cfg: CascetConfig, options: PaymentRailO
   const nodeUrl = settlementNodeUrl(cfg);
   const preflightIds = new Set(hostedPreflightAssets(cfg).map(asset => asset.id));
   const preflightAssets = assets.filter(asset => preflightIds.has(asset.id));
+  const inFlight = new InFlightPayments();
   if (nodeUrl && preflightAssets.length > 0) {
-    // Runs before x402 asks the facilitator to verify; refuses (never throws) what would revert on-chain.
-    resourceServer.onBeforeVerify(hostedPreflightHook({ probe: new TokenProbe(createCasperRpc(nodeUrl)), network, assets: preflightAssets }));
+    // Runs before x402 asks the facilitator to verify; refuses (never throws) what would revert on-chain,
+    // and reserves what it lets through on the call's hold until the call ends.
+    const probe = new TokenProbe(createCasperRpc(nodeUrl));
+    resourceServer.onBeforeVerify(hostedPreflightHook({ probe, network, assets: preflightAssets, inFlight }));
   }
   try {
     await resourceServer.initialize();
@@ -393,7 +403,7 @@ export async function createPaymentRail(cfg: CascetConfig, options: PaymentRailO
     const refused = scheme.unsupportedFacilitatorFlow(kind, extensions);
     return refused && unsupportedFlowMessage(route, byHash.get(normalizePackageHash(route.asset)), kind, refused);
   });
-  return { resourceServer, network, payTo, assets, preflightAssets, maxTimeoutSeconds: maxTimeoutSecondsFor(cfg) };
+  return { resourceServer, network, payTo, assets, preflightAssets, inFlight, maxTimeoutSeconds: maxTimeoutSecondsFor(cfg) };
 }
 
 /** What the gateway does with one upstream tool. */

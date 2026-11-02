@@ -126,13 +126,31 @@ asset the hosted facilitator settles against the token's on-chain state
 before the facilitator verifies it, as CasCet's self-hosted facilitator does
 for its own assets: the token's `transfer_with_authorization` takes the
 configured style's argument, the nonce is unused, the token's `name` is the
-signed EIP-712 name, and the payer's balance covers the price. A payment that
+signed EIP-712 name, and the payer's balance covers the price plus the
+payer's other payments in flight in that token (below). A payment that
 fails a check gets a 402 naming it (`nonce_already_used`,
 `insufficient_funds`, `authorization_style_mismatch`,
 `token_domain_mismatch`, `unsupported_asset`). When the node cannot be read
 within 5 s the payment is refused with `preflight_unavailable` (fail closed:
 nothing was charged and the buyer may retry). Without a node the gateway
 warns at startup that this preflight is off.
+
+Payments in flight count against the balance, because the balance a payment
+is checked against does not show the payer's payments that have not settled
+yet. A payment that passes the preflight reserves its amount for its payer
+and token until its call ends: when its settlement finishes (settled, failed
+or unknown; with `settleBeforeExecute`, before the tool runs), or when the
+call ends without one (the facilitator or the gateway refused it, the tool
+failed or timed out, anything threw). Of two concurrent payments that one
+balance funds, only one passes; the other gets `insufficient_funds:
+insufficient balance once 1 in-flight payment is counted` and nothing runs
+for it. A reservation that is somehow never released stops counting 2
+minutes after its authorization's `validBefore`, when the authorization can
+no longer execute. The gateway tracks at most 10 000 payments in flight and
+refuses new ones beyond that (`preflight_unavailable: too many payments in
+flight; retry later`) rather than forget one. Like the replay guard, this is
+per gateway process: gateways that share a payer and a token do not see each
+other's payments.
 
 ## Payment flow
 
