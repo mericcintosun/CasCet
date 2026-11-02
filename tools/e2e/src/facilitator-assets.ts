@@ -1,4 +1,10 @@
-import { DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE, isAuthorizationStyle, isLegacyAmountToken, type AuthorizationStyle } from "@cascet/core";
+import {
+  DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE,
+  isAuthorizationStyle,
+  isKnownCep3009Asset,
+  isLegacyAmountToken,
+  type AuthorizationStyle,
+} from "@cascet/core";
 import { TokenUnsupportedError, type TokenProbe } from "@cascet/gateway";
 import { knownAuthorizationStyle, logText, normalizeAsset, type AssetPolicy } from "./facilitator-core.js";
 import { AMOUNT_ARGUMENT_BY_STYLE } from "./settlement.js";
@@ -129,9 +135,17 @@ export function planAssets(assets: readonly FacilitatorAssetOptions[], opts: Pla
     if (spec.authorization !== undefined && !isAuthorizationStyle(spec.authorization)) {
       throw new Error(`${label(i, "authorization")} must be legacy-amount or cep3009-value`);
     }
+    // Styles CasCet knows, in both directions: with the preflight off nothing
+    // else would catch them, and every settle would revert (Odra MissingArg,
+    // User error 64658) and burn the whole gas limit.
     if (spec.authorization === "cep3009-value" && isLegacyAmountToken(asset)) {
       throw new Error(
         `${label(i, "authorization")}: ${short(asset)} is CasCet's x402 token, whose transfer_with_authorization takes \`amount\` (legacy-amount)`,
+      );
+    }
+    if (spec.authorization === "legacy-amount" && isKnownCep3009Asset(opts.network, asset)) {
+      throw new Error(
+        `${label(i, "authorization")}: ${short(asset)} is a known CEP-3009 token whose transfer_with_authorization takes \`value\` (cep3009-value)`,
       );
     }
     const expectedStyle = spec.authorization ?? knownAuthorizationStyle(opts.network, asset);

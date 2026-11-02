@@ -56,6 +56,18 @@ describe("planning assets (start-up, before any RPC)", () => {
     assert.throws(plan([{ packageHash: WCSPR }, { packageHash: `contract-package-${WCSPR}` }]), /assets\[1\]\.packageHash: asset 3d80df21… is listed twice/);
     assert.throws(plan([{ packageHash: OTHER, authorization: "value" as never }]), /must be legacy-amount or cep3009-value/);
     assert.throws(plan([{ packageHash: LEGACY, authorization: "cep3009-value" }]), /takes `amount` \(legacy-amount\)/);
+    // The reverse: a known CEP-3009 token declared legacy-amount, with the preflight on or off.
+    for (const preflight of [true, false]) {
+      assert.throws(
+        plan([{ packageHash: WCSPR, authorization: "legacy-amount", name: "Wrapped CSPR" }], preflight),
+        /assets\[0\]\.authorization: 3d80df21… is a known CEP-3009 token whose transfer_with_authorization takes `value` \(cep3009-value\)/,
+      );
+    }
+    const mainnetWcspr = "8df5d26790e18cf0404502c62ce5dc9025800ad6975c97466e20506c39c505b6";
+    assert.throws(
+      () => planAssets([{ packageHash: mainnetWcspr, authorization: "legacy-amount" }], { network: "casper:casper", preflight: true }),
+      /known CEP-3009 token/,
+    );
     assert.throws(plan([{ packageHash: OTHER, name: "\u0007bell" }]), /assets\[0\]\.name must be 1 to 100 printable characters/);
     assert.throws(plan([{ packageHash: OTHER, version: "" }]), /assets\[0\]\.version/);
     // Gas floors: the measured consumption of the style (any style's floor while it is unknown).
@@ -107,9 +119,22 @@ describe("resolving assets against the chain (recorded testnet answers)", () => 
   });
 
   test("refuses a configured style, name or chain the token contradicts", async () => {
+    // A token CasCet does not know, declared legacy-amount, whose ABI takes `value`
+    // (Wrapped CSPR's recorded contract under another package hash).
     await assert.rejects(
-      resolveAssetPolicies(plansOf({ packageHash: WCSPR, authorization: "legacy-amount" }), { network: NETWORK, probe: recordedProbe() }),
-      /configured as legacy-amount \(`amount`\), but its transfer_with_authorization takes `value` \(cep3009-value\)/,
+      resolveAssetPolicies(plansOf({ packageHash: OTHER, authorization: "legacy-amount" }), {
+        network: NETWORK,
+        probe: recordedProbe({ [`query_global_state hash-${OTHER}`]: fx.wcsprTestnetPackageResponse }),
+      }),
+      /asset dddddddd… is configured as legacy-amount \(`amount`\), but its transfer_with_authorization takes `value` \(cep3009-value\)/,
+    );
+    // CasCet's own token (known legacy-amount) after an upgrade to the CEP-3009 ABI.
+    await assert.rejects(
+      resolveAssetPolicies(plansOf({ packageHash: LEGACY }), {
+        network: NETWORK,
+        probe: recordedProbe({ [`query_global_state hash-${LEGACY}`]: fx.wcsprTestnetPackageResponse }),
+      }),
+      /asset cb65a928… is configured as legacy-amount .* takes `value`/,
     );
     await assert.rejects(
       resolveAssetPolicies(plansOf({ packageHash: LEGACY, name: "CasCet Token" }), { network: NETWORK, probe: recordedProbe() }),

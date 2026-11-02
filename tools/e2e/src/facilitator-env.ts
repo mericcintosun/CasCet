@@ -27,7 +27,9 @@ import { normalizeAccountHash } from "./facilitator-roles.js";
  *                                 (legacy-amount, CasCet's token) or `value` (cep3009-value, e.g. Wrapped CSPR)
  *   CASCET_ASSET_STYLES           optional `<package hash>=<legacy-amount|cep3009-value>` comma list: the style
  *                                 each asset must have; start-up (and every payment) is refused when the chain
- *                                 disagrees. Required with CASCET_PREFLIGHT=off for a token CasCet does not know
+ *                                 disagrees, and always for a style CasCet knows to be wrong (its own token as
+ *                                 cep3009-value, a known CEP-3009 token such as Wrapped CSPR as legacy-amount).
+ *                                 Required with CASCET_PREFLIGHT=off for a token CasCet does not know
  *   CASCET_ASSET_NAMES            optional `<package hash>=<EIP-712 name>` comma list: pinned domain names
  *                                 (default: the names CasCet knows; with the preflight on, the on-chain names)
  *   CASCET_SETTLE_PAYMENT_MOTES   gas limit per settle for every asset without its own (default per style:

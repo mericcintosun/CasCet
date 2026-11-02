@@ -915,33 +915,47 @@ describe("startRealFacilitator end to end against a local fake node (no network)
   });
 
   test("refuses to start when the chain contradicts the configuration or cannot be read", async () => {
-    // A configured style the token's ABI contradicts.
+    // A style CasCet knows to be wrong: refused before the chain is read.
     await assert.rejects(
       start({ assets: [{ packageHash: WCSPR_PKG, authorization: "legacy-amount" }] }),
-      /configured as legacy-amount \(`amount`\), but its transfer_with_authorization takes `value` \(cep3009-value\)/,
+      /assets\[0\]\.authorization: 3d80df21… is a known CEP-3009 token whose transfer_with_authorization takes `value`/,
     );
     // A pinned name that is not the token's.
     await assert.rejects(start({ assets: [{ packageHash: WCSPR_PKG, name: "Wrapped Casper" }] }), /pinned EIP-712 name "Wrapped Casper"/);
 
     const payerKey = `00${payer.publicKey.accountHash().toHex()}`;
+    /** A package of the recorded legacy layout whose single version is `contract`. */
+    const packagePointingAt = (contract: string) => {
+      const pkg = structuredClone(fx.testnetPackageResponse) as unknown as {
+        result: { stored_value: { ContractPackage: { versions: Array<{ contract_hash: string }> } } };
+      };
+      pkg.result.stored_value.ContractPackage.versions[0]!.contract_hash = `contract-${contract}`;
+      return pkg;
+    };
     const otherPkg = "ee".repeat(32);
     const otherContract = "ef".repeat(32);
-    const pkg = structuredClone(fx.testnetPackageResponse) as unknown as { result: { stored_value: { ContractPackage: { versions: Array<{ contract_hash: string }> } } } };
-    pkg.result.stored_value.ContractPackage.versions[0]!.contract_hash = `contract-${otherContract}`;
     const noEntryPoint = structuredClone(fx.testnetContractResponse) as unknown as { result: { stored_value: { Contract: { entry_points: unknown[] } } } };
     noEntryPoint.result.stored_value.Contract.entry_points = [];
+    const valuePkg = "ea".repeat(32);
     const odd = await startFakeRpcServer(
       nodeRoutes(payerKey, {
         // CasCet's token answering with mainnet's chain_name.
         [`query_global_state ${legacyKey("chain_name")}`]: fx.mainnetChainNameResponse,
         // A token without transfer_with_authorization.
-        [`query_global_state hash-${otherPkg}`]: pkg,
+        [`query_global_state hash-${otherPkg}`]: packagePointingAt(otherContract),
         [`query_global_state hash-${otherContract}`]: noEntryPoint,
+        // A token CasCet does not know whose ABI takes `value` (Wrapped CSPR's contract).
+        [`query_global_state hash-${valuePkg}`]: fx.wcsprTestnetPackageResponse,
       }),
     );
     try {
       await assert.rejects(start({ rpcUrl: odd.url }), /signs for chain_name "casper:casper", not casper:casper-test/);
       await assert.rejects(start({ rpcUrl: odd.url, assets: [{ packageHash: otherPkg }] }), /cannot be settled/);
+      // A configured style the token's ABI contradicts.
+      await assert.rejects(
+        start({ rpcUrl: odd.url, assets: [{ packageHash: valuePkg, authorization: "legacy-amount" }] }),
+        /configured as legacy-amount \(`amount`\), but its transfer_with_authorization takes `value` \(cep3009-value\)/,
+      );
     } finally {
       await odd.close();
     }

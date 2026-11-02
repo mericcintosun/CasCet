@@ -244,6 +244,9 @@ describe("facilitator environment", () => {
       [{ CASCET_ASSET_STYLES: `${WCSPR}` }, /expected <package hash>=<value>/],
       [{ CASCET_ASSET_STYLES: `${WCSPR}=cep3009-value,hash-${WCSPR}=cep3009-value` }, /listed twice/],
       [{ CASCET_ASSET_STYLES: `${LEGACY}=cep3009-value` }, /CasCet's x402 token, whose transfer_with_authorization takes `amount`/],
+      // The reverse, with the preflight on or off: every settle would send `amount`, revert and burn its gas.
+      [{ CASCET_ASSET_STYLES: `${WCSPR}=legacy-amount` }, /CASCET_ASSET_STYLES \(3d80df21ba…\): 3d80df21… is a known CEP-3009 token .*takes `value`/],
+      [{ CASCET_PREFLIGHT: "off", CASCET_ASSET_STYLES: `${WCSPR}=legacy-amount` }, /known CEP-3009 token whose transfer_with_authorization takes `value`/],
       [{ CASCET_ASSET_NAMES: `${WCSPR}=` }, /CASCET_ASSET_NAMES/],
       [{ CASCET_SETTLE_PAYMENT_MOTES_BY_ASSET: `${WCSPR}=lots` }, /whole number/],
       [{ CASCET_TOKEN_NAME: "Wrapped CSPR" }, /CASCET_TOKEN_NAME pins the name of a single allowlisted asset/],
