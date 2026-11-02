@@ -16,7 +16,7 @@ import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { ExactCasperScheme } from "@x402/casper/exact/client";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_FACILITATOR_URL, type CascetConfig } from "@cascet/core";
-import type { PreemptionQuery, SettlementPreemptionChecker } from "./preemption.js";
+import type { PreemptionOutcome, PreemptionQuery, SettlementPreemptionChecker } from "./preemption.js";
 import { startGateway, type GatewayOptions } from "./server.js";
 import { startFakeFacilitator, type FakeFacilitator, type Reply } from "./testing/fake-facilitator.js";
 import { startFakeNode, u256Response, wcsprBalanceCall, wcsprNodeRoutes, wcsprNonceCall } from "./testing/fake-node.js";
@@ -1280,19 +1280,49 @@ describe("the hosted facilitator", () => {
     });
 
     it("stops counting a payment whose outcome is unknown once the token's events show its nonce used", async () => {
-      // The on-chain check finds this authorization executed, but third-party settlement is off, so the outcome
-      // stays unknown. The transfer cannot execute again; its amount is in the balance the node reports (which is
-      // fixed in this test) from now on, not in flight.
-      const paid: SettlementPreemptionChecker = { check: async () => ({ kind: "paid", eventIndex: 3 }) };
+      // The on-chain check finds this authorization executed (third-party settlement is off, so the outcome stays
+      // unknown), or its nonce used without the expected transfer (layout-dependent evidence: the outcome stays
+      // unknown too). Either way the authorization cannot execute again: whatever it moved is in the balance the
+      // node reports (which is fixed in this test) from now on, not in flight.
       const unknown = { status: 502, raw: "<html>Bad Gateway</html>" };
-      const g = await fundsOne(() => ({ answer: onFirst("/settle", async () => unknown) }), {}, { preemptionChecker: paid });
-      try {
-        const first = await g.pay();
-        assert.deepEqual([first.status, first.body.error?.code], [200, -32003]);
-        assert.match(String(first.body.error?.data?.note), /token event #3 shows this exact authorization paid payTo/);
-        assert.equal((await g.pay()).status, 200);
-      } finally {
-        await g.close();
+      const findings: Array<[PreemptionOutcome, RegExp]> = [
+        [{ kind: "paid", eventIndex: 3 }, /token event #3 shows this exact authorization paid payTo/],
+        [
+          { kind: "consumed-elsewhere", eventIndex: 4, detail: "no transfer event follows the authorization" },
+          /nonce was used on-chain without the expected transfer to payTo right after it \(token event #4/,
+        ],
+      ];
+      for (const [finding, note] of findings) {
+        const checker: SettlementPreemptionChecker = { check: async () => finding };
+        const g = await fundsOne(() => ({ answer: onFirst("/settle", async () => unknown) }), {}, { preemptionChecker: checker });
+        try {
+          const first = await g.pay();
+          assert.deepEqual([first.status, first.body.error?.code], [200, -32003], finding.kind);
+          assert.match(String(first.body.error?.data?.note), note);
+          const next = await g.pay();
+          assert.equal(next.status, 200, `${finding.kind}: ${JSON.stringify(next.body)}`);
+        } finally {
+          await g.close();
+        }
+      }
+    });
+
+    it("keeps counting a payment whose outcome is unknown when the on-chain check finds nothing about it, or fails", async () => {
+      const unknown = { status: 502, raw: "<html>Bad Gateway</html>" };
+      const checks: Array<[string, SettlementPreemptionChecker]> = [
+        ["nothing found", { check: async () => ({ kind: "not-found", scanned: 64 }) }],
+        ["the check failed", { check: () => Promise.reject(new Error("node unreachable")) }],
+      ];
+      for (const [name, checker] of checks) {
+        const g = await fundsOne(() => ({ answer: onFirst("/settle", async () => unknown) }), {}, { preemptionChecker: checker });
+        try {
+          const first = await g.pay();
+          assert.deepEqual([first.status, first.body.error?.code], [200, -32003], name);
+          refusedInFlight(await g.pay());
+          assert.equal(g.upstream.calls.length, 1, `${name}: no tool ran for a payment that balance cannot fund`);
+        } finally {
+          await g.close();
+        }
       }
     });
 
