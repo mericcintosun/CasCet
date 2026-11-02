@@ -1,7 +1,7 @@
 import { wrapFetchWithPayment, x402Client, x402HTTPClient } from "@x402/fetch";
 import { x402Version } from "@x402/core";
 import type { PaymentPolicy, SpendControlAsset, SpendControls } from "@x402/core/client";
-import type { Network, PaymentRequirements } from "@x402/core/types";
+import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import type { ClientCasperSigner } from "@x402/casper";
 import {
   AUTHORIZATION_STYLE_EXTRA_KEY,
@@ -310,8 +310,17 @@ export interface PaymentClientOptions {
 }
 
 /**
- * The x402 client behind {@link createPayingFetch}:
+ * An x402 client that pays within a spending policy as {@link createPayingFetch}
+ * does, for use without it:
  *
+ * - each 402 is checked before x402 reads it, as createPayingFetch checks the
+ *   402s it receives: a 402 of another x402 version, or one whose options the
+ *   policy all refuses, is refused with a {@link PaymentRefusedError} naming
+ *   the policy's reasons ({@link refusalReason}), and x402 is handed only the
+ *   options the policy accepts. x402's own selection reads every entry before
+ *   the policy filter runs, and a malformed one (a null entry, a non-string
+ *   asset next to an asset allowlist) would make it throw a TypeError for the
+ *   whole 402;
  * - one exact scheme per network the policy pays on, bound to that network
  *   (never a "casper:*" pattern) and capped at the per-call budget and the
  *   policy's longest validity window;
@@ -327,10 +336,54 @@ export interface PaymentClientOptions {
  * payment when one reports `{ recovered: true }`.
  */
 export function createPaymentClient(opts: PaymentClientOptions): x402Client {
+  return configurePaymentClient(new PolicyCheckedClient(opts.policy), opts);
+}
+
+/**
+ * The x402 client of {@link createPaymentClient}: before x402 reads a 402, it
+ * checks the 402 and hands x402 only the options the policy accepts
+ * ({@link checkedPaymentRequired}).
+ */
+class PolicyCheckedClient extends x402Client {
+  private readonly spendPolicy: Pick<SpendPolicy, "check" | "networks">;
+
+  constructor(spendPolicy: Pick<SpendPolicy, "check" | "networks">) {
+    super();
+    this.spendPolicy = spendPolicy;
+  }
+
+  override async createPaymentPayload(paymentRequired: PaymentRequired): Promise<PaymentPayload> {
+    // No await before x402's own call: the check, x402's selection and the before-payment hook that
+    // reserves the budget run in one synchronous step, so no concurrent payment comes in between.
+    return super.createPaymentPayload(checkedPaymentRequired(this.spendPolicy, paymentRequired));
+  }
+}
+
+/**
+ * A 402 checked the way {@link createPayingFetch} checks the 402s it receives:
+ * a {@link PaymentRefusedError} naming the policy's reasons for a 402 of
+ * another x402 version, or one whose options the policy all refuses; else the
+ * 402 itself, or a copy offering only the options the policy accepts.
+ * Nothing is reserved.
+ */
+function checkedPaymentRequired(policy: Pick<SpendPolicy, "check" | "networks">, paymentRequired: PaymentRequired): PaymentRequired {
+  const challenge: unknown = paymentRequired;
+  const fields = typeof challenge === "object" && challenge !== null ? (challenge as Record<string, unknown>) : {};
+  const offered: unknown[] = Array.isArray(fields.accepts) ? fields.accepts : [];
+  const refusal = versionRefusal(fields.x402Version) ?? refusalReason(policy, offered);
+  if (refusal !== undefined) throw new PaymentRefusedError(`payment refused: ${refusal}`);
+  const acceptable = offered.filter(option => policy.check(option).ok) as PaymentRequirements[];
+  return acceptable.length < offered.length ? { ...paymentRequired, accepts: acceptable } : paymentRequired;
+}
+
+/**
+ * Register on `client` the schemes, spend controls, policies and hooks of a
+ * CasCet payment client (see {@link createPaymentClient}).
+ */
+function configurePaymentClient(client: x402Client, opts: PaymentClientOptions): x402Client {
   const { policy, onPayment } = opts;
   const preferStyles = normalizePreferStyles(opts.preferStyles);
   const log = opts.log ?? defaultLogger;
-  const client = new x402Client();
   // @x402/casper signs both authorization styles the same way (one EIP-712 message), and each
   // scheme refuses to sign above the per-call budget or for longer than the policy's validity
   // window even if every check before it were bypassed.
@@ -443,7 +496,9 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
   }
 
   const signer = await loadClientSigner(opts.privateKeyPath, opts.keyAlgorithm ?? "ed25519");
-  const client = createPaymentClient({
+  // createPaymentClient's client without its own 402 check: paidFetch checks and filters each 402
+  // itself before x402 reads it, and @x402/fetch would turn a refusal of that check into a plain Error.
+  const client = configurePaymentClient(new x402Client(), {
     policy,
     signer,
     ...(preferStyles ? { preferStyles } : {}),
