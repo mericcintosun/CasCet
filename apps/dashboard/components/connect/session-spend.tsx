@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { OnchainProblem, OnchainStatusBadge } from "@/components/onchain-status";
+import { WCSPR_TOKEN_PACKAGE } from "@/lib/casper/constants";
 import { accountHashOf, parsePayeeInput } from "@/lib/casper/keys";
 import { rawToTokens, type ConnectNetwork } from "@/lib/connect-config";
 import { CONTRACTS, ONCHAIN_NETWORK_LABEL } from "@/lib/economy";
@@ -18,7 +19,7 @@ import { useOnchainReceipts } from "@/lib/use-onchain-receipts";
 import { cn, shortHex } from "@/lib/utils";
 
 /** Decimals of the tokens the on-chain feed can contain (receipts don't carry decimals). */
-const KNOWN_DECIMALS: Record<string, number> = { [CONTRACTS.x402Token]: 9 };
+const KNOWN_DECIMALS: Record<string, number> = { [CONTRACTS.x402Token]: 9, [WCSPR_TOKEN_PACKAGE]: 9 };
 
 const WINDOWS = [
   { key: "1h", label: "1 h", ms: 3_600_000 },
@@ -167,19 +168,24 @@ export function SessionSpend({
             </TableHeader>
             <TableBody>
               {rows.map((r) => {
-                const d = KNOWN_DECIMALS[r.asset];
+                // An empty asset: the feed could not tell which token these payments were in.
+                const d = r.asset ? KNOWN_DECIMALS[r.asset] : undefined;
                 const amount = d === undefined ? `${r.raw.toString()} raw units` : `${rawToTokens(r.raw, d)} ${r.symbol}`;
-                const allowlisted = allowedAssets.includes(r.asset);
+                const allowlisted = r.asset !== "" && allowedAssets.includes(r.asset);
                 const comparable = cap !== null && (allowlisted || allowedAssets.length === 0) && (d === undefined || d === decimals);
                 const pct = comparable && cap ? Math.min(100, Number((r.raw * 10_000n) / cap) / 100) : null;
                 return (
                   <TableRow key={r.asset}>
                     <TableCell>
                       <div className="font-medium">{r.symbol}</div>
-                      <div className="font-mono text-[11px] text-muted-foreground" title={r.asset}>
-                        {shortHex(r.asset, 8, 6)}
-                        {allowlisted && <span className="ml-1.5 text-success">allowlisted</span>}
-                      </div>
+                      {r.asset ? (
+                        <div className="font-mono text-[11px] text-muted-foreground" title={r.asset}>
+                          {shortHex(r.asset, 8, 6)}
+                          {allowlisted && <span className="ml-1.5 text-success">allowlisted</span>}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-muted-foreground">token not known</div>
+                      )}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{r.calls}</TableCell>
                     <TableCell className="text-right">

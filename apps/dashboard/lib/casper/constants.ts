@@ -27,8 +27,14 @@ export const TOKEN_SYMBOL = "WCSPR";
 
 export const REVENUE_SPLIT_PACKAGE = CONTRACTS.revenueSplit;
 export const DEMO_TOKEN_PACKAGE = CONTRACTS.demoToken;
-/** The token x402 settlements on testnet were paid in (Cep18X402, on-chain symbol WCSPR). */
+/** CasCet's x402 token on testnet (Cep18X402, on-chain symbol WCSPR, 9 decimals): every testnet settlement until 2026-11-01. */
 export const X402_TOKEN_PACKAGE = CONTRACTS.x402Token;
+/**
+ * The official Wrapped CSPR on testnet (CEP-3009, on-chain symbol WCSPR, 9
+ * decimals). The real-payment demo pays in it too since 2026-11-02 and anchors
+ * those receipts in the same ReceiptRegistry.
+ */
+export const WCSPR_TOKEN_PACKAGE = "3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e";
 
 export const CSPR_LIVE_TX = "https://testnet.cspr.live/transaction/";
 export const CSPR_LIVE_ACCOUNT = "https://testnet.cspr.live/account/";

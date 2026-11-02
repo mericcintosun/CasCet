@@ -10,7 +10,11 @@ export const CONTRACTS = {
   receiptRegistry: "bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97",
   revenueSplit: "fa21efb406a8151d15a393bc366e51192a9ea15fd7fe23faffc54f021b32883c",
   demoToken: "b3e9908b6cdbf5c565b686938994e3ac8e6749f41bcbe83615604321a0965d49",
-  /** Cep18X402: CasCet's x402 payment token (on-chain symbol WCSPR); every real testnet settlement used it. */
+  /**
+   * Cep18X402: CasCet's x402 payment token (on-chain symbol WCSPR). Every real
+   * testnet settlement used it until 2026-11-01; the real-payment demo also pays
+   * in the official Wrapped CSPR since (lib/casper/receipt-token.ts).
+   */
   x402Token: "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3",
 } as const;
 
@@ -98,7 +102,8 @@ export function computeEconomy(receipts: PaymentReceipt[]): EconomyStats {
     roots: settled.filter(r => !r.parentId).length,
     cascaded: settled.filter(r => r.parentId).length,
     maxDepth,
-    assetSymbol: settled[0]?.assetSymbol ?? "WCSPR",
+    // A receipt whose token could not be told has no symbol.
+    assetSymbol: settled.find(r => r.assetSymbol)?.assetSymbol ?? "WCSPR",
     servers: [...serverMap.entries()]
       .map(([server, s]) => ({
         server,
