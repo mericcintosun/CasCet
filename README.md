@@ -327,9 +327,9 @@ limit. So:
   `cep3009-value`) or set with `"authorization"`. The gateway advertises it in
   every `accepts` entry as `extra.authorizationStyle`; no facilitator trusts
   that field. The hosted facilitator always sends `value`; the self-hosted
-  facilitator in this release always sends `amount`, so its
-  `CASCET_ALLOWED_ASSETS` must list only `legacy-amount` tokens (never Wrapped
-  CSPR).
+  facilitator reads each allowlisted token's ABI and sends `amount` or `value`
+  to match, and refuses at start-up a declared style the token's ABI
+  contradicts.
 - The config schema refuses a `legacy-amount` asset settled by the hosted
   facilitator.
 - The hosted facilitator takes your CSPR.cloud access key **raw** in the
@@ -381,7 +381,7 @@ to start without the allowlists and both budgets.
 | `CASCET_MAX_PER_CALL` | yes² | most raw token units one call may cost |
 | `CASCET_MAX_SESSION` | yes² | most raw token units the whole session may spend (tracked per token) |
 | `CASCET_PREFER_STYLES` | no | comma-separated authorization styles in order of preference (`cep3009-value`, `legacy-amount`) when a gateway offers several tokens; it only orders the options the allowlists and budgets accept |
-| `CASCET_TIMEOUT_MS` | no | deadline per paid call in milliseconds, settlement included (default `180000`) |
+| `CASCET_TIMEOUT_MS` | no | deadline per paid call in milliseconds, settlement included (default `200000`) |
 | `CASCET_TOOL_PINS` | no | file where the bridge records each gateway's tools (default `~/.cascet/tool-pins.json`); `--accept-tool-changes` accepts a changed tool list after you have reviewed it |
 
 ¹ Unless `CASCET_ALLOW_ANY_SELLER=1` or `--allow-any-seller`, which lets any
@@ -438,7 +438,7 @@ and pick up whatever is published next.
 Five Odra contracts (Rust), unit-tested against a real CEP-18 in Odra's mock VM (`cargo test` or `cargo odra test`):
 
 - **`ReceiptRegistry`** — anchors settled tool-call receipts on-chain, each carrying its cascade `parent_id`. Makes two things verifiable without trusting the gateway: that a call was paid, and how payments compose. Permissioned recorders, duplicate protection, events.
-- **`RevenueSplit`** — an OpenZeppelin-style PaymentSplitter for CEP-18: tokens sent to it are split between payees by fixed weights, pull-based, enforced on-chain. A seller forwards earnings to it with a CEP-18 transfer; pointing an x402 `payTo` straight at it needs a settlement stack that can pay contract packages, which `@make-software/casper-x402` 1.0.0 cannot.
+- **`RevenueSplit`** — an OpenZeppelin-style PaymentSplitter for CEP-18: tokens sent to it are split between payees by fixed weights, pull-based, enforced on-chain. A seller forwards earnings to it with a CEP-18 transfer; pointing an x402 `payTo` straight at it needs a settlement stack that can pay contract packages, which neither `@make-software/casper-x402` 1.0.0 nor CasCet's self-hosted facilitator offers yet.
 - **`CascadeController`** — the budget-bounded cascade primitive: one deposit caps a whole call tree (enforced on-chain), with recursive revenue attribution up the tree. A standalone primitive for now: proven on mainnet, not yet called by the gateway.
 - **`PaymentChannel`** — prepaid channels for high-frequency traffic: deposit once, authorize usage off-chain with signed vouchers, redeem/reclaim on-chain. Vouchers verified in-contract via Casper `verify_signature`.
 - **`DemoToken`** — CasCet's own CEP-18 token (WCSPR-style), used by the cascade and revenue-split demos. **`Cep18X402`**, the token x402 payments settle in, is *not* CasCet code: it is the reference `transfer_with_authorization` (EIP-3009) token from [make-software/casper-x402](https://github.com/make-software/casper-x402), which CasCet installed on testnet and on mainnet (as "CasCet X402 Token") so its facilitator can settle real x402 payments (see [`contracts/external/`](contracts/external/) and [`NOTICE`](NOTICE)).
@@ -550,7 +550,7 @@ This is a real project, not a hackathon throwaway — there's a live [roadmap se
 
 ## Tech
 
-TypeScript (Node 22+, pnpm workspaces), Next.js 15 + shadcn/ui, `@make-software/casper-x402` + `@x402/*`, `@modelcontextprotocol/sdk`, Python (paying client), Rust + Odra 2.8.2, Casper mainnet and testnet.
+TypeScript (Node 22+, pnpm workspaces), Next.js 15 + shadcn/ui, `@x402/core` + `@x402/casper` 2.29, `@modelcontextprotocol/sdk`, Python (paying client), Rust + Odra 2.9.1, Casper mainnet and testnet.
 
 ## License
 

@@ -18,10 +18,9 @@ decimals, so 1 token is 1,000,000,000 raw units.
 until the settlement has executed on-chain, then starts the job, which runs for
 `duration` seconds (10 by default; the buyer picks the value). If settlement and
 `duration` together take longer than the bridge's per-call deadline
-(`CASCET_TIMEOUT_MS`, 30 s by default), the payment is final but the result
-never reaches the MCP host. Step 5 therefore raises the deadline to 90 s. Keep
-`duration` well below that, and below the gateway's upstream timeout
-(`timeouts.upstreamMs`, 60 s by default).
+(`CASCET_TIMEOUT_MS`, 200 s by default), the payment is final but the result
+never reaches the MCP host. Keep `duration` well below the gateway's upstream
+timeout (`timeouts.upstreamMs`, 60 s by default).
 
 `get-tiny-image` stays free because it is listed in `pricing.freeTools`.
 Every other tool of the upstream server is neither priced nor free, so the
@@ -104,14 +103,14 @@ CASCET_ALLOWED_PAYTO=<the 00... value from step 1> \
 CASCET_ALLOWED_ASSETS=hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3 \
 CASCET_MAX_PER_CALL=2500000000 \
 CASCET_MAX_SESSION=10000000000 \
-CASCET_TIMEOUT_MS=90000 \
 node packages/cli/dist/cli.js connect http://127.0.0.1:4410/mcp
 ```
 
 `connect` refuses to start without the payTo and asset allowlists and without
 both budgets. The bridge then pays only this seller, only in this token, only
 on testnet, at most 2.5 tokens per call and 10 tokens per session, and gives
-each call up to 90 s.
+each call up to 200 s (the `CASCET_TIMEOUT_MS` default), enough for the
+gateway's longest paid call.
 
 The facilitator listens on 127.0.0.1 only. To reach it from another machine,
 start it with `CASCET_FACILITATOR_HOST=<address>` and a secret
@@ -143,10 +142,11 @@ needed: the hosted facilitator pays the gas.
   raw in the `Authorization` header (`"authScheme": "raw"`; the hosted
   facilitator does not take `Bearer `). Keep the filled-in copy out of git.
 - Fill in `payTo` as in step 1 above.
-- Skip step 2. The self-hosted facilitator in this release always sends
-  `amount`, so it cannot settle Wrapped CSPR: never put the WCSPR package hash
-  in its `CASCET_ALLOWED_ASSETS` (every settle would revert with
-  `User error: 64658` and burn its gas limit).
+- Skip step 2: the hosted facilitator pays the gas. The self-hosted
+  facilitator settles Wrapped CSPR too (it sends `value` to `cep3009-value`
+  tokens). To use it instead, run step 2 with the WCSPR package hash in
+  `CASCET_ALLOWED_ASSETS` and set `facilitator` in this file as in
+  `cascet.config.json`.
 - In step 3, start the gateway with this file:
   `node packages/cli/dist/cli.js wrap examples/wrap-third-party/cascet.wcspr.config.json`.
 - Buyers pay in WCSPR, which is testnet CSPR wrapped 1:1. A buyer with testnet

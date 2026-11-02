@@ -193,15 +193,14 @@ to the token's `transfer_with_authorization` entry point differs:
 | Style | Settle argument | Testnet token | Settled by |
 | --- | --- | --- | --- |
 | `legacy-amount` | `amount` | CasCet X402 Token, `hash-cb65a928…` | the self-hosted facilitator |
-| `cep3009-value` | `value` | official Wrapped CSPR (WCSPR), `hash-3d80df21…`, 9 decimals, version `1` | the hosted CSPR.cloud facilitator |
+| `cep3009-value` | `value` | official Wrapped CSPR (WCSPR), `hash-3d80df21…`, 9 decimals, version `1` | the self-hosted facilitator, or the hosted CSPR.cloud facilitator |
 
 A facilitator that sends the wrong argument makes the settle revert with
 `User error: 64658` and burns its gas limit, so the demos refuse those
 pairings before anyone signs. The gateway advertises the style in each
 `accepts` entry (`extra.authorizationStyle`); no facilitator trusts that field.
-The hosted facilitator sends `value`; the self-hosted one in this release sends
-`amount`, so its `CASCET_ALLOWED_ASSETS` must list only `legacy-amount` tokens
-(never Wrapped CSPR).
+The hosted facilitator sends `value`; the self-hosted one reads each
+allowlisted token's ABI and sends `amount` or `value` to match.
 
 `wrap-wcspr` and `fund-token` are dry runs unless you add `--send`: a dry run
 reads the chain (read-only), checks the token, the accounts and the balances,
@@ -259,7 +258,7 @@ with `contracts/keys/deployer_secret_key.pem` unless you pass
    | | `self` (default) | `hosted` |
    | --- | --- | --- |
    | `legacy` (default) | the original demo | refused: the hosted facilitator sends `value` |
-   | `wcspr` | refused until the self-hosted facilitator settles `cep3009-value` tokens | needs `CSPR_CLOUD_TOKEN` |
+   | `wcspr` | settles through the self-hosted facilitator, which sends `value` | needs `CSPR_CLOUD_TOKEN` |
 
    The gateway sends `CSPR_CLOUD_TOKEN` to the hosted facilitator raw in the
    `Authorization` header (`facilitator.authScheme: "raw"`, never `Bearer`).
