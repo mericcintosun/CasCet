@@ -1,4 +1,4 @@
-import { after, before, describe, it } from "node:test";
+import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -26,7 +26,7 @@ import {
   type PaymentInfo,
 } from "./paying-fetch.js";
 import { clientSignerFromPem, createCasperClientScheme } from "./casper-scheme.js";
-import { RequestTimeoutError, ResponseTooLargeError } from "./http.js";
+import { RequestTimeoutError, ResponseTooLargeError, settleOnAbort, withDeadline } from "./http.js";
 import { SpendPolicy } from "./policy.js";
 
 const { KeyAlgorithm, PrivateKey, PublicKey } = casperSdk;
@@ -44,6 +44,8 @@ interface Hit {
   path: string;
   signature?: string;
   parentId?: string;
+  /** When the connection closed (Date.now()); for /hang only when the client aborted it. */
+  closedAt?: number;
 }
 
 interface FakeGateway {
@@ -72,7 +74,8 @@ function requirement(overrides: Record<string, unknown> = {}): Record<string, un
 /**
  * A tiny x402 resource: 402 without PAYMENT-SIGNATURE, 200 with it. /hang never answers; /redirect redirects;
  * /big402 streams a 402 body larger than MAX_402_BODY_BYTES (chunked), /big402-declared declares one;
- * /reject-paid answers 402 to the paid retry too (as a gateway whose verification failed).
+ * /reject-paid answers 402 to the paid retry too (as a gateway whose verification failed); /slow402 answers
+ * its 402 after 600 ms.
  */
 async function startFakeGateway(): Promise<FakeGateway> {
   const hits: Hit[] = [];
@@ -81,12 +84,21 @@ async function startFakeGateway(): Promise<FakeGateway> {
     req.resume();
     req.on("end", () => {
       const path = req.url ?? "/";
-      hits.push({
+      const hit: Hit = {
         path,
         signature: req.headers["payment-signature"] as string | undefined,
         parentId: req.headers["x-cascet-parent-id"] as string | undefined,
-      });
+      };
+      hits.push(hit);
+      res.on("close", () => (hit.closedAt = Date.now()));
       if (path === "/hang") return; // never answer
+      if (path === "/slow402" && req.headers["payment-signature"] === undefined) {
+        setTimeout(() => answer(path), 600);
+        return;
+      }
+      answer(path);
+    });
+    const answer = (path: string): void => {
       if (path === "/redirect") {
         res.writeHead(307, { location: "/elsewhere" }).end();
         return;
@@ -118,7 +130,7 @@ async function startFakeGateway(): Promise<FakeGateway> {
         return;
       }
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
-    });
+    };
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as AddressInfo).port;
@@ -145,9 +157,45 @@ async function startFakeGateway(): Promise<FakeGateway> {
   };
 }
 
+/** Resolves once `condition` holds, polling every 10 ms; rejects after `ms`. */
+async function until(condition: () => boolean, ms: number, what: string): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out after ${ms} ms waiting for ${what}`);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
 function decodeSignature(header: string): { accepted: Record<string, unknown>; payload: { authorization: Record<string, string> } } {
   return JSON.parse(Buffer.from(header, "base64").toString("utf8"));
 }
+
+describe("settleOnAbort and withDeadline", () => {
+  it("end a call at its deadline even when the fetch never settles and ignores its signal", { timeout: 5_000 }, async () => {
+    const never: () => Promise<Response> = () => new Promise<Response>(() => undefined);
+    const started = Date.now();
+    await assert.rejects(withDeadline(never, 50)("http://127.0.0.1:9/x"), RequestTimeoutError);
+    assert.ok(Date.now() - started < 1_000);
+    const controller = new AbortController();
+    const pending = settleOnAbort(new Promise<string>(() => undefined), controller.signal);
+    controller.abort(new Error("caller gave up"));
+    await assert.rejects(pending, /caller gave up/);
+  });
+
+  it("pass the result through, and cancel the body of a response that arrives after the abort", { timeout: 5_000 }, async () => {
+    assert.equal(await settleOnAbort(Promise.resolve("ok"), new AbortController().signal), "ok");
+    const controller = new AbortController();
+    let cancelled = false;
+    const body = new ReadableStream({ cancel: () => void (cancelled = true) });
+    let deliver: (response: Response) => void = () => undefined;
+    const late = settleOnAbort(new Promise<Response>(resolve => (deliver = resolve)), controller.signal);
+    controller.abort(new Error("over"));
+    await assert.rejects(late, /over/);
+    deliver(new Response(body));
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(cancelled, true);
+  });
+});
 
 describe("createPayingFetch", () => {
   let gateway: FakeGateway;
@@ -355,6 +403,47 @@ describe("createPayingFetch", () => {
     });
     assert.ok(Date.now() - started < 5_000);
     await assert.rejects(paying.fetchUnpaid!(gateway.url("/hang"), { method: "POST", body: "{}" }), RequestTimeoutError);
+  });
+
+  describe("when fetch would lose a Request's own abort signal", () => {
+    // undici's Request follows its parent's signal through a weak reference, so a garbage collection
+    // that collects an intermediate Request cuts the chain. This stand-in cuts it every time: a
+    // Request's own signal is dropped, and only a signal handed to fetch itself still aborts it.
+    let realFetch: typeof fetch;
+    beforeEach(() => {
+      realFetch = globalThis.fetch;
+      globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+        realFetch(new Request(input, { signal: init?.signal ?? null }))) as typeof fetch;
+    });
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+    });
+
+    it("aborts a hung request on the wire at the deadline", { timeout: 10_000 }, async () => {
+      const paying = await make({ timeoutMs: 200 });
+      for (const call of [paying.fetch, paying.fetchUnpaid!]) {
+        const before = gateway.hits.length;
+        const started = Date.now();
+        await assert.rejects(call(gateway.url("/hang"), { method: "POST", body: "{}" }), RequestTimeoutError);
+        assert.ok(Date.now() - started < 2_000);
+        await until(() => gateway.hits[before]?.closedAt !== undefined, 2_000, "the gateway to see the request aborted");
+      }
+    });
+
+    it("never sends the paid retry once the call is over, even when the 402 comes back later", { timeout: 10_000 }, async () => {
+      // Every signal dropped: the first request runs on to its 402 (at 600 ms) after the caller got its timeout
+      // (at 200 ms), and @x402/fetch then signs a payment and tries to send it.
+      globalThis.fetch = ((input: Parameters<typeof fetch>[0]) => realFetch(new Request(input, { signal: null }))) as typeof fetch;
+      const paying = await make({ timeoutMs: 200 });
+      const before = gateway.hits.length;
+      const started = Date.now();
+      await assert.rejects(paying.fetch(gateway.url("/slow402"), { method: "POST", body: "{}" }), RequestTimeoutError);
+      assert.ok(Date.now() - started < 2_000);
+      await until(() => gateway.hits[before]?.closedAt !== undefined, 3_000, "the late 402 to be answered");
+      await new Promise(resolve => setTimeout(resolve, 500)); // a paid retry would follow the 402 right away
+      const hits = gateway.hits.slice(before);
+      assert.deepEqual(hits.map(h => [h.path, h.signature]), [["/slow402", undefined]], "no paid retry was sent");
+    });
   });
 
   it("honors the caller's abort signal", async () => {
@@ -1069,6 +1158,43 @@ describe("createPaymentClient", () => {
       /refusing to sign: validity window 601 s is longer than 600 s/,
     );
     assert.deepEqual(policy.spentByAsset(), {}, "the reservation was given back");
+  });
+
+  it("gives the reservation back when a before-payment hook registered later aborts or throws, which signs nothing", async () => {
+    const policy = new SpendPolicy({ allowedAssets: [WCSPR], maxPerCallRaw: "400", maxSessionRaw: "800" });
+    const payments: PaymentInfo[] = [];
+    let signed = 0;
+    const countingSigner = {
+      ...signer,
+      signEIP712: async (digest: Uint8Array): Promise<Uint8Array> => {
+        signed++;
+        return signer.signEIP712(digest);
+      },
+    };
+    const client = createPaymentClient({ policy, signer: countingSigner, onPayment: info => payments.push(info), log: () => undefined });
+    // A confirmation step, as @x402/core suggests for interactive approval. x402 runs it after CasCet's hook reserved
+    // the budget, and an abort or throw there skips the failure hooks that give a reservation back.
+    const declined = { ...challenge(wcsprOption()), resource: { url: "http://127.0.0.1/declined", description: "", mimeType: "" } };
+    let crash = false;
+    client.onBeforePaymentCreation(async ctx => {
+      if (crash) throw new Error("the confirmation dialog crashed");
+      return ctx.paymentRequired.resource?.url === declined.resource.url ? { abort: true as const, reason: "the user declined" } : undefined;
+    });
+    await assert.rejects(client.createPaymentPayload(declined), /^Error: Payment creation aborted: the user declined$/);
+    assert.deepEqual(policy.spentByAsset(), {}, "the declined payment's reservation was given back");
+    crash = true;
+    await assert.rejects(client.createPaymentPayload(challenge(wcsprOption())), /^Error: the confirmation dialog crashed$/);
+    assert.deepEqual(policy.spentByAsset(), {}, "so was the reservation of the payment whose confirmation threw");
+    crash = false;
+
+    // A declined payment next to an identical one that is paid: one reservation is given back, the other kept.
+    const results = await Promise.allSettled([client.createPaymentPayload(declined), client.createPaymentPayload(challenge(wcsprOption()))]);
+    assert.deepEqual(results.map(result => result.status), ["rejected", "fulfilled"]);
+    assert.deepEqual(policy.spentByAsset(), { [WCSPR]: "400" });
+    assert.deepEqual(payments, [
+      { amountRaw: "400", payTo: SELLER, network: "casper:casper-test", asset: WCSPR, authorizationStyle: "cep3009-value" },
+    ]);
+    assert.equal(signed, 1);
   });
 
   it("logs, and does not fail the payment, when onPayment throws", async () => {

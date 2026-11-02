@@ -60,9 +60,39 @@ export function anySignal(signals: AbortSignal[]): AbortSignal {
 }
 
 /**
+ * `promise`, or a rejection with the signal's reason as soon as `signal`
+ * aborts, whichever comes first. A fetch follows its Request's signal through
+ * weak references (undici's Request follows its parent signal through a
+ * WeakRef to its own controller), so a garbage collection that collects an
+ * intermediate Request cuts the chain: the request never sees the abort and
+ * runs until the server gives up. Settling on the signal itself hands control
+ * back at the deadline either way; a Response that arrives after the abort has
+ * its body cancelled.
+ */
+export function settleOnAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      value => {
+        signal.removeEventListener("abort", onAbort);
+        if (signal.aborted && value instanceof Response) void value.body?.cancel().catch(() => undefined);
+        resolve(value);
+      },
+      err => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
  * Bound every call of `fetchImpl` by a deadline of `timeoutMs`, combined with
  * any signal the caller passed. The deadline also covers reading the body,
- * since the signal stays attached to the response stream.
+ * since the signal stays attached to the response stream, and it ends the
+ * call even when `fetchImpl` loses the abort (see {@link settleOnAbort}).
  */
 export function withDeadline(fetchImpl: FetchLike, timeoutMs: number): FetchLike {
   return async (input, init) => {
@@ -70,7 +100,7 @@ export function withDeadline(fetchImpl: FetchLike, timeoutMs: number): FetchLike
     const callerSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
     const signal = callerSignal ? anySignal([callerSignal, deadline]) : deadline;
     try {
-      return await fetchImpl(input, { ...init, signal });
+      return await settleOnAbort(fetchImpl(input, { ...init, signal }), signal);
     } catch (err) {
       if (deadline.aborted && !callerSignal?.aborted && !(err instanceof RequestTimeoutError)) {
         throw new RequestTimeoutError(`request to ${urlOf(input)} timed out after ${timeoutMs} ms`, { cause: err });

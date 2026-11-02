@@ -23,7 +23,9 @@ without a chain, except where it says mainnet.
 
 ### Prerequisites
 
-- Node.js 22 or newer
+- Node.js 22 or newer (CI uses Node 24; on Node 22 a test file can fail with
+  "Unable to deserialize cloned data", a Node 22 test-runner bug: run the tests
+  again, or use Node 24)
 - pnpm 10.20.0 (`corepack enable`)
 - (Contracts only) Rust; rustup installs the toolchain pinned by the
   toolchain file in `contracts/`

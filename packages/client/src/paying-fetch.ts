@@ -330,7 +330,8 @@ export interface PaymentClientOptions {
  *   policy accepts none of its options;
  * - hooks that reserve the budget before signing (the binding decision,
  *   atomic with selection), report the payment after signing and give the
- *   reservation back when signing fails.
+ *   reservation back when signing fails, or when a before-payment hook
+ *   registered later aborts or throws.
  *
  * It registers no payment-response hook: @x402/fetch 2.29 would sign a second
  * payment when one reports `{ recovered: true }`.
@@ -355,9 +356,26 @@ class PolicyCheckedClient extends x402Client {
   override async createPaymentPayload(paymentRequired: PaymentRequired): Promise<PaymentPayload> {
     // No await before x402's own call: the check, x402's selection and the before-payment hook that
     // reserves the budget run in one synchronous step, so no concurrent payment comes in between.
-    return super.createPaymentPayload(checkedPaymentRequired(this.spendPolicy, paymentRequired));
+    // Each payment gets its own copy of the 402, by which releaseUnsettled finds its reservation.
+    const checked = { ...checkedPaymentRequired(this.spendPolicy, paymentRequired) };
+    try {
+      return await super.createPaymentPayload(checked);
+    } catch (err) {
+      // Set only while the payment's after and failure hooks have not run.
+      releaseUnsettled.get(checked)?.();
+      throw err;
+    }
   }
 }
+
+/**
+ * Gives back the budget reserved for a payment whose after and failure hooks
+ * never ran, by the 402 x402 was handed for it. @x402/core 2.29 runs the
+ * before-payment hooks outside the part of payment creation that has failure
+ * hooks: when a hook registered after CasCet's aborts or throws, nothing else
+ * gives back what CasCet's hook reserved.
+ */
+const releaseUnsettled = new WeakMap<object, () => void>();
 
 /**
  * A 402 checked the way {@link createPayingFetch} checks the 402s it receives:
@@ -416,10 +434,17 @@ function configurePaymentClient(client: x402Client, opts: PaymentClientOptions):
       // and then nothing is signed.
       const decision = policy.authorize(ctx.selectedRequirements);
       if (!decision.ok) return { abort: true as const, reason: decision.reason };
-      reservations.add(ctx.selectedRequirements, decision);
+      const { paymentRequired, selectedRequirements } = ctx;
+      reservations.add(selectedRequirements, decision);
+      releaseUnsettled.set(paymentRequired, () => {
+        releaseUnsettled.delete(paymentRequired);
+        const reserved = reservations.take(selectedRequirements);
+        if (reserved) policy.release(reserved.asset, reserved.amount);
+      });
       return undefined;
     })
     .onAfterPaymentCreation(async ctx => {
+      releaseUnsettled.delete(ctx.paymentRequired);
       const reserved = reservations.take(ctx.selectedRequirements);
       if (!reserved || !onPayment) return;
       // What this client knows about the token comes before the gateway's label.
@@ -438,6 +463,7 @@ function configurePaymentClient(client: x402Client, opts: PaymentClientOptions):
     })
     .onPaymentCreationFailure(async ctx => {
       // Signing failed after the budget was reserved; no authorization exists, so give it back.
+      releaseUnsettled.delete(ctx.paymentRequired);
       const reserved = reservations.take(ctx.selectedRequirements);
       if (reserved) policy.release(reserved.asset, reserved.amount);
       return undefined;
@@ -512,20 +538,31 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
   // content-type), so the parent id is set on a rebuilt Request instead.
   // Redirects are refused: following one would forward PAYMENT-SIGNATURE and the
   // parent id to whatever origin the redirect names.
+  // The call's signal goes to fetch itself as well: fetch keeps the Request it
+  // builds alive for the whole exchange, and that Request then follows the
+  // call's signal directly. Through `request` alone it would follow a chain of
+  // Requests that a garbage collection can cut, and the abort would never
+  // arrive (the request then runs until the server gives up).
   const baseFetch: FetchLike = (input, init) => {
     const request = new Request(input, { ...init, redirect: "error" });
     if (opts.parentId) request.headers.set(HEADER_CASCET_PARENT_ID, opts.parentId);
-    return fetch(request);
+    return init?.signal ? fetch(request, { signal: init.signal }) : fetch(request);
   };
 
   const paidFetch: FetchLike = async (input, init) => {
     let offered: unknown[] | undefined;
     let requests = 0;
+    // This call's signal (its deadline and the caller's signal), as withDeadline hands it over. The
+    // Requests @x402/fetch builds follow it only through weak references.
+    let callSignal: AbortSignal | undefined;
     const observed: FetchLike = async (i, n) => {
+      // Nothing is sent once the call is over, the paid retry above all: @x402/fetch may still sign
+      // and send it after the caller got its timeout, if a dropped abort let the 402 come back.
+      if (callSignal?.aborted) throw callSignal.reason;
       // @x402/fetch sends the caller's request first, then (this client registers no
       // payment-required or recovery hooks) at most one paid retry.
       const first = ++requests === 1;
-      const response = await baseFetch(i, n);
+      const response = await baseFetch(i, callSignal ? { ...n, signal: callSignal } : n);
       if (response.status !== 402) return response;
       // @x402/fetch would read an unbounded 402 body into memory (L117): give it a capped copy.
       const text = await readTextCapped(response, MAX_402_BODY_BYTES, "the gateway's 402 response");
@@ -560,8 +597,13 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
       }
       return new Response(text, { status: 402, statusText: response.statusText, headers });
     };
+    const pay = wrapFetchWithPayment(observed, httpClient);
+    const deadlined: FetchLike = (i, n) => {
+      callSignal = n?.signal ?? undefined;
+      return pay(i, n);
+    };
     try {
-      return await withDeadline(wrapFetchWithPayment(observed, httpClient), timeoutMs)(input, init);
+      return await withDeadline(deadlined, timeoutMs)(input, init);
     } catch (err) {
       throw explainPaymentError(err, offered, policy);
     }

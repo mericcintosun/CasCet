@@ -50,7 +50,7 @@ describe("resolveConnectConfig", () => {
     assert.match(cfg.notices.join("\n"), /MAINNET payments enabled/);
   });
 
-  it("defaults to testnet, a 180 s deadline (paid calls settle on-chain) and ~/.cascet/tool-pins.json", () => {
+  it("defaults to testnet, a 200 s deadline (above a gateway's 185 s longest paid call) and ~/.cascet/tool-pins.json", () => {
     const cfg = resolveConnectConfig(inputs());
     assert.deepEqual(cfg.paying.networks, ["casper:casper-test"]);
     assert.equal(DEFAULT_CONNECT_TIMEOUT_MS, 200_000);

@@ -68,7 +68,15 @@ export function createAnalystServer(opts: AnalystServerOptions): McpServer {
       const parentId = cascadeParentOf(extra._meta, log);
       // Purchases stop when the caller cancels (extra.signal: MCP cancellation,
       // gateway timeout, closed transport) or when the purchase deadline passes.
-      const signal = AbortSignal.any([extra.signal, AbortSignal.timeout(cfg.timeoutMs)]);
+      // The deadline is a plain timer, cleared below: an AbortSignal.timeout()
+      // inside AbortSignal.any() can be garbage collected before it fires on
+      // some Node versions (22.14, 23.11), and the deadline would never come.
+      const deadline = new AbortController();
+      const deadlineTimer = setTimeout(
+        () => deadline.abort(new DOMException(`purchase deadline of ${cfg.timeoutMs} ms passed`, "TimeoutError")),
+        cfg.timeoutMs,
+      );
+      const signal = AbortSignal.any([extra.signal, deadline.signal]);
       let buyer: DataBuyer | undefined;
       try {
         buyer = await createBuyer(cfg, {
@@ -82,6 +90,7 @@ export function createAnalystServer(opts: AnalystServerOptions): McpServer {
         // Never let the MCP SDK turn a raw error message into the tool result.
         return internalErrorResult(err, log);
       } finally {
+        clearTimeout(deadlineTimer);
         // Every purchase has settled by now (analyzePortfolio waits for all of them).
         const spent = authorizedBy(buyer, reservation.amountRaw, log);
         reservation.settle(spent);
