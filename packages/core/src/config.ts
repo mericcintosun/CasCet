@@ -2,8 +2,11 @@ import { z } from "zod";
 import {
   AUTHORIZATION_STYLES,
   defaultAuthorizationStyle,
+  hasLoneSurrogate,
   isLegacyAmountToken,
   isPackageHash,
+  MAX_TOKEN_NAME_LENGTH,
+  MAX_TOKEN_VERSION_LENGTH,
   normalizePackageHash,
   type AuthorizationStyle,
 } from "./assets.js";
@@ -73,8 +76,35 @@ const packageHashSchema = z
 const ASSET_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 /** Names of the entries of `facilitators`. */
 const FACILITATOR_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const FACILITATOR_NAME_RULE = 'facilitator names are 1-64 letters, digits, ".", "_" or "-", starting with a letter or digit';
 /** The longest delay setTimeout accepts. */
 const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * How long CasCet buyers let a payment authorization stay valid, by default:
+ * @cascet/client's `maxAuthorizationSeconds` and the Python client's limit.
+ * They refuse every payment option of a 402 that asks for a longer window.
+ */
+export const DEFAULT_MAX_AUTHORIZATION_SECONDS = 900;
+/** Seconds the payment window keeps for the settle transaction itself (@cascet/gateway's SETTLE_HEADROOM_SECONDS). */
+const SETTLE_HEADROOM_SECONDS = 30;
+/** The gateway's on-chain preflight of a payment the hosted facilitator settles (@cascet/gateway's HOSTED_PREFLIGHT_DEADLINE_MS). */
+const HOSTED_PREFLIGHT_MS = 5_000;
+/** x402's customary payment window; the gateway never asks for less. */
+const MIN_PAYMENT_WINDOW_SECONDS = 300;
+
+/**
+ * A field of the token's EIP-712 domain, bounded as CasCet buyers bound it:
+ * they refuse every payment option whose name or version is longer, or holds
+ * a lone surrogate, so a gateway configured with one could sell nothing.
+ */
+function domainFieldSchema(field: "name" | "version", maxLength: number) {
+  return z
+    .string()
+    .min(1)
+    .max(maxLength, `${field} must be at most ${maxLength} characters (UTF-16 code units): CasCet buyers refuse a longer one`)
+    .refine(value => !hasLoneSurrogate(value), `${field} contains a lone UTF-16 surrogate, which has no UTF-8 form to sign over`);
+}
 
 /**
  * A CEP-18 token the gateway accepts, plus the fixed USD conversion rate used
@@ -83,16 +113,18 @@ const MAX_TIMER_MS = 2_147_483_647;
 export const assetSchema = z.object({
   /**
    * Short handle used by `pricing.*.assets`. Defaults to the lower-cased
-   * symbol, so two assets with the same symbol need explicit ids.
+   * symbol (the package hash when the symbol is blank), so two assets with
+   * the same symbol need explicit ids.
    */
   id: z.string().regex(ASSET_ID, 'asset id must be 1-64 lower-case letters, digits, ".", "_" or "-"').optional(),
   packageHash: packageHashSchema,
   /** EIP-712 domain name: must equal the token's on-chain `name`. */
-  name: z.string().min(1),
-  symbol: z.string().min(1),
+  name: domainFieldSchema("name", MAX_TOKEN_NAME_LENGTH),
+  /** Display only (receipts, the 402's `extra`); may be empty, as in earlier versions. */
+  symbol: z.string(),
   decimals: z.number().int().min(0).max(18).default(9),
   /** EIP-712 domain version ("1" for every Casper x402 token seen so far). */
-  version: z.string().min(1).default("1"),
+  version: domainFieldSchema("version", MAX_TOKEN_VERSION_LENGTH).default("1"),
   /** How many whole tokens equal 1 USD (testnet demo rate). */
   tokensPerUsd: z.number().positive().default(50),
   /**
@@ -124,7 +156,11 @@ export const facilitatorSchema = z.object({
   /**
    * Per-request timeout of this facilitator's /supported, /verify and /settle
    * calls. Omit to use `timeouts.facilitatorMs` (/supported, /verify) and
-   * `timeouts.settleMs` (/settle).
+   * `timeouts.settleMs` (/settle). Set, it stands for both of them in how long
+   * a paid call in its assets can take, and counts twice in the authorization
+   * window buyers are asked to sign, which must stay within the 900 s CasCet
+   * buyers accept ({@link paymentWindowSeconds}): at most about 400 s with the
+   * default `timeouts.upstreamMs`.
    */
   timeoutMs: z.number().int().positive().max(MAX_TIMER_MS).optional(),
 });
@@ -189,7 +225,7 @@ export const corsSchema = z
 export const timeoutsSchema = z
   .object({
     /** Facilitator /verify and /supported calls. */
-    facilitatorMs: z.number().int().positive().default(15_000),
+    facilitatorMs: z.number().int().positive().max(MAX_TIMER_MS).default(15_000),
     /**
      * Facilitator /settle call. Longer than `facilitatorMs` because a Casper
      * facilitator only answers once the transfer has executed on-chain
@@ -198,9 +234,9 @@ export const timeoutsSchema = z
      * facilitator reports the settlement as pending; the gateway keeps both
      * calls within this timeout.
      */
-    settleMs: z.number().int().positive().default(90_000),
+    settleMs: z.number().int().positive().max(MAX_TIMER_MS).default(90_000),
     /** One upstream MCP request (tools/list page, tools/call). */
-    upstreamMs: z.number().int().positive().default(60_000),
+    upstreamMs: z.number().int().positive().max(MAX_TIMER_MS).default(60_000),
   })
   .prefault({});
 
@@ -254,10 +290,10 @@ const rawConfigSchema = z.object({
   facilitator: defaultFacilitatorSchema,
   /** More facilitators, by name, for assets that set `facilitator: "<name>"`. */
   facilitators: z
-    .record(
-      z.string().regex(FACILITATOR_NAME, 'facilitator names are 1-64 letters, digits, ".", "_" or "-"'),
-      facilitatorSchema,
-    )
+    .record(z.string().regex(FACILITATOR_NAME, FACILITATOR_NAME_RULE), facilitatorSchema, {
+      // zod reports a bad key as "Invalid key in record" and nests the rule; say the rule itself.
+      error: issue => (issue.code === "invalid_key" ? FACILITATOR_NAME_RULE : undefined),
+    })
     .default({}),
   pricing: z.object({
     /**
@@ -383,7 +419,7 @@ function resolveConfig(raw: RawConfig, issues: Issues) {
   const hashes = new Map<string, number>();
   const assets: ResolvedAsset[] = (list ?? [single!]).map((entry, index) => {
     const resolved: ResolvedAsset = {
-      id: entry.id ?? entry.symbol.toLowerCase(),
+      id: entry.id ?? (entry.symbol.trim() === "" ? entry.packageHash : entry.symbol.toLowerCase()),
       packageHash: entry.packageHash,
       name: entry.name,
       symbol: entry.symbol,
@@ -443,6 +479,29 @@ function resolveConfig(raw: RawConfig, issues: Issues) {
   checkAssetRefs(rest.pricing.default, ["pricing", "default"]);
   for (const [tool, price] of Object.entries(rest.pricing.tools)) checkAssetRefs(price, ["pricing", "tools", tool]);
 
+  // A window longer than CasCet buyers sign makes each of them refuse every payment. Bounding it also
+  // keeps the timeouts' sum, which the gateway's drain timer waits, far below setTimeout's limit.
+  if (issues.length === 0) {
+    const window = paymentWindow({ ...rest, assets, facilitators });
+    if (window.seconds > DEFAULT_MAX_AUTHORIZATION_SECONDS) {
+      const seconds = (ms: number) => `${ms / 1_000} s`;
+      const terms = [
+        ...(window.preflightMs > 0 ? [`preflight ${seconds(window.preflightMs)}`] : []),
+        `verify ${seconds(window.verifyMs)}`,
+        `tool ${seconds(window.upstreamMs)}`,
+        `settle ${seconds(window.settleMs)}`,
+        `${SETTLE_HEADROOM_SECONDS} s for the settle transaction`,
+      ];
+      issues.push({
+        path: ["timeouts"],
+        message:
+          `buyers would be asked to sign a ${window.seconds} s authorization window (${terms.join(" + ")}), above the ` +
+          `${DEFAULT_MAX_AUTHORIZATION_SECONDS} s CasCet buyers accept, so they would refuse every payment: lower ` +
+          "timeouts.upstreamMs, timeouts.facilitatorMs, timeouts.settleMs or a facilitator's timeoutMs",
+      });
+    }
+  }
+
   return {
     ...rest,
     /** Every accepted token, in config order (the order of a 402's `accepts`). */
@@ -463,7 +522,12 @@ function resolveConfig(raw: RawConfig, issues: Issues) {
  * one-entry list, also kept as `asset`), each with its authorization style and
  * facilitator resolved, and every facilitator in `facilitators`, the top-level
  * `facilitator` as "default". Configs written for earlier versions parse
- * unchanged.
+ * unchanged, except those that could not work, which the schema now refuses:
+ * every payment would fail (a legacy-amount token or the bearer scheme on
+ * the hosted facilitator, a timeout setTimeout cannot hold) or every CasCet
+ * buyer would refuse to pay (an authorization window above
+ * {@link DEFAULT_MAX_AUTHORIZATION_SECONDS}, a token name or version they
+ * refuse).
  */
 export const cascetConfigSchema = rawConfigSchema.transform((raw, ctx) => {
   const issues: Issues = [];
@@ -506,6 +570,41 @@ export function facilitatorTimeouts(
     verifyMs: facilitator.timeoutMs ?? cfg.timeouts.facilitatorMs,
     settleMs: facilitator.timeoutMs ?? cfg.timeouts.settleMs,
   };
+}
+
+/** What {@link paymentWindowSeconds} reads of a config. */
+type PaymentWindowConfig = Pick<CascetConfig, "facilitators" | "timeouts" | "settlement" | "anchoring"> & {
+  assets: ReadonlyArray<Pick<ResolvedAsset, "id" | "facilitator">>;
+};
+
+/** The payment window in seconds, and what it is made of in milliseconds (see {@link paymentWindowSeconds}). */
+function paymentWindow(cfg: PaymentWindowConfig) {
+  const nodeUrl = cfg.settlement.nodeUrl ?? cfg.anchoring?.nodeUrl;
+  let preflightMs = 0;
+  let verifyMs = 0;
+  let settleMs = 0;
+  for (const asset of cfg.assets) {
+    const facilitator = facilitatorFor(cfg, asset);
+    const timeouts = facilitatorTimeouts(cfg, facilitator);
+    verifyMs = Math.max(verifyMs, timeouts.verifyMs);
+    settleMs = Math.max(settleMs, timeouts.settleMs);
+    if (nodeUrl && isHostedFacilitatorUrl(facilitator.url)) preflightMs = HOSTED_PREFLIGHT_MS;
+  }
+  const upstreamMs = cfg.timeouts.upstreamMs;
+  const seconds = Math.max(MIN_PAYMENT_WINDOW_SECONDS, Math.ceil((preflightMs + verifyMs + upstreamMs + settleMs) / 1_000) + SETTLE_HEADROOM_SECONDS);
+  return { seconds, preflightMs, verifyMs, upstreamMs, settleMs };
+}
+
+/**
+ * The validity window, in seconds, the gateway asks buyers to sign (x402
+ * `maxTimeoutSeconds`), sized as @cascet/gateway sizes it: its on-chain
+ * preflight (when the hosted facilitator settles some asset and a node is
+ * configured), the slowest facilitator's verify, the tool, the slowest
+ * settle and 30 s for the settle transaction; never below 300 s. The config
+ * schema refuses a window above {@link DEFAULT_MAX_AUTHORIZATION_SECONDS}.
+ */
+export function paymentWindowSeconds(cfg: PaymentWindowConfig): number {
+  return paymentWindow(cfg).seconds;
 }
 
 /** The assets a price accepts, in config order: those it lists in `assets`, or all of them. */

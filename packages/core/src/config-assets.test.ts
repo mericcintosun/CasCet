@@ -5,10 +5,13 @@ import {
   assetsForPrice,
   cascetConfigSchema,
   DEFAULT_FACILITATOR_NAME,
+  DEFAULT_MAX_AUTHORIZATION_SECONDS,
   facilitatorAuthorization,
   facilitatorFor,
   facilitatorTimeouts,
+  paymentWindowSeconds,
 } from "./config.js";
+import { hasLoneSurrogate, MAX_TOKEN_NAME_LENGTH, MAX_TOKEN_VERSION_LENGTH } from "./assets.js";
 import { DEFAULT_FACILITATOR_URL, DEFAULT_SELF_HOSTED_FACILITATOR_URL } from "./constants.js";
 
 const LEGACY_TESTNET = "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
@@ -76,6 +79,21 @@ describe("config assets: the single-asset form parses unchanged", () => {
     assert.equal(cfg.asset.authorization, "legacy-amount");
     assert.equal(cfg.asset.facilitator, "default");
     assert.equal(cfg.facilitator.url, "http://127.0.0.1:4501");
+  });
+
+  it("parses an asset with an empty symbol, which earlier versions only displayed; its id is the package hash", () => {
+    const cfg = cascetConfigSchema.parse({ ...base, asset: { ...wcsprAsset, symbol: "" } });
+    assert.equal(cfg.asset.symbol, "");
+    assert.equal(cfg.asset.id, WCSPR_TESTNET);
+    assert.equal(cascetConfigSchema.parse({ ...base, asset: { ...wcsprAsset, symbol: "  " } }).asset.id, WCSPR_TESTNET);
+    const two = cascetConfigSchema.parse({
+      ...base,
+      assets: [{ ...legacyAsset, symbol: "", facilitator: "self" }, { ...wcsprAsset, symbol: "" }],
+      facilitators: { self: { url: DEFAULT_SELF_HOSTED_FACILITATOR_URL } },
+      pricing: { tools: { a: { price: "$0.01", assets: [WCSPR_TESTNET] } } },
+    });
+    assert.deepEqual(two.assets.map(a => a.id), [LEGACY_TESTNET, WCSPR_TESTNET]);
+    assert.deepEqual(assetsForPrice(two, two.pricing.tools.a ?? {}).map(a => a.id), [WCSPR_TESTNET]);
   });
 
   it("keeps accepting the hosted facilitator for CEP-3009 tokens, and a missing facilitator section", () => {
@@ -196,7 +214,71 @@ describe("config assets: validation", () => {
     assert.match(issuesOf({ asset: wcsprAsset, facilitators: { "bad name": { url: DEFAULT_SELF_HOSTED_FACILITATOR_URL } } }).join("\n"), /^facilitators\.bad name: /m);
   });
 
+  it("refuses an EIP-712 name or version CasCet buyers would refuse: too long, or with a lone surrogate", () => {
+    assert.equal(MAX_TOKEN_NAME_LENGTH, 100);
+    assert.equal(MAX_TOKEN_VERSION_LENGTH, 20);
+    assert.equal(parse({ asset: { ...wcsprAsset, name: "n".repeat(100), version: "v".repeat(20) } }).success, true);
+    assert.equal(parse({ asset: { ...wcsprAsset, name: "Coin \u{1fa99}" } }).success, true, "a surrogate pair is not a lone surrogate");
+    assert.match(issuesOf({ asset: { ...wcsprAsset, name: "n".repeat(101) } }).join("\n"), /^asset\.name: name must be at most 100 characters/m);
+    assert.match(issuesOf({ asset: { ...wcsprAsset, version: "1.0.0-rc.1+build.1234" } }).join("\n"), /^asset\.version: version must be at most 20 characters/m);
+    assert.match(issuesOf({ asset: { ...wcsprAsset, name: "Wrapped \ud800CSPR" } }).join("\n"), /^asset\.name: name contains a lone UTF-16 surrogate/m);
+    assert.match(issuesOf({ assets: [{ ...wcsprAsset, version: "1\udc00" }] }).join("\n"), /^assets\.0\.version: version contains a lone UTF-16 surrogate/m);
+    assert.equal(hasLoneSurrogate("a\ud800"), true);
+    assert.equal(hasLoneSurrogate("\u{1fa99}"), false);
+  });
+
+  it("names the naming rule for a bad facilitator name, beside the config's other problems", () => {
+    const rule = 'facilitator names are 1-64 letters, digits, ".", "_" or "-", starting with a letter or digit';
+    for (const name of ["self hosted", "_self", "s".repeat(65)]) {
+      const issues = issuesOf({ asset: wcsprAsset, facilitators: { [name]: { url: DEFAULT_SELF_HOSTED_FACILITATOR_URL } } });
+      assert.deepEqual(issues, [`facilitators.${name}: ${rule}`], name);
+    }
+    const both = issuesOf({ asset: wcsprAsset, facilitators: { "self hosted": { url: DEFAULT_SELF_HOSTED_FACILITATOR_URL }, ok: { url: "nope" } } });
+    assert.deepEqual(both.sort(), [`facilitators.ok.url: Invalid URL`, `facilitators.self hosted: ${rule}`]);
+    assert.equal(parse({ asset: wcsprAsset, facilitators: { "self.hosted_2-b": { url: DEFAULT_SELF_HOSTED_FACILITATOR_URL } } }).success, true);
+  });
+
   it("throws for a hand-built config whose asset names no known facilitator", () => {
     assert.throws(() => facilitatorFor({ facilitators: {} }, { id: "x", facilitator: "gone" }), /unknown facilitator "gone"/);
+  });
+});
+
+describe("config: the authorization window buyers are asked to sign", () => {
+  const SELF = { url: DEFAULT_SELF_HOSTED_FACILITATOR_URL };
+  const NODE = "https://node.example/rpc";
+  const anchoring = { contractPackageHash: "hash-ab", keyPath: "k.pem", nodeUrl: NODE };
+
+  it("sizes the window as the gateway does: preflight, slowest verify, tool, slowest settle, 30 s, at least 300 s", () => {
+    assert.equal(DEFAULT_MAX_AUTHORIZATION_SECONDS, 900);
+    assert.equal(paymentWindowSeconds(cascetConfigSchema.parse({ ...base, asset: wcsprAsset })), 300);
+    const slow = cascetConfigSchema.parse({ ...base, asset: wcsprAsset, timeouts: { upstreamMs: 600_000 } });
+    assert.equal(paymentWindowSeconds(slow), 15 + 600 + 90 + 30);
+    // The gateway's own check before the hosted facilitator verifies, once a node is configured (either one).
+    const hosted = { ...base, asset: wcsprAsset, timeouts: { upstreamMs: 600_000 } };
+    assert.equal(paymentWindowSeconds(cascetConfigSchema.parse({ ...hosted, settlement: { nodeUrl: NODE } })), 5 + 15 + 600 + 90 + 30);
+    assert.equal(paymentWindowSeconds(cascetConfigSchema.parse({ ...hosted, anchoring })), 5 + 15 + 600 + 90 + 30);
+    assert.equal(paymentWindowSeconds(cascetConfigSchema.parse({ ...hosted, facilitator: SELF, anchoring })), 15 + 600 + 90 + 30);
+  });
+
+  it("refuses a facilitator timeoutMs that pushes the window past what CasCet buyers sign", () => {
+    assert.equal(paymentWindowSeconds(cascetConfigSchema.parse({ ...base, asset: wcsprAsset, facilitator: { ...SELF, timeoutMs: 405_000 } })), 900);
+    const issues = issuesOf({ asset: wcsprAsset, facilitator: { ...SELF, timeoutMs: 420_000 } });
+    assert.equal(issues.length, 1);
+    assert.match(issues[0] ?? "", /^timeouts: .*930 s authorization window \(verify 420 s \+ tool 60 s \+ settle 420 s \+ 30 s .*\), above the 900 s CasCet buyers accept/);
+    // One slow facilitator lengthens the window of every asset, so it blocks the hosted one's sales too.
+    const two = issuesOf({
+      assets: [{ ...legacyAsset, id: "cascet", facilitator: "self" }, { ...wcsprAsset, id: "wcspr" }],
+      facilitators: { self: { ...SELF, timeoutMs: 420_000 } },
+    });
+    assert.match(two.join("\n"), /^timeouts: .*930 s authorization window/m);
+  });
+
+  it("refuses timeouts whose sum would make every CasCet buyer refuse, counting the preflight", () => {
+    assert.match(issuesOf({ asset: wcsprAsset, timeouts: { upstreamMs: 900_000 } }).join("\n"), /^timeouts: .*1035 s authorization window/m);
+    const edge = { asset: wcsprAsset, timeouts: { upstreamMs: 765_000 } };
+    assert.equal(parse(edge).success, true, "900 s without a node");
+    assert.match(issuesOf({ ...edge, settlement: { nodeUrl: NODE } }).join("\n"), /^timeouts: .*905 s authorization window \(preflight 5 s \+ verify 15 s/m);
+    assert.match(issuesOf({ ...edge, anchoring }).join("\n"), /905 s authorization window/);
+    assert.equal(parse({ ...edge, facilitator: SELF, anchoring }).success, true, "no preflight for a self-hosted facilitator");
   });
 });

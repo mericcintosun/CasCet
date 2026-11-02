@@ -1,7 +1,9 @@
 import "server-only";
 import { CONTRACTS, ONCHAIN_NETWORK } from "../economy";
-import { TOKEN_SYMBOL, X402_TOKEN_PACKAGE } from "./constants";
+import { NODE_URL } from "./constants";
+import { testnetReceiptToken } from "./receipt-token";
 import { readRegistryReceipts, type RegistryReadResult } from "./registry-reader";
+import { createSettleTokenReader } from "./settle-token";
 
 export { OnchainReadError } from "./registry-reader";
 
@@ -20,6 +22,9 @@ const UNSETTLED_FIXTURE_IDS: ReadonlySet<string> = new Set([
   "e05e3e02-d737-45a7-a4d5-dfc163c9ab65",
 ]);
 
+/** The token of each settlement, read from the chain once per server: it never changes. */
+const readSettleToken = createSettleTokenReader({ nodeUrl: NODE_URL });
+
 /**
  * Every settled receipt anchored in the TESTNET ReceiptRegistry. Throws
  * OnchainReadError when the read cannot be trusted (no token, upstream error,
@@ -31,10 +36,8 @@ export function readAnchoredReceipts(): Promise<RegistryReadResult> {
     apiBase: CSPR_CLOUD_API,
     registryPackageHash: CONTRACTS.receiptRegistry,
     network: ONCHAIN_NETWORK,
-    // Every real x402 settlement on testnet was paid in CasCet's Cep18X402 token
-    // (the DemoToken has no transfer_with_authorization), so that is the asset.
-    assetPackageHash: X402_TOKEN_PACKAGE,
-    assetSymbol: TOKEN_SYMBOL,
+    // A record names no token, and this registry holds receipts in Cep18X402 and in Wrapped CSPR.
+    tokenOf: testnetReceiptToken(readSettleToken),
     excludedIds: UNSETTLED_FIXTURE_IDS,
   });
 }

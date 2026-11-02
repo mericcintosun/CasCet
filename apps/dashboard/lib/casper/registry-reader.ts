@@ -28,6 +28,22 @@ export class OnchainReadError extends Error {
   }
 }
 
+/** The token a receipt was paid in. */
+export interface ReceiptToken {
+  /** Bare lower-case package hash. */
+  packageHash: string;
+  /** Empty when the token is not one the caller knows. */
+  symbol: string;
+}
+
+/** What tells a record's token apart: the `record` args carry no asset. */
+export interface AnchoredRecord {
+  /** The settlement transaction (`tx_hash`), 64 hex. */
+  txHash: string;
+  /** When the record was anchored (the `record` transaction's timestamp), as CSPR.cloud gives it. */
+  anchoredAt: string;
+}
+
 export interface RegistryReadOptions {
   /** CSPR.cloud access token. Missing → OnchainReadError(503, not_configured). */
   token: string | undefined;
@@ -36,17 +52,25 @@ export interface RegistryReadOptions {
   /** CAIP-2 network the registry lives on; stamped on every receipt. */
   network: string;
   /**
-   * The `record` args carry no asset, so it is supplied here: the CEP-18
-   * token the gateways settled in.
+   * The token a record was paid in. The `record` args carry no asset, and one
+   * registry can hold receipts in several tokens, so the caller tells it (for
+   * example from the settlement transaction). Undefined when it cannot be
+   * told: the receipt then names no token (`asset` and `assetSymbol` empty)
+   * rather than a wrong one. A call that throws counts as undefined.
    */
-  assetPackageHash: string;
-  assetSymbol: string;
+  tokenOf: (record: AnchoredRecord) => Promise<ReceiptToken | undefined>;
+  /** How many `tokenOf` calls run at once. Default 6. */
+  tokenConcurrency?: number;
+  /** No `tokenOf` call starts later than this after the records were read; the rest name no token this time. Default 4000 ms. */
+  tokenBudgetMs?: number;
   /** Payment ids hidden from the view (records whose settle tx never reached the chain). */
   excludedIds?: ReadonlySet<string>;
   fetchImpl?: typeof fetch;
   pageSize?: number;
   maxPages?: number;
   timeoutMs?: number;
+  /** Clock of the token budget (tests). */
+  now?: () => number;
 }
 
 export interface RegistryReadResult {
@@ -133,8 +157,9 @@ export async function readRegistryReceipts(o: RegistryReadOptions): Promise<Regi
         payer: argStr(d.args, "payer"),
         payTo: argStr(d.args, "payee"),
         amountRaw: /^\d{1,78}$/.test(amount) ? amount : "0",
-        asset: o.assetPackageHash,
-        assetSymbol: o.assetSymbol,
+        // Told by `tokenOf` below.
+        asset: "",
+        assetSymbol: "",
         txHash,
         status: "settled",
         anchoredTxHash: d.deploy_hash,
@@ -145,5 +170,33 @@ export async function readRegistryReceipts(o: RegistryReadOptions): Promise<Regi
 
   // Newest first; ties keep upstream order.
   out.sort((a, b) => (a.createdAt === b.createdAt ? 0 : a.createdAt < b.createdAt ? 1 : -1));
+  await tellTokens(out, o);
   return { receipts: out, truncated: pages > maxPages };
+}
+
+/**
+ * Give each receipt the token `o.tokenOf` tells, newest first, with at most
+ * `tokenConcurrency` calls at once; once `tokenBudgetMs` has passed no call
+ * starts, and the receipts not reached keep naming no token.
+ */
+async function tellTokens(receipts: PaymentReceipt[], o: RegistryReadOptions): Promise<void> {
+  const now = o.now ?? Date.now;
+  const deadline = now() + (o.tokenBudgetMs ?? 4_000);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < receipts.length && now() < deadline) {
+      const receipt = receipts[next++]!;
+      let token: ReceiptToken | undefined;
+      try {
+        token = await o.tokenOf({ txHash: receipt.txHash ?? "", anchoredAt: receipt.createdAt });
+      } catch {
+        token = undefined;
+      }
+      if (token) {
+        receipt.asset = token.packageHash;
+        receipt.assetSymbol = token.symbol;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(o.tokenConcurrency ?? 6, receipts.length) }, worker));
 }
