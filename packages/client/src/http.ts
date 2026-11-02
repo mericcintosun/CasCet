@@ -133,6 +133,11 @@ export function decodeBase64Json(value: string | null): Record<string, unknown> 
   }
 }
 
+/** Encode a JSON object as a base64 header value (as x402 v2 uses); the inverse of {@link decodeBase64Json}. */
+export function encodeBase64Json(value: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64");
+}
+
 /**
  * Human-readable message of an unknown error. Node's fetch reports network
  * failures as a bare `TypeError: fetch failed` with the real reason in `cause`,

@@ -7,6 +7,7 @@ import {
   normalizeAllowedPayTo,
   normalizeAssetHash,
   normalizeNetworks,
+  normalizePreferStyles,
   parseRawAmount,
   type BridgeOptions,
   type PayingFetchOptions,
@@ -109,6 +110,10 @@ export function resolveConnectConfig(input: ConnectInputs): ConnectConfig {
   if (maxPerCallRaw !== undefined) parseRawAmount(maxPerCallRaw, "CASCET_MAX_PER_CALL");
   if (maxSessionRaw !== undefined) parseRawAmount(maxSessionRaw, "CASCET_MAX_SESSION");
 
+  // Optional order of preference between authorization styles when a gateway offers several
+  // tokens; it only orders the options the allowlists and budgets accept.
+  const preferStyles = asCliError(() => normalizePreferStyles(list(env.CASCET_PREFER_STYLES), "CASCET_PREFER_STYLES"));
+
   const timeoutMs = parseTimeout(env.CASCET_TIMEOUT_MS);
   const acceptDigests = parseAcceptDigests(flags);
   const pinsSetting = value(env.CASCET_TOOL_PINS);
@@ -143,6 +148,7 @@ export function resolveConnectConfig(input: ConnectInputs): ConnectConfig {
     networks,
     ...(allowedPayTo ? { allowedPayTo } : {}),
     ...(allowedAssets ? { allowedAssets } : {}),
+    ...(preferStyles ? { preferStyles } : {}),
     budget: {
       ...(maxPerCallRaw !== undefined ? { maxPerCallRaw } : {}),
       ...(maxSessionRaw !== undefined ? { maxSessionRaw } : {}),
@@ -152,6 +158,7 @@ export function resolveConnectConfig(input: ConnectInputs): ConnectConfig {
   const summary =
     `[cascet] bridge up → ${url} | key ${keyPath} | networks ${networks.join(", ")} | ` +
     `payTo ${allowedPayTo ? `${allowedPayTo.length} allowlisted` : "ANY"} | assets ${allowedAssets ? `${allowedAssets.length} allowlisted` : "ANY"} | ` +
+    (preferStyles ? `prefer ${preferStyles.join(" > ")} | ` : "") +
     `budget per-call=${maxPerCallRaw ?? "unlimited"}, session=${maxSessionRaw ?? "unlimited"} (per asset) | ` +
     `timeout ${timeoutMs} ms | tool pins ${pinsPath}` +
     (acceptDigests.length > 0 ? ` (accepting ${acceptDigests.length} reviewed definition(s))` : "");
@@ -204,10 +211,14 @@ export function checkGatewayUrl(raw: string): string {
 }
 
 function attribute<T>(name: string, run: () => T): T {
+  return asCliError(run, `${name}: `);
+}
+
+function asCliError<T>(run: () => T, prefix = ""): T {
   try {
     return run();
   } catch (err) {
-    throw new CliError(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+    throw new CliError(`${prefix}${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

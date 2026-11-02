@@ -113,6 +113,7 @@ The same in an MCP host config:
 | `CASCET_ALLOWED_ASSETS` | Comma-separated CEP-18 package hashes to pay in. Required unless `--allow-any-seller`. |
 | `CASCET_MAX_PER_CALL` | Largest single payment, in raw token units. Required unless `--allow-unlimited-budget`. |
 | `CASCET_MAX_SESSION` | Total per token for this bridge session, in raw token units. Required unless `--allow-unlimited-budget`. |
+| `CASCET_PREFER_STYLES` | Optional. Comma-separated authorization styles in order of preference, used when a gateway offers several tokens: `cep3009-value` (CEP-3009 tokens such as Wrapped CSPR) and `legacy-amount` (CasCet's own x402 token). It only orders the options your allowlists and budgets accept, never makes another one payable. Without it the gateway's order decides. CasCet's x402 tokens and Wrapped CSPR rank by the style they are known to have, whatever the gateway labels them. |
 | `CASCET_TIMEOUT_MS` | Deadline per call in ms, default `180000`. A paid call includes the on-chain settlement, which can take a minute or more, and a call that times out after its payment was sent may still settle, so keep this above the gateway's own tool and settlement timeouts. |
 | `CASCET_TOOL_PINS` | Tool pin file, default `~/.cascet/tool-pins.json`. |
 | `CASCET_ALLOW_ANY_SELLER=1` | Same as `--allow-any-seller`. |
@@ -127,9 +128,12 @@ The same in an MCP host config:
 Amounts are whole numbers of raw token units (`1000000000` = 1 token with 9
 decimals). The session limit applies per token and counts signed authorizations,
 and it resets when the bridge restarts. Every `402` is also checked field by field
-(strict amounts, an authorization window of at most 15 minutes, account-hash payees),
-redirects are never followed, and oversized responses (a `402` body over 64 KiB, any
-other over 16 MiB) are refused. Plain `http://` is only accepted on loopback.
+(strict amounts, an authorization window of at most 15 minutes, account-hash payees,
+a known authorization style), redirects are never followed, and oversized responses
+(a `402` body over 64 KiB, any other over 16 MiB) are refused. Plain `http://` is only
+accepted on loopback. When a gateway offers several tokens, the bridge pays the first
+one these checks accept (or the first of your `CASCET_PREFER_STYLES`), and refuses,
+naming each reason, when none passes.
 
 **Tool pinning (tool-poisoning defense).** On first contact with a gateway, the
 bridge records a sha256 of every tool definition it serves (name, title,
