@@ -415,12 +415,14 @@ describe("createPayingFetch", () => {
   describe("when fetch would lose a Request's own abort signal", () => {
     // undici's Request follows its parent's signal through a weak reference, so a garbage collection
     // that collects an intermediate Request cuts the chain. This stand-in cuts it every time: a
-    // Request's own signal is dropped, and only a signal handed to fetch itself still aborts it.
+    // Request's own signal is dropped, and only a signal handed to fetch itself still aborts it. It
+    // hands that signal to the real fetch directly: through another Request it would follow the same
+    // weak chain, which a garbage collection could cut in the test itself.
     let realFetch: typeof fetch;
     beforeEach(() => {
       realFetch = globalThis.fetch;
       globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit) =>
-        realFetch(new Request(input, { signal: init?.signal ?? null }))) as typeof fetch;
+        realFetch(new Request(input, { signal: null }), init?.signal ? { signal: init.signal } : undefined)) as typeof fetch;
     });
     afterEach(() => {
       globalThis.fetch = realFetch;
