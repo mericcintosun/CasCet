@@ -538,20 +538,31 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
   // content-type), so the parent id is set on a rebuilt Request instead.
   // Redirects are refused: following one would forward PAYMENT-SIGNATURE and the
   // parent id to whatever origin the redirect names.
+  // The call's signal goes to fetch itself as well: fetch keeps the Request it
+  // builds alive for the whole exchange, and that Request then follows the
+  // call's signal directly. Through `request` alone it would follow a chain of
+  // Requests that a garbage collection can cut, and the abort would never
+  // arrive (the request then runs until the server gives up).
   const baseFetch: FetchLike = (input, init) => {
     const request = new Request(input, { ...init, redirect: "error" });
     if (opts.parentId) request.headers.set(HEADER_CASCET_PARENT_ID, opts.parentId);
-    return fetch(request);
+    return init?.signal ? fetch(request, { signal: init.signal }) : fetch(request);
   };
 
   const paidFetch: FetchLike = async (input, init) => {
     let offered: unknown[] | undefined;
     let requests = 0;
+    // This call's signal (its deadline and the caller's signal), as withDeadline hands it over. The
+    // Requests @x402/fetch builds follow it only through weak references.
+    let callSignal: AbortSignal | undefined;
     const observed: FetchLike = async (i, n) => {
+      // Nothing is sent once the call is over, the paid retry above all: @x402/fetch may still sign
+      // and send it after the caller got its timeout, if a dropped abort let the 402 come back.
+      if (callSignal?.aborted) throw callSignal.reason;
       // @x402/fetch sends the caller's request first, then (this client registers no
       // payment-required or recovery hooks) at most one paid retry.
       const first = ++requests === 1;
-      const response = await baseFetch(i, n);
+      const response = await baseFetch(i, callSignal ? { ...n, signal: callSignal } : n);
       if (response.status !== 402) return response;
       // @x402/fetch would read an unbounded 402 body into memory (L117): give it a capped copy.
       const text = await readTextCapped(response, MAX_402_BODY_BYTES, "the gateway's 402 response");
@@ -586,8 +597,13 @@ export async function createPayingFetch(opts: PayingFetchOptions): Promise<Payin
       }
       return new Response(text, { status: 402, statusText: response.statusText, headers });
     };
+    const pay = wrapFetchWithPayment(observed, httpClient);
+    const deadlined: FetchLike = (i, n) => {
+      callSignal = n?.signal ?? undefined;
+      return pay(i, n);
+    };
     try {
-      return await withDeadline(wrapFetchWithPayment(observed, httpClient), timeoutMs)(input, init);
+      return await withDeadline(deadlined, timeoutMs)(input, init);
     } catch (err) {
       throw explainPaymentError(err, offered, policy);
     }

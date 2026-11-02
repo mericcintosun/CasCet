@@ -6,6 +6,7 @@ import {
   paymentFailureReason,
   readTextCapped,
   RequestTimeoutError,
+  settleOnAbort,
   validateByteLimit,
   validateTimeoutMs,
   type FetchLike,
@@ -79,12 +80,15 @@ export class PaidMcpHttpClient {
     const deadline = AbortSignal.timeout(this.timeoutMs);
     const signal = call?.signal ? anySignal([call.signal, deadline]) : deadline;
     try {
-      const response = await this.fetchImpl(this.mcpUrl, {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId++, method, params }),
+      const response = await settleOnAbort(
+        this.fetchImpl(this.mcpUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId++, method, params }),
+          signal,
+        }),
         signal,
-      });
+      );
       const text = await readTextCapped(response, this.maxResponseBytes);
       if (!response.ok) {
         const reason = response.status === 402 ? paymentFailureReason(response.headers) : undefined;
