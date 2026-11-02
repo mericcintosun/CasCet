@@ -1257,7 +1257,9 @@ class PayingClient:
     * `parent_id`: sent as x-cascet-parent-id so a cascade's receipts link up.
     * `on_payment`: called with {amount_raw, pay_to, asset, network} after each
       authorization is signed and encoded, before it is sent, plus
-      authorization_style when the 402 advertised one. An exception it raises
+      authorization_style: the style this client knows for the token
+      (known_authorization_style), else the one the 402 advertised, if any.
+      An exception it raises
       is reported as a RuntimeWarning and does not stop the payment.
     * `session`: a requests.Session (or compatible object honoring
       `allow_redirects=False` and `stream=True`); one is created by default.

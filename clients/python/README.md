@@ -105,7 +105,7 @@ Every refusal raises `PaymentAborted` before anything is signed.
 | Deadline | `timeout` (default 30 s) | One deadline for the whole call: the first request, the 402, signing, the paid retry and reading the response. Same as the TS client's `timeoutMs: 30000`. A gateway that trickles its headers or its body is cut off at the deadline, and nothing is signed after it. `None` disables it. A paid call that times out may still settle. |
 | Transport | `allow_insecure_http` (default `False`) | Refuses to pay over plain `http://` unless the host is loopback, and reaches a loopback `http://` URL directly, never through a proxy from the environment (`HTTP_PROXY`, `ALL_PROXY`), which would carry the payment to another machine in cleartext. Never follows redirects: a 3xx comes back to the caller unpaid, so `PAYMENT-SIGNATURE`, the parent id and the request body never reach another origin. |
 | Cascade | `parent_id` | Sent as `x-cascet-parent-id`, so downstream receipts join the chain. |
-| Callback | `on_payment` | Called with `{amount_raw, pay_to, asset, network}` once a payment is signed, plus `authorization_style` when the 402 named one. If it raises, the client issues a `RuntimeWarning` and still sends the payment. |
+| Callback | `on_payment` | Called with `{amount_raw, pay_to, asset, network}` once a payment is signed, plus `authorization_style`: the style the client knows for CasCet's x402 tokens and Wrapped CSPR, else the one the 402 advertised, if any. If it raises, the client issues a `RuntimeWarning` and still sends the payment. |
 
 Pass `stream=True` to `request()` to read a large body yourself; the deadline
 then ends when the response headers arrive. The exact cut-off of a dripping
