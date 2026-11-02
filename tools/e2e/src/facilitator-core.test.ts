@@ -130,6 +130,8 @@ function harness(
     verifySignature?: () => VerifyResponse;
     preflight?: boolean;
     capMotes?: bigint;
+    /** The state-file save (deps.persist), with the ledger and the submissions made so far. */
+    persist?: (at: { ledger: AuthorizationLedger; submits: number }) => Promise<void>;
   } = {},
 ): Harness {
   const clock = new FakeClock(T0);
@@ -225,6 +227,7 @@ function harness(
       chain,
       ledger,
       gas,
+      ...(opts.persist ? { persist: () => opts.persist!({ ledger, submits: chain.submits }) } : {}),
       log: { info: m => logs.push(m), warn: m => logs.push(m), error: m => logs.push(m) },
       now: clock.now,
     },
@@ -898,6 +901,86 @@ describe("pending settlements: a settle retry follows the earlier transaction (n
     h.clock.advance(1_000);
     await h.core.settle(parsed());
     assert.deepEqual(deadlines, [T0 + 12_000, T0 + 13_000]);
+  });
+});
+
+describe("write-ahead: a settlement is saved before it is broadcast (F11)", () => {
+  const ID = { network: NETWORK, asset: ASSET, from: PAYER, nonce: "9c".repeat(32) };
+
+  test("the state file holds the transaction, with the payment it settles, before any node can have it", async () => {
+    const seen: Array<{ submits: number; saved: unknown }> = [];
+    const h = harness({
+      outcome: () => ({ kind: "pending", seen: true }),
+      persist: async ({ ledger, submits }) => {
+        seen.push({ submits, saved: ledger.persistedAuthorizations() });
+      },
+    });
+    const r = await h.core.settle(parsed());
+    assert.equal(r.body.errorReason, Reason.pending);
+    const hash = "1".padStart(64, "0");
+    assert.deepEqual(seen, [
+      {
+        submits: 0,
+        saved: [
+          {
+            id: ID,
+            txHash: hash,
+            state: "submitted",
+            validBefore: Math.floor(T0 / 1000) + 300,
+            value: 500_000_000n,
+            status: "unknown",
+            fingerprint: paymentFingerprint(parsed(), NETWORK),
+            style: "legacy-amount",
+          },
+        ],
+      },
+    ]);
+    assert.equal(h.chain.submits, 1);
+    // What the settle answered is what a restart restores.
+    assert.equal(h.ledger.persistedAuthorizations()[0]?.status, "pending");
+  });
+
+  test("a save that fails submits nothing: 503, not submitted, gas and claim released; the next settle goes through", async () => {
+    let failures = 1;
+    const h = harness({
+      persist: async () => {
+        if (failures-- > 0) throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      },
+    });
+    assert.equal((await h.core.verify(parsed())).body.isValid, true);
+    const r = await h.core.settle(parsed());
+    assert.deepEqual([r.status, r.body.success, r.body.errorReason, r.body.transaction], [503, false, Reason.stateUnavailable, ""]);
+    assert.deepEqual(r.body.extra, { settlementStatus: "not_submitted" });
+    assert.equal(h.chain.submits, 0);
+    const gas = h.gas.snapshot();
+    assert.equal(gas.reservedMotes + gas.spentMotes, 0n);
+    assert.equal(h.ledger.peek(ID)?.state, "verified", "back to the verified hold");
+    assert.deepEqual(h.ledger.persistedAuthorizations(), [], "the record went with the claim");
+    assert.ok(h.logs.some(l => /not submitted: the state file could not be saved \(ENOSPC/.test(l)));
+
+    const retry = await h.core.settle(parsed());
+    assert.equal(retry.body.success, true);
+    assert.equal(h.chain.submits, 1);
+  });
+
+  test("a transaction the node rejected is dropped from the state", async () => {
+    let saves = 0;
+    const h = harness({
+      submit: () => ({ kind: "rejected", error: "Invalid transaction (code -32016)" }),
+      persist: async () => {
+        saves++;
+      },
+    });
+    const r = await h.core.settle(parsed());
+    assert.equal(r.body.errorReason, Reason.rejectedByNode);
+    assert.equal(saves, 1);
+    assert.deepEqual(h.ledger.persistedAuthorizations(), []);
+  });
+
+  test("without a state file nothing is awaited and settles work as before", async () => {
+    const h = harness();
+    assert.equal((await h.core.settle(parsed())).body.success, true);
+    assert.deepEqual(h.ledger.persistedAuthorizations().map(r => r.state), ["settled"]);
   });
 });
 
