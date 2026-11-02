@@ -5,22 +5,21 @@
     "command": "npx",
     "args": [
       "-y",
-      "@modelcontextprotocol/server-everything"
+      "@modelcontextprotocol/server-everything@2026.8.31"
     ]
   },
   "network": "casper:casper-test",
-  "payTo": "01dd710d5083920b20c706a92d742c7bf9162d09c96fa373bd0a67b0bf51d3f183",
+  "payTo": "REPLACE_WITH_00_PLUS_YOUR_ACCOUNT_HASH",
   "asset": {
-    "packageHash": "hash-b3e9908b6cdbf5c565b686938994e3ac8e6749f41bcbe83615604321a0965d49",
-    "name": "Wrapped CSPR (CasCet demo)",
+    "packageHash": "hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3",
+    "name": "CasCet X402 Token",
     "symbol": "WCSPR",
     "decimals": 9,
     "version": "1",
     "tokensPerUsd": 50
   },
   "facilitator": {
-    "url": "https://x402-facilitator.cspr.cloud",
-    "apiKey": "<YOUR CSPR.cloud ACCESS TOKEN>"
+    "url": "http://127.0.0.1:4501"
   },
   "pricing": {
     "tools": {
@@ -32,15 +31,15 @@
         "price": "$0.002",
         "description": "Add two numbers"
       },
-      "get-env": {
-        "price": "$0.01",
-        "description": "Return server environment"
-      },
-      "simulate-research-query": {
+      "trigger-long-running-operation": {
         "price": "$0.05",
-        "description": "Run a simulated research query"
+        "description": "Long-running job with progress updates; payment settles before it starts",
+        "settleBeforeExecute": true
       }
-    }
+    },
+    "freeTools": [
+      "get-tiny-image"
+    ]
   },
   "port": 4410
 }

@@ -1,5 +1,5 @@
 import type { CascetConfig } from "@cascet/core";
-import type { Paywall } from "./paywall.js";
+import { requirementExtra, type PaymentRail, type ToolTable } from "./paywall.js";
 
 /**
  * x402 Bazaar-compatible discovery resource.
@@ -10,12 +10,16 @@ export interface DiscoveryResource {
   resource: string;
   type: "http";
   x402Version: 2;
+  /** One entry per token the tool accepts, in the order of its 402 `accepts`. */
   accepts: Array<{
     scheme: "exact";
     network: string;
     amount: string;
     asset: string;
     payTo: string;
+    maxTimeoutSeconds: number;
+    /** EIP-712 domain (name, version), symbol, decimals and authorization style, as in the 402. */
+    extra: Record<string, string>;
   }>;
   lastUpdated: string;
   metadata: {
@@ -32,39 +36,35 @@ export interface DiscoveryDocument {
   items: DiscoveryResource[];
 }
 
-/** Build a Bazaar discovery catalog for every paid tool this gateway exposes. */
+/** Build a Bazaar discovery catalog for every paid tool this gateway currently exposes. */
 export function buildDiscovery(
   cfg: CascetConfig,
-  paywall: Paywall,
-  toolNames: string[],
+  rail: Pick<PaymentRail, "network" | "payTo" | "maxTimeoutSeconds">,
+  table: Pick<ToolTable, "pricedToolNames" | "policyOf">,
   baseUrl: string,
   nowIso: string,
 ): DiscoveryDocument {
-  const assetPackage = cfg.asset.packageHash.replace(/^hash-/, "");
   const items: DiscoveryResource[] = [];
-
-  for (const tool of toolNames) {
-    const amount = paywall.assetAmountOf(tool);
-    if (!amount) continue; // free tools aren't advertised as payable
-    const price = paywall.priceOf(tool);
+  for (const tool of table.pricedToolNames) {
+    const policy = table.policyOf(tool);
+    if (!policy || policy.kind !== "paid") continue;
     items.push({
-      resource: `${baseUrl}${paywall.routeFor(tool)}`,
+      resource: `${baseUrl}/tools/${encodeURIComponent(tool)}`,
       type: "http",
       x402Version: 2,
-      accepts: [
-        {
-          scheme: "exact",
-          network: cfg.network,
-          amount: amount.amount,
-          asset: assetPackage,
-          payTo: cfg.payTo,
-        },
-      ],
+      accepts: policy.accepts.map(({ asset, amount }) => ({
+        scheme: "exact",
+        network: rail.network,
+        amount,
+        asset: asset.packageHash,
+        payTo: rail.payTo,
+        maxTimeoutSeconds: rail.maxTimeoutSeconds,
+        extra: requirementExtra(asset),
+      })),
       lastUpdated: nowIso,
       metadata: {
         description:
-          price?.description ??
-          `Paid MCP tool "${tool}" on ${cfg.name}, ${price?.price ?? ""} per call via x402 on Casper`.trim(),
+          policy.price.description ?? `Paid MCP tool "${tool}" on ${cfg.name}, ${policy.price.price} per call via x402 on Casper`,
         protocol: "mcp",
         server: cfg.name,
         mcpEndpoint: `${baseUrl}/mcp`,
@@ -72,6 +72,5 @@ export function buildDiscovery(
       },
     });
   }
-
   return { x402Version: 2, items };
 }

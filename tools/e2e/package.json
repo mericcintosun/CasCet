@@ -8,9 +8,14 @@
     "gen-keys": "tsx src/gen-keys.ts",
     "demo": "tsx src/run-demo.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "key-roles": "tsx src/key-roles.ts",
     "demo-real": "tsx src/run-real.ts",
+    "demo-real-wcspr": "tsx src/run-real.ts --asset wcspr",
     "demo-real-mainnet": "tsx src/run-real-mainnet.ts",
     "fund-token": "tsx src/fund-token.ts",
+    "wrap-wcspr": "tsx src/wrap-wcspr.ts",
+    "settle-report": "tsx src/settle-report.ts",
     "facilitator": "tsx src/run-facilitator.ts",
     "agent": "tsx src/run-agent-demo.ts",
     "connect-demo": "tsx src/run-connect-demo.ts"
@@ -20,12 +25,14 @@
     "@cascet/client": "workspace:*",
     "@cascet/core": "workspace:*",
     "@cascet/gateway": "workspace:*",
-    "@make-software/casper-x402": "^1.0.0",
-    "@x402/core": "2.15.0",
+    "@x402/casper": "2.29.0",
+    "@x402/core": "2.29.0",
     "casper-js-sdk": "^5.0.12",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.7.2"
   },
   "devDependencies": {
+    "@make-software/casper-x402": "^1.0.0",
     "@types/express": "^5.0.0",
     "tsx": "^4.21.0"
   }

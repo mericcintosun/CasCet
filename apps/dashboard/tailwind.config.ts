@@ -26,6 +26,16 @@ const config: Config = {
         success: { DEFAULT: "hsl(var(--success))", foreground: "hsl(var(--success-foreground))" },
         warning: { DEFAULT: "hsl(var(--warning))", foreground: "hsl(var(--warning-foreground))" },
       },
+      // `text-*` uses the contrast-safe `-text` twin of each accent (see globals.css);
+      // `bg-*`, `border-*`, `ring-*` keep the brand fill. Deep-merged, so
+      // `text-primary-foreground` etc. still resolve to the colors above.
+      textColor: {
+        primary: { DEFAULT: "hsl(var(--primary-text))" },
+        success: { DEFAULT: "hsl(var(--success-text))" },
+        warning: { DEFAULT: "hsl(var(--warning-text))" },
+        destructive: { DEFAULT: "hsl(var(--destructive-text))" },
+        flow: "hsl(var(--flow-text))",
+      },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",

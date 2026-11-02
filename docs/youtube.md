@@ -4,7 +4,8 @@
 
 Metadata for the current demo video: a silent screen capture with voiceover,
 showing CasCet live on Casper mainnet going into the final round of the Casper
-Agentic Buildathon 2026. File: `cascet-demo-final.mp4` (repo root), 1920x1080.
+Agentic Buildathon 2026. The 1920x1080 source file is not in the repository
+(large media is gitignored); YouTube is the canonical copy.
 
 ## Title
 

@@ -1,0 +1,51 @@
+{
+  "name": "everything-mcp-paid-wcspr",
+  "upstream": {
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-everything@2026.8.31"
+    ]
+  },
+  "network": "casper:casper-test",
+  "payTo": "REPLACE_WITH_00_PLUS_YOUR_ACCOUNT_HASH",
+  "asset": {
+    "packageHash": "hash-3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e",
+    "name": "Wrapped CSPR",
+    "symbol": "WCSPR",
+    "decimals": 9,
+    "version": "1",
+    "tokensPerUsd": 50,
+    "authorization": "cep3009-value"
+  },
+  "facilitator": {
+    "url": "https://x402-facilitator.cspr.cloud",
+    "apiKey": "REPLACE_WITH_YOUR_CSPR_CLOUD_ACCESS_KEY",
+    "authScheme": "raw"
+  },
+  "settlement": {
+    "nodeUrl": "https://node.testnet.casper.network/rpc"
+  },
+  "pricing": {
+    "tools": {
+      "echo": {
+        "price": "$0.001",
+        "description": "Echo a message back"
+      },
+      "get-sum": {
+        "price": "$0.002",
+        "description": "Add two numbers"
+      },
+      "trigger-long-running-operation": {
+        "price": "$0.05",
+        "description": "Long-running job with progress updates; payment settles before it starts",
+        "settleBeforeExecute": true
+      }
+    },
+    "freeTools": [
+      "get-tiny-image"
+    ]
+  },
+  "port": 4411
+}

@@ -10,33 +10,36 @@ const TILES = [
   { key: "revenue", label: "Total revenue", icon: Coins },
   { key: "calls", label: "Paid tool calls", icon: Receipt },
   { key: "cascades", label: "Cascaded payments", icon: GitBranch },
-  { key: "servers", label: "Online servers", icon: Server },
+  { key: "servers", label: "Servers with sales", icon: Server },
 ] as const;
 
-export function StatTiles({ state }: { state: DashboardState }) {
-  const settled = state.receipts.filter(r => r.status === "settled");
+export function StatTiles({ state, loading = false }: { state: DashboardState; loading?: boolean }) {
+  const settled = state.receipts.filter((r) => r.status === "settled");
   const revenueRaw = settled.reduce((sum, r) => sum + toBigIntSafe(r.amountRaw), 0n);
-  const cascaded = settled.filter(r => r.parentId).length;
-  const online = state.servers.filter(s => s.online).length;
-  const symbol = settled[0]?.assetSymbol ?? "WCSPR";
+  const cascaded = settled.filter((r) => r.parentId).length;
+  // A receipt whose token could not be told has no symbol.
+  const symbol = settled.find((r) => r.assetSymbol)?.assetSymbol ?? "WCSPR";
 
   const values: Record<(typeof TILES)[number]["key"], string> = {
     revenue: formatTokens(revenueRaw, 9, symbol),
     calls: String(settled.length),
     cascades: String(cascaded),
-    servers: String(online),
+    servers: String(state.servers.length),
   };
 
   return (
-    <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4" aria-busy={loading}>
       {TILES.map(({ key, label, icon: Icon }) => (
-        <Card key={key} className="animate-fade-in">
-          <CardContent className="flex items-center gap-4 p-5">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <Icon className="h-5 w-5" />
+        <Card key={key} className="min-w-0 animate-fade-in">
+          <CardContent className="flex items-center gap-3 p-4 sm:gap-4 sm:p-5">
+            <div className="hidden h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary sm:flex">
+              <Icon className="h-5 w-5" aria-hidden />
             </div>
             <div className="min-w-0">
-              <div className="truncate text-2xl font-semibold tabular-nums">{values[key]}</div>
+              {/* wraps instead of truncating, so "22 WCSPR" never becomes "22 …" on a phone */}
+              <div className="break-words text-xl font-semibold tabular-nums leading-tight sm:text-2xl">
+                {loading ? "…" : values[key]}
+              </div>
               <div className="text-xs text-muted-foreground">{label}</div>
             </div>
           </CardContent>

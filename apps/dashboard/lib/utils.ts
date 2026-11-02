@@ -31,9 +31,13 @@ export function shortHex(hex: string, head = 6, tail = 4): string {
   return `${hex.slice(0, head)}…${hex.slice(-tail)}`;
 }
 
-export function timeAgo(iso: string): string {
-  const secs = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+export function timeAgo(iso: string, now: number = Date.now()): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "—";
+  const secs = Math.max(0, Math.floor((now - t) / 1000));
   if (secs < 60) return `${secs}s ago`;
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-  return `${Math.floor(secs / 3600)}h ago`;
+  if (secs < 86_400) return `${Math.floor(secs / 3600)}h ago`;
+  if (secs < 86_400 * 60) return `${Math.floor(secs / 86_400)}d ago`;
+  return new Date(t).toISOString().slice(0, 10);
 }

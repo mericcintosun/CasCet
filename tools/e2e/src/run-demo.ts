@@ -13,8 +13,8 @@ import { startRealFacilitator } from "./real-facilitator.js";
  * Every hop settles a real transfer_with_authorization on-chain through a
  * self-hosted facilitator (fee-sponsored by the CasCet deployer key), and each
  * settled receipt anchors into the on-chain ReceiptRegistry. The analyst wallet
- * must hold the payment token — fund it once with:
- *   pnpm --filter @cascet/e2e fund-token <analyst-account-hash> 300
+ * must hold the payment token — fund it once with (a dry run without --send):
+ *   pnpm --filter @cascet/e2e fund-token cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3 <analyst-account-hash> 300 --send
  *
  * Run: pnpm --filter @cascet/e2e demo   (after gen-keys)
  */
@@ -44,12 +44,21 @@ const anchoring = {
 
 const asset = { packageHash: X402_TOKEN, name: "CasCet X402 Token", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 50 };
 
+// get_defi_yields computes a live staking APY when it has a cspr.cloud token. Pass the
+// token on explicitly: a gateway need not forward its own environment to the upstream.
+const csprCloudEnv: Record<string, string> = {};
+for (const name of ["CSPR_CLOUD_TOKEN", "CSPR_CLOUD_URL"]) {
+  const value = process.env[name];
+  if (value) csprCloudEnv[name] = value;
+}
+
 const dataConfig: CascetConfig = cascetConfigSchema.parse({
   name: "casper-defi-data",
   upstream: {
     type: "stdio",
     command: "node",
     args: [resolve(ROOT, "servers/casper-defi-data/dist/index.js")],
+    env: csprCloudEnv,
   },
   network: "casper:casper-test",
   payTo: SELLER_DATA_ACCOUNT_HASH,
@@ -76,6 +85,13 @@ const analystConfig: CascetConfig = cascetConfigSchema.parse({
     env: {
       DATA_GATEWAY_URL: "http://localhost:4402/mcp",
       CASCET_KEY_PATH: resolve(KEYS, "analyst.pem"),
+      // The analyst pays with its own wallet: pin the data seller and cap the spend.
+      CASCET_NETWORK: "casper:casper-test",
+      CASCET_ALLOWED_PAYTO: SELLER_DATA_ACCOUNT_HASH,
+      CASCET_ALLOWED_ASSETS: X402_TOKEN,
+      CASCET_MAX_PER_CALL: "1000000000", // $0.02 (the dearest data tool) at 50 tokens/USD, 9 decimals
+      CASCET_MAX_SESSION: "5000000000", // one analysis never spends more than it earns ($0.10)
+      CASCET_MAX_TOTAL: "10000000000", // the analyst wallet authorizes at most $0.20 while the demo runs
     },
   },
   network: "casper:casper-test",
@@ -103,13 +119,17 @@ const analystGateway = await startGateway(analystConfig);
 
 console.log("\n──────── agent starts buying (real on-chain settlement) ────────\n");
 
+// The cascade root call waits for every downstream settlement plus its own (8 s blocks),
+// which can take longer than the client's 30 s default deadline.
+const CASCADE_TIMEOUT_MS = 180_000;
 const paying = await createPayingFetch({
   privateKeyPath: resolve(KEYS, "agent.pem"),
   allowedPayTo: [SELLER_ANALYST_ACCOUNT_HASH],
   allowedAssets: [X402_TOKEN],
+  timeoutMs: CASCADE_TIMEOUT_MS,
   onPayment: info => console.log(`[agent] 💸 paying ${info.amountRaw} raw units`),
 });
-const analyst = new PaidMcpHttpClient("http://localhost:4403/mcp", paying.fetch);
+const analyst = new PaidMcpHttpClient("http://localhost:4403/mcp", paying.fetch, { timeoutMs: CASCADE_TIMEOUT_MS });
 await analyst.initialize();
 
 const tools = await analyst.listTools();

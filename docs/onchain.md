@@ -17,6 +17,14 @@ Open any package at `https://cspr.live/contract-package/<hash>`.
 | PaymentChannel | `db2dc42b76f354e7716cafea8619ae6bc85fe50bc3e73979c2360dbba1458c57` |
 | DemoToken (CEP-18) | `3da88daf3f276d915ea4f6734e0d4b3d4781358734c369b95de028a2c094fe74` |
 
+The five CasCet contract packages are locked (not upgradable). The payment token
+package is upgradable by the operator key.
+
+Operator account: account hash
+`b9a38c827771d6bc510dd5f1e24fee61acdd4f97f758f4d68fe1dea13a7a140d`. It deployed
+the mainnet contracts, and in the mainnet demos below it was also the seller
+(`payTo` `00b9a38c…`), the facilitator's fee payer and the receipt recorder.
+
 Real x402 payments settled on mainnet (0.5 CasCet X402 Token via `transfer_with_authorization`, status Success). The token's on-chain symbol is WCSPR, but it is CasCet's own x402 token, not the official Wrapped CSPR. The payer key holds no CSPR; the facilitator's fee-payer covers gas.
 
 - TypeScript client: <https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1>
@@ -46,6 +54,12 @@ out + 40 refunded) and the analyst's balance is exactly 44 (40 from the root hop
 plus the 4-token attribution from its child) — the recursive revenue split,
 enforced on-chain rather than by trusting the gateway.
 
+The "analyst" and "data provider" payees in this run were two accounts CasCet
+controls (the Buildathon account and the operator account), not independent
+businesses: the run proves the contract's accounting, not third-party usage. The
+run went through the contracts CLI; the gateway does not call the
+`CascadeController` yet.
+
 ## Testnet (chain "casper-test")
 
 Open any package at `https://testnet.cspr.live/contract-package/<hash>`.
@@ -54,9 +68,14 @@ Open any package at `https://testnet.cspr.live/contract-package/<hash>`.
 | --- | --- |
 | Cep18X402 payment token | `cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3` |
 | ReceiptRegistry | `bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97` |
+| ReceiptRegistry (upgradable) | `764ed7190b69dafbc94a0148a07be85227f268a85424e7186be66cdb711b8222` |
 | RevenueSplit | `fa21efb406a8151d15a393bc366e51192a9ea15fd7fe23faffc54f021b32883c` |
 | CascadeController | `624134336d1f63ce539ebef9c226e6c463f70a8e85b593bbc5d370520d797980` |
+| PaymentChannel | `53930d3982a5bea717ec919096cef407b71a1ce9022b241c1d94f19ca770ccb0` |
 | DemoToken (CEP-18) | `b3e9908b6cdbf5c565b686938994e3ac8e6749f41bcbe83615604321a0965d49` |
+
+Operator account (testnet): public key
+[`01dd710d…`](https://testnet.cspr.live/account/01dd710d5083920b20c706a92d742c7bf9162d09c96fa373bd0a67b0bf51d3f183).
 
 Python-signed x402 settle on testnet (status Success):
 
@@ -70,10 +89,20 @@ settle argument from `amount` to `value` to follow CEP-3009
 and the hosted facilitator (`x402-facilitator.cspr.cloud`) moved with it.
 CasCet's x402 token is the earlier reference build that expects `amount`, and the
 published npm SDK (`@make-software/casper-x402` 1.0.0) still sends `amount`, so
-CasCet settles through its own fee-sponsored facilitator built on that SDK.
+CasCet settles through its own fee-sponsored facilitator. It builds the settlement
+itself and sends `amount` or `value` according to each token's on-chain ABI, so it
+also settles CEP-3009 tokens such as testnet Wrapped CSPR (three live testnet
+settles on 2026-11-02, `fd667f19…`, `660784c8…` and `43bba5ed…`, consumed
+1.117–1.118 CSPR of gas each; no mainnet Wrapped CSPR settle has run yet).
 The same hosted fee-payer on the same CasCet testnet token, before and after the rename:
 
 - before, settled: <https://testnet.cspr.live/transaction/2ffeb8c7a9313cb1df7affc1fc50669bf0ea19be9474498e6960273ea470a8b3> (2026-07-07)
 - after, `User error: 64658` (Odra `MissingArg`): <https://testnet.cspr.live/transaction/9fe35eed1042c4600b8c769386511ecbcf75b4a733f8aabf101e372389aa94ec> (2026-07-23)
 
-Migrating to `value` and the official Wrapped CSPR is on the roadmap.
+CasCet's x402 tokens take `amount`, so a seller using them needs the
+self-hosted facilitator (`pnpm --filter @cascet/e2e facilitator`; see the
+README's [Monetize your own MCP server](../README.md#monetize-your-own-mcp-server)).
+The official Wrapped CSPR, which takes `value`, is already supported: a seller
+using it can choose either facilitator (see the
+[Wrapped CSPR variant](../examples/wrap-third-party/README.md#variant-wrapped-cspr-through-the-hosted-facilitator)
+of the third-party example).

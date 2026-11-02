@@ -1,0 +1,191 @@
+{
+  "description": "Cross-implementation vectors for the @x402 2.29 stack, produced offline by a throwaway node script that ran the packages listed under `generator` from this repo's node_modules. `digests` are the DESIGN section 8 vectors (one per authorization style); `payment.payments` are full payloads built by @x402/core 2.29's x402Client with @cascet/client's createCasperClientScheme (@x402/casper 2.29's exact client, which signs validAfter 0) and clientSignerFromPem, with Date.now and the nonce pinned. tests/test_vectors.py asserts that the Python client reproduces them.",
+  "generator": {
+    "@x402/core": "2.29.0",
+    "@x402/casper": "2.29.0",
+    "@casper-ecosystem/casper-eip-712": "1.2.1",
+    "casper-js-sdk": "5.3.0",
+    "node": "v24.21.0"
+  },
+  "key": {
+    "note": "The TEST-ONLY key of eip712_vectors.json (seed = sha256(label)). It is public, holds no funds and must never be funded or reused.",
+    "accountAddress": "0025cec21df0bb85774aa718e937b441bb0e017f7daae5fe0c9457fa5a66d72c9f"
+  },
+  "digests": [
+    {
+      "name": "legacy-amount: CasCet X402 Token, testnet (DESIGN section 8)",
+      "authorizationStyle": "legacy-amount",
+      "domain": {
+        "name": "CasCet X402 Token",
+        "version": "1",
+        "network": "casper:casper-test",
+        "asset": "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3"
+      },
+      "message": {
+        "from": "0x0065190126b1ca282f041fad6b74b845a3c48e0c8411392b13c640a16a1438faf9",
+        "to": "0x00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36",
+        "value": "500000000",
+        "validAfter": "0",
+        "validBefore": "1893456000",
+        "nonce": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "domainSeparatorHex": "ff1327bae2e6d9cd4a083a3c589ec28eb9afc27a33eec7d9e233a7b78c593c7e",
+      "structHashHex": "c26946c81dfa445f2b55242dbf4ea93a7be5e59098ee7050b6756dd4cd8f7820",
+      "digestHex": "fa7f8fb8a4baf5f10c417995ed89ef3e4a187827d0b390da72ea6fc8473c019f"
+    },
+    {
+      "name": "cep3009-value: Wrapped CSPR, testnet (DESIGN section 8)",
+      "authorizationStyle": "cep3009-value",
+      "domain": {
+        "name": "Wrapped CSPR",
+        "version": "1",
+        "network": "casper:casper-test",
+        "asset": "3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e"
+      },
+      "message": {
+        "from": "0x0065190126b1ca282f041fad6b74b845a3c48e0c8411392b13c640a16a1438faf9",
+        "to": "0x00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36",
+        "value": "500000000",
+        "validAfter": "0",
+        "validBefore": "1893456000",
+        "nonce": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "domainSeparatorHex": "023974c31d004787f8a4df904e373f467593785f94533675f589c883ca597f20",
+      "structHashHex": "c26946c81dfa445f2b55242dbf4ea93a7be5e59098ee7050b6756dd4cd8f7820",
+      "digestHex": "7018efb474af3db4090555b34126928be63ef25e57af57c3be95050bb210ca55"
+    }
+  ],
+  "payment": {
+    "now": 1767225600,
+    "nonceHex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+    "paymentRequired": {
+      "x402Version": 2,
+      "error": "Payment required",
+      "resource": {
+        "url": "http://127.0.0.1:4402/tools/get_token_price",
+        "description": "Paid MCP tool: get_token_price",
+        "mimeType": "application/json",
+        "serviceName": "casper-defi-data"
+      },
+      "accepts": [
+        {
+          "scheme": "exact",
+          "network": "casper:casper-test",
+          "amount": "500000000",
+          "asset": "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3",
+          "payTo": "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36",
+          "maxTimeoutSeconds": 300,
+          "extra": {
+            "name": "CasCet X402 Token",
+            "symbol": "WCSPR",
+            "version": "1",
+            "decimals": "9",
+            "authorizationStyle": "legacy-amount"
+          }
+        },
+        {
+          "scheme": "exact",
+          "network": "casper:casper-test",
+          "amount": "20000000",
+          "asset": "3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e",
+          "payTo": "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36",
+          "maxTimeoutSeconds": 300,
+          "extra": {
+            "name": "Wrapped CSPR",
+            "symbol": "WCSPR",
+            "version": "1",
+            "decimals": "9",
+            "authorizationStyle": "cep3009-value"
+          }
+        }
+      ]
+    },
+    "paymentRequiredHeader": "eyJ4NDAyVmVyc2lvbiI6MiwiZXJyb3IiOiJQYXltZW50IHJlcXVpcmVkIiwicmVzb3VyY2UiOnsidXJsIjoiaHR0cDovLzEyNy4wLjAuMTo0NDAyL3Rvb2xzL2dldF90b2tlbl9wcmljZSIsImRlc2NyaXB0aW9uIjoiUGFpZCBNQ1AgdG9vbDogZ2V0X3Rva2VuX3ByaWNlIiwibWltZVR5cGUiOiJhcHBsaWNhdGlvbi9qc29uIiwic2VydmljZU5hbWUiOiJjYXNwZXItZGVmaS1kYXRhIn0sImFjY2VwdHMiOlt7InNjaGVtZSI6ImV4YWN0IiwibmV0d29yayI6ImNhc3BlcjpjYXNwZXItdGVzdCIsImFtb3VudCI6IjUwMDAwMDAwMCIsImFzc2V0IjoiY2I2NWE5MjhmOGUxYjdjZTE3MmJkZGQwNzVjMTBkZDBkZThiY2ZkOWNmODA4Yzc5OWZkNDA5NzY2YTE3MzVjMyIsInBheVRvIjoiMDA4ODFjYWUzMjMzN2NlMjk4NmJiZGM4ZDM5MWY4ODI0MmFmMGYzNjI2YTE0YzYyYmJlMDUwZjdiYjY0ZjYzZjM2IiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsibmFtZSI6IkNhc0NldCBYNDAyIFRva2VuIiwic3ltYm9sIjoiV0NTUFIiLCJ2ZXJzaW9uIjoiMSIsImRlY2ltYWxzIjoiOSIsImF1dGhvcml6YXRpb25TdHlsZSI6ImxlZ2FjeS1hbW91bnQifX0seyJzY2hlbWUiOiJleGFjdCIsIm5ldHdvcmsiOiJjYXNwZXI6Y2FzcGVyLXRlc3QiLCJhbW91bnQiOiIyMDAwMDAwMCIsImFzc2V0IjoiM2Q4MGRmMjFiYTRlZTRkNjZhMmExZjYwYzMyNTcwZGQ1Njg1ZTRiMjc5ZjY1MzgxNjJhNWZkMTMxNDg0N2MxZSIsInBheVRvIjoiMDA4ODFjYWUzMjMzN2NlMjk4NmJiZGM4ZDM5MWY4ODI0MmFmMGYzNjI2YTE0YzYyYmJlMDUwZjdiYjY0ZjYzZjM2IiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsibmFtZSI6IldyYXBwZWQgQ1NQUiIsInN5bWJvbCI6IldDU1BSIiwidmVyc2lvbiI6IjEiLCJkZWNpbWFscyI6IjkiLCJhdXRob3JpemF0aW9uU3R5bGUiOiJjZXAzMDA5LXZhbHVlIn19XX0=",
+    "payments": [
+      {
+        "name": "legacy-amount: CasCet X402 Token (accepts[0])",
+        "acceptsIndex": 0,
+        "digestHex": "535dcd81fdca544217bce6255cbbce1144608f76dc347f81a9f9ef91449a34fc",
+        "paymentPayload": {
+          "x402Version": 2,
+          "payload": {
+            "signature": "01d315f684d9ded1b5b562f68f6d050585e62ed701c1226f8c67579deb5006c0b04ac1e55d5d401eb0402334578e56e74fdc9b3d6e6d29440f18e9c75748a8100a",
+            "publicKey": "01418431c0832fad5de0560ee20e31998bf65d05949054783d15c400864828dcc6",
+            "authorization": {
+              "from": "0025cec21df0bb85774aa718e937b441bb0e017f7daae5fe0c9457fa5a66d72c9f",
+              "to": "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36",
+              "value": "500000000",
+              "validAfter": "0",
+              "validBefore": "1767225900",
+              "nonce": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf"
+            }
+          },
+          "resource": {
+            "url": "http://127.0.0.1:4402/tools/get_token_price",
+            "description": "Paid MCP tool: get_token_price",
+            "mimeType": "application/json",
+            "serviceName": "casper-defi-data"
+          },
+          "accepted": {
+            "scheme": "exact",
+            "network": "casper:casper-test",
+            "amount": "500000000",
+            "asset": "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3",
+            "payTo": "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36",
+            "maxTimeoutSeconds": 300,
+            "extra": {
+              "name": "CasCet X402 Token",
+              "symbol": "WCSPR",
+              "version": "1",
+              "decimals": "9",
+              "authorizationStyle": "legacy-amount"
+            }
+          }
+        },
+        "paymentSignatureHeader": "eyJ4NDAyVmVyc2lvbiI6MiwicGF5bG9hZCI6eyJzaWduYXR1cmUiOiIwMWQzMTVmNjg0ZDlkZWQxYjViNTYyZjY4ZjZkMDUwNTg1ZTYyZWQ3MDFjMTIyNmY4YzY3NTc5ZGViNTAwNmMwYjA0YWMxZTU1ZDVkNDAxZWIwNDAyMzM0NTc4ZTU2ZTc0ZmRjOWIzZDZlNmQyOTQ0MGYxOGU5Yzc1NzQ4YTgxMDBhIiwicHVibGljS2V5IjoiMDE0MTg0MzFjMDgzMmZhZDVkZTA1NjBlZTIwZTMxOTk4YmY2NWQwNTk0OTA1NDc4M2QxNWM0MDA4NjQ4MjhkY2M2IiwiYXV0aG9yaXphdGlvbiI6eyJmcm9tIjoiMDAyNWNlYzIxZGYwYmI4NTc3NGFhNzE4ZTkzN2I0NDFiYjBlMDE3ZjdkYWFlNWZlMGM5NDU3ZmE1YTY2ZDcyYzlmIiwidG8iOiIwMDg4MWNhZTMyMzM3Y2UyOTg2YmJkYzhkMzkxZjg4MjQyYWYwZjM2MjZhMTRjNjJiYmUwNTBmN2JiNjRmNjNmMzYiLCJ2YWx1ZSI6IjUwMDAwMDAwMCIsInZhbGlkQWZ0ZXIiOiIwIiwidmFsaWRCZWZvcmUiOiIxNzY3MjI1OTAwIiwibm9uY2UiOiJjMGMxYzJjM2M0YzVjNmM3YzhjOWNhY2JjY2NkY2VjZmQwZDFkMmQzZDRkNWQ2ZDdkOGQ5ZGFkYmRjZGRkZWRmIn19LCJyZXNvdXJjZSI6eyJ1cmwiOiJodHRwOi8vMTI3LjAuMC4xOjQ0MDIvdG9vbHMvZ2V0X3Rva2VuX3ByaWNlIiwiZGVzY3JpcHRpb24iOiJQYWlkIE1DUCB0b29sOiBnZXRfdG9rZW5fcHJpY2UiLCJtaW1lVHlwZSI6ImFwcGxpY2F0aW9uL2pzb24iLCJzZXJ2aWNlTmFtZSI6ImNhc3Blci1kZWZpLWRhdGEifSwiYWNjZXB0ZWQiOnsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoiY2FzcGVyOmNhc3Blci10ZXN0IiwiYW1vdW50IjoiNTAwMDAwMDAwIiwiYXNzZXQiOiJjYjY1YTkyOGY4ZTFiN2NlMTcyYmRkZDA3NWMxMGRkMGRlOGJjZmQ5Y2Y4MDhjNzk5ZmQ0MDk3NjZhMTczNWMzIiwicGF5VG8iOiIwMDg4MWNhZTMyMzM3Y2UyOTg2YmJkYzhkMzkxZjg4MjQyYWYwZjM2MjZhMTRjNjJiYmUwNTBmN2JiNjRmNjNmMzYiLCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJleHRyYSI6eyJuYW1lIjoiQ2FzQ2V0IFg0MDIgVG9rZW4iLCJzeW1ib2wiOiJXQ1NQUiIsInZlcnNpb24iOiIxIiwiZGVjaW1hbHMiOiI5IiwiYXV0aG9yaXphdGlvblN0eWxlIjoibGVnYWN5LWFtb3VudCJ9fX0="
+      },
+      {
+        "name": "cep3009-value: Wrapped CSPR (accepts[1])",
+        "acceptsIndex": 1,
+        "digestHex": "45c6c99dd20dddfb8c07066a451a5c35b3735b30a59923a72c829464d3c3c27d",
+        "paymentPayload": {
+          "x402Version": 2,
+          "payload": {
+            "signature": "0116836ef9dcd31ad9109494d4c4482cefc346301e3726aadcc976d65560be7017c36784a8fd71b18c4327ed932019affab4800e30b5ddf146fa70f207e03d190b",
+            "publicKey": "01418431c0832fad5de0560ee20e31998bf65d05949054783d15c400864828dcc6",
+            "authorization": {
+              "from": "0025cec21df0bb85774aa718e937b441bb0e017f7daae5fe0c9457fa5a66d72c9f",
+              "to": "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36",
+              "value": "20000000",
+              "validAfter": "0",
+              "validBefore": "1767225900",
+              "nonce": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf"
+            }
+          },
+          "resource": {
+            "url": "http://127.0.0.1:4402/tools/get_token_price",
+            "description": "Paid MCP tool: get_token_price",
+            "mimeType": "application/json",
+            "serviceName": "casper-defi-data"
+          },
+          "accepted": {
+            "scheme": "exact",
+            "network": "casper:casper-test",
+            "amount": "20000000",
+            "asset": "3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e",
+            "payTo": "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36",
+            "maxTimeoutSeconds": 300,
+            "extra": {
+              "name": "Wrapped CSPR",
+              "symbol": "WCSPR",
+              "version": "1",
+              "decimals": "9",
+              "authorizationStyle": "cep3009-value"
+            }
+          }
+        },
+        "paymentSignatureHeader": "eyJ4NDAyVmVyc2lvbiI6MiwicGF5bG9hZCI6eyJzaWduYXR1cmUiOiIwMTE2ODM2ZWY5ZGNkMzFhZDkxMDk0OTRkNGM0NDgyY2VmYzM0NjMwMWUzNzI2YWFkY2M5NzZkNjU1NjBiZTcwMTdjMzY3ODRhOGZkNzFiMThjNDMyN2VkOTMyMDE5YWZmYWI0ODAwZTMwYjVkZGYxNDZmYTcwZjIwN2UwM2QxOTBiIiwicHVibGljS2V5IjoiMDE0MTg0MzFjMDgzMmZhZDVkZTA1NjBlZTIwZTMxOTk4YmY2NWQwNTk0OTA1NDc4M2QxNWM0MDA4NjQ4MjhkY2M2IiwiYXV0aG9yaXphdGlvbiI6eyJmcm9tIjoiMDAyNWNlYzIxZGYwYmI4NTc3NGFhNzE4ZTkzN2I0NDFiYjBlMDE3ZjdkYWFlNWZlMGM5NDU3ZmE1YTY2ZDcyYzlmIiwidG8iOiIwMDg4MWNhZTMyMzM3Y2UyOTg2YmJkYzhkMzkxZjg4MjQyYWYwZjM2MjZhMTRjNjJiYmUwNTBmN2JiNjRmNjNmMzYiLCJ2YWx1ZSI6IjIwMDAwMDAwIiwidmFsaWRBZnRlciI6IjAiLCJ2YWxpZEJlZm9yZSI6IjE3NjcyMjU5MDAiLCJub25jZSI6ImMwYzFjMmMzYzRjNWM2YzdjOGM5Y2FjYmNjY2RjZWNmZDBkMWQyZDNkNGQ1ZDZkN2Q4ZDlkYWRiZGNkZGRlZGYifX0sInJlc291cmNlIjp7InVybCI6Imh0dHA6Ly8xMjcuMC4wLjE6NDQwMi90b29scy9nZXRfdG9rZW5fcHJpY2UiLCJkZXNjcmlwdGlvbiI6IlBhaWQgTUNQIHRvb2w6IGdldF90b2tlbl9wcmljZSIsIm1pbWVUeXBlIjoiYXBwbGljYXRpb24vanNvbiIsInNlcnZpY2VOYW1lIjoiY2FzcGVyLWRlZmktZGF0YSJ9LCJhY2NlcHRlZCI6eyJzY2hlbWUiOiJleGFjdCIsIm5ldHdvcmsiOiJjYXNwZXI6Y2FzcGVyLXRlc3QiLCJhbW91bnQiOiIyMDAwMDAwMCIsImFzc2V0IjoiM2Q4MGRmMjFiYTRlZTRkNjZhMmExZjYwYzMyNTcwZGQ1Njg1ZTRiMjc5ZjY1MzgxNjJhNWZkMTMxNDg0N2MxZSIsInBheVRvIjoiMDA4ODFjYWUzMjMzN2NlMjk4NmJiZGM4ZDM5MWY4ODI0MmFmMGYzNjI2YTE0YzYyYmJlMDUwZjdiYjY0ZjYzZjM2IiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsibmFtZSI6IldyYXBwZWQgQ1NQUiIsInN5bWJvbCI6IldDU1BSIiwidmVyc2lvbiI6IjEiLCJkZWNpbWFscyI6IjkiLCJhdXRob3JpemF0aW9uU3R5bGUiOiJjZXAzMDA5LXZhbHVlIn19fQ=="
+      }
+    ]
+  }
+}

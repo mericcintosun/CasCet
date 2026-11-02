@@ -1,4 +1,17 @@
 /**
+ * Outcome of the payment behind a receipt.
+ *
+ * - `settled`: the transfer executed on-chain.
+ * - `failed`: the transfer did not and cannot execute (the facilitator rejected
+ *   it before submission, or it reverted).
+ * - `unknown`: the outcome is indeterminate (for example the facilitator timed
+ *   out after it may already have submitted the transfer). Reconcile it on-chain
+ *   (`authorization_state` of the payer and nonce on the token) before treating
+ *   it as paid or unpaid.
+ */
+export type ReceiptStatus = "settled" | "failed" | "unknown";
+
+/**
  * A settled (or attempted) x402 payment for one MCP tool call.
  *
  * `parentId` is what makes CasCet's cascading payments possible: when tool A
@@ -31,11 +44,28 @@ export interface PaymentReceipt {
   priceUsd?: string;
   /** Settlement transaction (deploy) hash on Casper, when available. */
   txHash?: string;
-  status: "settled" | "failed";
+  status: ReceiptStatus;
   /** End-to-end gateway latency for the paid call, in milliseconds. */
   latencyMs?: number;
   /** Set when the receipt hash has been anchored in the on-chain ReceiptRegistry. */
   anchoredTxHash?: string;
+  /**
+   * Nonce (32-byte hex) of the payer's transfer authorization. Lets an operator
+   * look the payment up on-chain and lets the gateway refuse replays of the
+   * same authorization across restarts.
+   */
+  nonce?: string;
+  /**
+   * Who settled the payment: `facilitator` when the gateway's facilitator
+   * reported the transfer as executed; `third-party` when it did not, but the
+   * token's events show this exact authorization paid payTo. The events do not
+   * name the transaction: another submitter executed it, or possibly a
+   * transfer the facilitator had reported as pending, whose hash is then the
+   * receipt's `txHash`.
+   */
+  settledBy?: "facilitator" | "third-party";
+  /** Human-readable context, for example why the outcome is unknown. */
+  note?: string;
 }
 
 /** Node/edge projection of a set of receipts, used by the dashboard payment graph. */

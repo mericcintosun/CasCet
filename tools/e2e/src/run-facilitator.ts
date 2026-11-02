@@ -1,35 +1,74 @@
 import { resolve } from "node:path";
+import { facilitatorOptionsFromEnv, readFacilitatorEnv } from "./facilitator-env.js";
 import { startRealFacilitator } from "./real-facilitator.js";
 
 /**
  * Run the self-hosted x402 facilitator standalone (for the Python client demo,
- * or any external client). Testnet by default; CASCET_NET=mainnet for mainnet.
+ * or any external client). Testnet by default; mainnet with
+ * CASCET_NETWORK=casper:casper (or the legacy CASCET_NET=mainnet).
  *
  *   pnpm --filter @cascet/e2e facilitator
+ *
+ * Mainnet needs dedicated keys, a token and a state file (see docs/mainnet-readiness.md):
+ *   CASCET_NETWORK=casper:casper \
+ *   CASCET_FACILITATOR_KEY=/secure/fee-payer_secret_key.pem \
+ *   CASCET_FACILITATOR_TOKEN=$(openssl rand -hex 32) \
+ *   CASCET_SELLER_ACCOUNT_HASH=00<seller account hash> \
+ *   CASCET_FACILITATOR_STATE_FILE=/var/lib/cascet/facilitator-state.json \
+ *   pnpm --filter @cascet/e2e facilitator
+ *
+ * The state file keeps every authorization the facilitator submitted a
+ * transaction for, saved before each broadcast: after a restart, a retried
+ * settle follows that transaction or learns its hash, and nothing is submitted
+ * twice. One file per facilitator, on persistent storage.
+ *
+ * It settles CasCet's x402 token (`amount`) and CEP-3009 tokens such as the
+ * official Wrapped CSPR (`value`) side by side; add them to
+ * CASCET_ALLOWED_ASSETS, e.g. on testnet:
+ *   CASCET_ALLOWED_ASSETS=hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3,hash-3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e
+ * At start-up it reads every token's ABI, chain_name and name and logs how
+ * each one is settled (style, pinned name, gas limit).
+ *
+ * Every variable is documented in src/facilitator-env.ts. The facilitator
+ * refuses to start on mainnet when the fee-payer key is an owner account
+ * (CASCET_OWNER_ACCOUNT_HASH; the CasCet deployer always counts) or a seller,
+ * or when it is an associated key of one of them, and anywhere when a token's
+ * on-chain ABI or name contradicts its configured style or name.
  */
 const ROOT = resolve(import.meta.dirname, "../../..");
-const mainnet = process.env.CASCET_NET === "mainnet";
-const network = mainnet ? "casper:casper" : "casper:casper-test";
-const rpcUrl = mainnet ? "https://node.mainnet.casper.network/rpc" : "https://node.testnet.casper.network/rpc";
-const keyPath = mainnet
-  ? resolve(ROOT, "contracts/keys/mainnet_deployer_secret_key.pem")
-  : resolve(ROOT, "contracts/keys/deployer_secret_key.pem");
-const token = mainnet
-  ? "hash-8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41"
-  : "hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
-const seller = mainnet
-  ? "00b9a38c827771d6bc510dd5f1e24fee61acdd4f97f758f4d68fe1dea13a7a140d"
-  : "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36";
 
-const fac = await startRealFacilitator({
-  port: Number(process.env.PORT ?? 4501),
-  network,
-  keyPath,
-  keyAlgo: "ed25519",
-  rpcUrl,
-  allowedPayTo: [seller],
-  allowedAssets: [token],
-});
-console.log(`facilitator up at ${fac.url} (net=${network})`);
-process.on("SIGINT", () => { fac.close(); process.exit(0); });
-process.on("SIGTERM", () => { fac.close(); process.exit(0); });
+let cfg: ReturnType<typeof readFacilitatorEnv>;
+try {
+  cfg = readFacilitatorEnv(process.env, ROOT);
+} catch (err) {
+  console.error(`[run-facilitator] configuration error: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
+for (const warning of cfg.warnings) console.warn(`[run-facilitator] warning: ${warning}`);
+
+try {
+  // Every setting, per asset too: declared style, pinned name and version, gas limit.
+  const fac = await startRealFacilitator(facilitatorOptionsFromEnv(cfg));
+  console.log(`facilitator up at ${fac.url} (net=${fac.network})`);
+  // A running /settle may already have submitted a transaction: the first
+  // signal lets running requests finish and answer (new ones get 503); a
+  // second one exits at once. Give a process manager about 90 s to stop it.
+  let stopping = false;
+  const stop = (signal: NodeJS.Signals) => {
+    if (stopping) {
+      console.warn(`[run-facilitator] ${signal} again: exiting now; reconcile unfinished settlements by transaction hash or nonce`);
+      process.exit(1);
+    }
+    stopping = true;
+    console.log(`[run-facilitator] ${signal}: finishing running /verify and /settle requests, then exiting (repeat to exit at once)`);
+    fac.close().then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+} catch (err) {
+  console.error(`[run-facilitator] refusing to start: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
