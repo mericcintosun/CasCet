@@ -61,6 +61,25 @@ export function ReceiptsTable({
                 ) : (
                   <Badge variant="success">settled</Badge>
                 )
+              ) : r.status === "unknown" ? (
+                // The gateway could not confirm the settlement (for example a facilitator that timed out after
+                // broadcasting): it may still have executed, so it is neither revenue nor a failure until reconciled.
+                <span
+                  className="inline-flex items-center gap-1.5"
+                  title="Settlement not confirmed: it may still have executed. Not counted as revenue until reconciled."
+                >
+                  <Badge variant="warning">unconfirmed</Badge>
+                  {r.txHash && (
+                    <a
+                      href={`${CSPR_LIVE_TX}${r.txHash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 font-mono text-xs text-primary hover:underline"
+                    >
+                      {shortHex(r.txHash)} <ExternalLink className="h-3 w-3" aria-hidden />
+                    </a>
+                  )}
+                </span>
               ) : (
                 <Badge variant="destructive">failed</Badge>
               )}
