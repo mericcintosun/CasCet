@@ -79,6 +79,7 @@ __all__ = [
     "NETWORK_CASPER_TESTNET",
     "DEFAULT_NETWORKS",
     "DEFAULT_TIMEOUT_SECONDS",
+    "DEFAULT_ENV_TIMEOUT_SECONDS",
     "MAX_VALIDITY_SECONDS",
     "HEADER_PAYMENT_SIGNATURE",
     "HEADER_PAYMENT_REQUIRED",
@@ -133,6 +134,10 @@ DEFAULT_NETWORKS: Tuple[str, ...] = (NETWORK_CASPER_TESTNET,)
 #: Deadline for one PayingClient call (first request, 402, signing, paid retry
 #: and reading the response), the TypeScript client's `timeoutMs: 30000`.
 DEFAULT_TIMEOUT_SECONDS = 30.0
+#: The deadline PayingClient.from_env uses without CASCET_TIMEOUT_MS, as
+#: `cascet connect` does: a paid call includes the on-chain settlement, and a
+#: call given up after its payment was sent may still settle, unanswered.
+DEFAULT_ENV_TIMEOUT_SECONDS = 200.0
 #: By default validAfter is back-dated by this much to tolerate clock skew, as
 #: @make-software/casper-x402 1.0.0 did. @x402/casper 2.29, the TypeScript
 #: client since the 2.29 migration, signs validAfter 0: pass valid_after=0 to
@@ -1349,7 +1354,9 @@ class PayingClient:
           order of preference (legacy-amount, cep3009-value).
         * CASCET_MAX_PER_CALL, CASCET_MAX_SESSION: raw token units (> 0),
           required unless CASCET_ALLOW_UNLIMITED_BUDGET is 1, true or yes.
-        * CASCET_TIMEOUT_MS: deadline per call in milliseconds (default 30000).
+        * CASCET_TIMEOUT_MS: deadline per call in milliseconds (default
+          200000, as for `cascet connect`: see DEFAULT_ENV_TIMEOUT_SECONDS;
+          the constructor's own default is 30 s).
 
         Every value is validated here, and an error names its variable.
         Keyword arguments go to PayingClient and take precedence over the
@@ -1408,9 +1415,11 @@ class PayingClient:
         if timeout_ms is not None:
             if not re.fullmatch(r"[0-9]{1,10}", timeout_ms) or not 0 < int(timeout_ms) <= 2_147_483_647:
                 raise ValueError(
-                    f'CASCET_TIMEOUT_MS must be a whole number of milliseconds (e.g. 30000); got "{timeout_ms}"'
+                    f'CASCET_TIMEOUT_MS must be a whole number of milliseconds (e.g. 200000); got "{timeout_ms}"'
                 )
             kwargs.setdefault("timeout", int(timeout_ms) / 1000)
+        else:
+            kwargs.setdefault("timeout", DEFAULT_ENV_TIMEOUT_SECONDS)
 
         options: Dict[str, Any] = {
             "networks": networks or list(DEFAULT_NETWORKS),

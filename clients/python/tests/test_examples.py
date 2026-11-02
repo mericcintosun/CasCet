@@ -809,11 +809,52 @@ class TestGatewayExample(unittest.TestCase):
         session = GatewaySession(
             challenge(make_payment_required(legacy_requirements(), wcspr_requirements(amount="20000000"))), paid
         )
+        code, err = self.run_with(session, argv, env)
+        return code, session, err
+
+    def run_with(self, session, argv, env):
         out, err = io.StringIO(), io.StringIO()
         with mock.patch("requests.Session", return_value=session):
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = example_gateway.main(argv, env)
-        return code, session, err.getvalue()
+        return code, err.getvalue()
+
+    def test_no_answer_after_the_payment_is_an_unknown_outcome(self):
+        # The gateway settles before it answers, so a paid retry that got no answer may still be charged.
+        def no_answer(error):
+            def fail(call):
+                raise error
+            return fail
+
+        url = "https://gateway.test/mcp"
+        for error in (
+            requests.exceptions.Timeout(f"request to {url} did not complete within the 200 s deadline"),
+            requests.exceptions.ConnectionError("Connection aborted."),
+        ):
+            session = GatewaySession(challenge(make_payment_required(legacy_requirements())), no_answer(error))
+            with self.subTest(error=type(error).__name__):
+                code, err = self.run_with(session, [url, "echo"], self.env)
+                self.assertEqual(code, 3, err)
+                self.assertEqual(example_gateway.EXIT_OUTCOME_UNKNOWN, 3)
+                self.assertIn("[python] authorized", err)
+                self.assertIn("may still settle", err)
+                self.assertIn("can pay twice", err)
+                self.assertEqual(len(session.calls), 2)
+                self.assertIn(x402.HEADER_PAYMENT_SIGNATURE, session.calls[1]["headers"])
+        # Before anything was signed, a timeout is a plain failure.
+        session = GatewaySession(no_answer(requests.exceptions.Timeout(f"request to {url} did not complete")))
+        code, err = self.run_with(session, [url, "echo"], self.env)
+        self.assertEqual(code, 1, err)
+        self.assertIn("did not answer in time", err)
+        self.assertNotIn("may still settle", err)
+
+    def test_the_default_deadline_is_long_enough_for_a_settlement(self):
+        code, session, err = self.run_main(["https://gateway.test/mcp", "echo"], self.env)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(199 < session.calls[0]["timeout"][0] <= 200)  # cascet connect's 200 s, not 30 s
+        code, session, err = self.run_main(["https://gateway.test/mcp", "echo"], {**self.env, "CASCET_TIMEOUT_MS": "1500"})
+        self.assertEqual(code, 0, err)
+        self.assertTrue(1.4 < session.calls[0]["timeout"][0] <= 1.5)
 
     def paid_asset(self, session):
         payload = x402.decode_payment_signature_header(session.calls[1]["headers"][x402.HEADER_PAYMENT_SIGNATURE])

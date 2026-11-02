@@ -910,7 +910,9 @@ class TestFromEnv(unittest.TestCase):
         self.assertTrue(1.4 < session.calls[0]["timeout"][0] <= 1.5)
         session = FakeSession(OK)
         self.from_env(self.env, session=session).get("https://gw.test/health")
-        self.assertTrue(29 < session.calls[0]["timeout"][0] <= 30)  # the default
+        # The default is cascet connect's, long enough for a paid call's settlement, not the constructor's 30 s.
+        self.assertTrue(199 < session.calls[0]["timeout"][0] <= 200)
+        self.assertEqual(x402.DEFAULT_ENV_TIMEOUT_SECONDS, 200.0)
         session = FakeSession(OK)
         self.from_env({**self.env, "CASCET_TIMEOUT_MS": "1500"}, session=session, timeout=5).get("https://gw.test/x")
         self.assertTrue(4.5 < session.calls[0]["timeout"][0] <= 5)  # an explicit argument wins

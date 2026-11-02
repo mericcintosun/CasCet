@@ -125,7 +125,7 @@ variable:
 | `CASCET_ALLOWED_PAYTO`, `CASCET_ALLOWED_ASSETS` | Comma lists. Required unless `CASCET_ALLOW_ANY_SELLER` is `1`, `true` or `yes`. Payees are account hashes. |
 | `CASCET_PREFER_STYLES` | Optional comma list of authorization styles in order of preference, e.g. `cep3009-value,legacy-amount`. |
 | `CASCET_MAX_PER_CALL`, `CASCET_MAX_SESSION` | Raw token units, greater than 0. Required unless `CASCET_ALLOW_UNLIMITED_BUDGET` is `1`, `true` or `yes`. |
-| `CASCET_TIMEOUT_MS` | Deadline per call in milliseconds. Default: `30000`. |
+| `CASCET_TIMEOUT_MS` | Deadline per call in milliseconds. Default: `200000`, as for `cascet connect` (the constructor's own default is 30 s): a paid call includes the on-chain settlement, and a call given up after its payment was sent may still settle. |
 
 `CASCET_TOOL_PINS` and `--accept-tool-changes` belong to the stdio bridge of
 `cascet connect` and do not apply here.
@@ -143,6 +143,11 @@ clients/python/venv/bin/python clients/python/example_gateway.py \
 # or, paying in testnet Wrapped CSPR whatever CASCET_ALLOWED_ASSETS says:
 #   clients/python/venv/bin/python clients/python/example_gateway.py --asset wcspr http://127.0.0.1:4402/mcp get_cspr_market_data
 ```
+
+It exits with `3` when the payment was authorized but no answer came back
+(the deadline passed, or the connection broke): the gateway may still settle
+it. Check the payer's token balance before running it again, as a re-run signs
+a new authorization and can pay twice.
 
 To get a seller's payTo from their public key, run
 `clients/python/venv/bin/python clients/python/cascet_x402.py account-hash <public-key>`.

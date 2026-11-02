@@ -14,8 +14,16 @@ and CASCET_ALLOWED_ASSETS (required unless CASCET_ALLOW_ANY_SELLER=1),
 CASCET_PREFER_STYLES (optional: legacy-amount, cep3009-value in order of
 preference), CASCET_MAX_PER_CALL and CASCET_MAX_SESSION in raw token units
 (required unless CASCET_ALLOW_UNLIMITED_BUDGET=1) and CASCET_TIMEOUT_MS
-(deadline per call, default 30000). The gateway runs the tool and settles the
+(deadline per call, default 200000 as for `cascet connect`: a paid call
+includes the on-chain settlement). The gateway runs the tool and settles the
 payment through its facilitator; the settlement comes back in PAYMENT-RESPONSE.
+
+Exit status: 0 the call succeeded; 1 it did not (a refusal before anything was
+signed, an unreachable gateway, a rejected payment, an error answer); 2 invalid
+options or settings; 3 outcome unknown: the payment was authorized but no
+answer came back (the deadline passed, or the connection broke), and the
+gateway may still settle it. Check the payer's token balance before running
+again then: a re-run signs a new authorization and can pay twice.
 
 To pay in one of the two tokens a CasCet gateway may offer, name it instead of
 its package hash: `--asset legacy` (the CasCet X402 Token, on testnet or
@@ -49,6 +57,9 @@ from cascet_x402 import (
     parse_payment_required,
     parse_payment_response,
 )
+
+#: The payment was authorized but no answer came back: the gateway may still settle it.
+EXIT_OUTCOME_UNKNOWN = 3
 
 #: Package hashes of the tokens --asset names, by network.
 ASSETS: Dict[str, Dict[str, str]] = {
@@ -108,8 +119,14 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
         print(f"arguments must be JSON: {exc}", file=sys.stderr)
         return 2
 
+    authorized: List[Dict[str, str]] = []
+
+    def record_payment(info: Dict[str, str]) -> None:
+        authorized.append(info)
+        on_payment(info)
+
     try:
-        client = PayingClient.from_env(client_environment(args.asset, env), on_payment=on_payment)
+        client = PayingClient.from_env(client_environment(args.asset, env), on_payment=record_payment)
     except (ValueError, OSError, TypeError) as exc:  # TypeError: an encrypted PEM (no password given)
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2
@@ -124,11 +141,20 @@ def main(argv: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] 
         except ProtocolError as exc:
             print(f"the gateway sent an invalid x402 challenge: {exc}", file=sys.stderr)
             return 1
-        except requests.exceptions.Timeout as exc:
-            print(f"gateway at {args.url} did not answer in time: {exc}", file=sys.stderr)
-            return 1
         except requests.exceptions.RequestException as exc:
-            print(f"gateway unreachable at {args.url}: {exc}", file=sys.stderr)
+            if authorized:
+                # The paid retry may have reached the gateway, which settles the payment before it answers.
+                print(
+                    f"no answer from the gateway at {args.url} after the payment was authorized "
+                    f"({type(exc).__name__}: {exc}). The payment may still settle: check the payer's token balance "
+                    "before running this again, as a re-run signs a new authorization and can pay twice.",
+                    file=sys.stderr,
+                )
+                return EXIT_OUTCOME_UNKNOWN
+            if isinstance(exc, requests.exceptions.Timeout):
+                print(f"gateway at {args.url} did not answer in time: {exc}", file=sys.stderr)
+            else:
+                print(f"gateway unreachable at {args.url}: {exc}", file=sys.stderr)
             return 1
 
     if response.is_redirect:
