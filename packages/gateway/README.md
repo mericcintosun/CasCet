@@ -125,7 +125,11 @@ official Wrapped CSPR (cep3009-value, settled by the hosted facilitator):
    successful calls. With `settleBeforeExecute: true` the payment settles
    first and the tool runs only once it is final; use it for tools with side
    effects or that buy from other paid tools. A tool that fails after
-   settlement is not refunded (the receipt notes it).
+   settlement is not refunded (the receipt notes it). x402's own
+   settle-before-handler flows (`extra.paymentFlow` `upfront` or `escrow`)
+   are refused, whether a route or a facilitator's `/supported` extensions ask
+   for them: x402 would settle before the gateway's checks and write-ahead
+   record. Use `settleBeforeExecute` instead.
 4. Settlement outcomes:
    - settled: the result, with `_meta.cascet.paymentId` and the
      `X-CASCET-PAYMENT-ID` / `PAYMENT-RESPONSE` headers;

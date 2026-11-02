@@ -179,11 +179,14 @@ export async function startTwoAssetHarness(
     config?: Record<string, unknown> | ((urls: { legacy: string; cep: string }) => Record<string, unknown>);
     tools?: FakeTool[];
     gateway?: GatewayOptions;
+    /** Adjust the fake facilitators before the gateway starts (e.g. what /supported answers). */
+    onFacilitators?: (facilitators: { legacy: FakeFacilitator; cep: FakeFacilitator }) => void;
   } = {},
 ): Promise<TwoAssetHarness> {
   const events: string[] = [];
   const legacy = await startFakeFacilitator({ events, label: "legacy", settleTx: LEGACY_SETTLE_TX });
   const cep = await startFakeFacilitator({ events, label: "cep", settleTx: WCSPR_SETTLE_TX });
+  opts.onFacilitators?.({ legacy, cep });
   const upstream = createFakeUpstream({
     tools: opts.tools ?? [{ name: "paid_tool" }, { name: "free_tool" }, { name: "secret_tool" }],
     events,

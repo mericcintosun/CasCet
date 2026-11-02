@@ -11,13 +11,21 @@ import { ExactCasperScheme } from "@x402/casper/exact/server";
 import { normalizePackageHash } from "@cascet/core";
 
 /**
- * Payment flows a CasCet route may use. "authorization" (verify before the
- * handler, settle after it) is the default and what every CasCet route uses
- * today; "upfront" (settle before the handler) is accepted so a route can opt
- * into x402's native settle-before-execute with `extra.paymentFlow`.
+ * Payment flows a CasCet route may use: only "authorization" (verify before
+ * the handler, settle after it). The gateway settles a verified payment itself,
+ * after its own checks of the matched requirements and after the write-ahead
+ * record of the authorization, in either order relative to the tool
+ * (`settleBeforeExecute`).
+ *
+ * x402's "upfront" and "escrow" flows are refused (x402 throws when a route or
+ * a facilitator's extension asks for them): there x402 skips the facilitator's
+ * verify and settles inside processHTTPRequest, before any of those gateway
+ * steps, and a failed or indeterminate settle would come back looking like a
+ * refused payment, so the gateway would release the authorization and answer
+ * "nothing was charged" after money may have moved.
  */
 export const CASCET_PAYMENT_FLOWS = {
-  default: { supported: ["authorization", "upfront"], default: "authorization" },
+  default: { supported: ["authorization"], default: "authorization" },
 } as const satisfies Record<string, PaymentFlowConfig>;
 
 /** One token a CasCet gateway prices in. */
@@ -41,8 +49,12 @@ const assetKey = (network: string, asset: string): string => `${network}|${norma
  *   the configured token itself.
  * - Decimals come from the gateway config, never from @x402/casper's built-in
  *   table (which only knows csprUSD).
- * - Requirements are validated and enriched by @x402/casper unchanged (asset
- *   and payTo format, EIP-712 `extra.name` / `extra.version`).
+ * - Requirements are validated and enriched by @x402/casper (asset and payTo
+ *   format, EIP-712 `extra.name` / `extra.version`), except that a
+ *   facilitator's extension values never replace an `extra` field the gateway
+ *   set itself (the EIP-712 domain, symbol, decimals, authorization style):
+ *   @x402/casper copies `supportedKind.extra[key]` for every extension key the
+ *   facilitator lists.
  */
 export class CascetCasperServerScheme implements SchemeNetworkServer {
   readonly scheme = "exact";
@@ -82,11 +94,13 @@ export class CascetCasperServerScheme implements SchemeNetworkServer {
     return this.inner.parsePrice(price, network);
   }
 
-  enhancePaymentRequirements(
+  async enhancePaymentRequirements(
     paymentRequirements: PaymentRequirements,
     supportedKind: SupportedKind,
     facilitatorExtensions: string[],
   ): Promise<PaymentRequirements> {
-    return this.inner.enhancePaymentRequirements(paymentRequirements, supportedKind, facilitatorExtensions);
+    const enhanced = await this.inner.enhancePaymentRequirements(paymentRequirements, supportedKind, facilitatorExtensions);
+    // The gateway's own fields win; the facilitator may only add fields of its own.
+    return { ...enhanced, extra: { ...enhanced.extra, ...paymentRequirements.extra } };
   }
 }

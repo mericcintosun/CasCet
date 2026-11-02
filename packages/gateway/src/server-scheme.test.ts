@@ -28,8 +28,8 @@ const adapter: HTTPAdapter = {
 
 const scheme = () => new CascetCasperServerScheme([{ network: NETWORK, asset: `hash-${ASSET.toUpperCase()}`, decimals: 9 }]);
 
-async function challenge(extra?: Record<string, unknown>): Promise<PaymentRequired> {
-  const resourceServer = new x402ResourceServer(facilitator).register(NETWORK, scheme());
+async function challenge(extra?: Record<string, unknown>, from: FacilitatorClient = facilitator): Promise<PaymentRequired> {
+  const resourceServer = new x402ResourceServer(from).register(NETWORK, scheme());
   const http = new x402HTTPResourceServer(resourceServer, {
     "POST /tools/0": {
       accepts: { scheme: "exact", network: NETWORK, payTo: PAY_TO, price: { asset: ASSET, amount: "500", extra: EXTRA }, ...(extra ? { extra } : {}) },
@@ -44,13 +44,13 @@ async function challenge(extra?: Record<string, unknown>): Promise<PaymentRequir
 }
 
 describe("CascetCasperServerScheme (@x402/core 2.29 SchemeNetworkServer)", () => {
-  it("declares the members 2.29 requires: no on-wire transfer method, authorization by default, upfront on request", () => {
+  it("declares the members 2.29 requires: no on-wire transfer method, and the authorization flow only", () => {
     const s = scheme();
     assert.equal(s.scheme, "exact");
     assert.equal(s.defaultAssetTransferMethod, "default");
     assert.deepEqual(s.paymentFlows, CASCET_PAYMENT_FLOWS);
     assert.equal(s.paymentFlows.default.default, "authorization");
-    assert.deepEqual([...s.paymentFlows.default.supported], ["authorization", "upfront"]);
+    assert.deepEqual([...s.paymentFlows.default.supported], ["authorization"]);
   });
 
   it("refuses money prices, which @x402/casper would turn into csprUSD", async () => {
@@ -84,9 +84,29 @@ describe("CascetCasperServerScheme (@x402/core 2.29 SchemeNetworkServer)", () =>
     ]);
   });
 
-  it("lets a route opt into the upfront flow, and x402 refuses flows the scheme does not declare", async () => {
-    const upfront = await challenge({ paymentFlow: "upfront" });
-    assert.equal(upfront.accepts[0]?.extra?.paymentFlow, "upfront");
+  it("refuses x402's settle-before-handler flows on a route (they would settle before the gateway's own checks)", async () => {
+    await assert.rejects(challenge({ paymentFlow: "upfront" }), /does not support paymentFlow "upfront"/);
     await assert.rejects(challenge({ paymentFlow: "escrow" }), /does not support paymentFlow "escrow"/);
+  });
+
+  /** A facilitator whose /supported lists `extensions` and puts `extra` on its kind. */
+  const advertising = (extra: Record<string, unknown>, extensions: string[]): FacilitatorClient => ({
+    ...facilitator,
+    getSupported: async () => ({ kinds: [{ x402Version: 2, scheme: "exact", network: NETWORK, extra }], extensions, signers: {} }),
+  });
+
+  it("fails closed when a facilitator's extension asks for a settle-before-handler flow or another transfer method", async () => {
+    // @x402/casper copies supportedKind.extra[key] into the requirements for every extension key.
+    await assert.rejects(challenge(undefined, advertising({ paymentFlow: "upfront" }, ["paymentFlow"])), /does not support paymentFlow "upfront"/);
+    await assert.rejects(
+      challenge(undefined, advertising({ assetTransferMethod: "permit" }, ["assetTransferMethod"])),
+      /does not support assetTransferMethod "permit"/,
+    );
+  });
+
+  it("never lets a facilitator's extension values replace the gateway's own extra fields; it may add its own", async () => {
+    const extra = { name: "Evil Token", version: "2", symbol: "EVIL", decimals: "0", authorizationStyle: "legacy-amount", feePayer: "ff".repeat(32) };
+    const paymentRequired = await challenge({ authorizationStyle: "cep3009-value" }, advertising(extra, Object.keys(extra)));
+    assert.deepEqual(paymentRequired.accepts[0]?.extra, { ...EXTRA, authorizationStyle: "cep3009-value", feePayer: "ff".repeat(32) });
   });
 });

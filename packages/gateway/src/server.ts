@@ -502,8 +502,8 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   async function settle(call: PaidCall): Promise<SettleOutcome> {
     let result;
     try {
-      // A flow that already settled before the handler (x402 "upfront"; no CasCet route uses it) echoes
-      // that settlement instead of settling twice.
+      // CASCET_PAYMENT_FLOWS refuses every flow that settles before the handler, so x402 hands over
+      // no before-handler settlement; passing it on keeps x402 from ever settling a payment twice.
       result = await call.table.http.processSettlement(
         call.verified.paymentPayload,
         call.verified.paymentRequirements,

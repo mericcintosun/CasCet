@@ -17,7 +17,7 @@ import { ExactCasperScheme } from "@x402/casper/exact/client";
 import { DEFAULT_FACILITATOR_URL, type CascetConfig } from "@cascet/core";
 import type { PreemptionQuery, SettlementPreemptionChecker } from "./preemption.js";
 import { startGateway } from "./server.js";
-import { startFakeFacilitator, type Reply } from "./testing/fake-facilitator.js";
+import { startFakeFacilitator, type FakeFacilitator, type Reply } from "./testing/fake-facilitator.js";
 import { createFakeUpstream } from "./testing/fake-upstream.js";
 import {
   callPaid,
@@ -548,7 +548,29 @@ describe("x402 2.29 flow hooks", () => {
     }
   });
 
-  it("passes a before-handler settlement through to x402, which echoes it instead of settling twice", async () => {
+  it("fails closed when the facilitators ask for x402's upfront flow: nothing is verified, settled or run", async () => {
+    // @x402/casper copies a facilitator's extension values into the requirements; "upfront" would
+    // make x402 skip verify and settle before the gateway's checks. The CasCet scheme refuses it.
+    const askForUpfront = (facilitator: FakeFacilitator) => {
+      facilitator.onSupported = () => ({
+        json: { kinds: [{ x402Version: 2, scheme: "exact", network: "casper:casper-test", extra: { paymentFlow: "upfront" } }], extensions: ["paymentFlow"], signers: {} },
+      });
+    };
+    const onFacilitators = ({ legacy, cep }: { legacy: FakeFacilitator; cep: FakeFacilitator }) => {
+      askForUpfront(legacy);
+      askForUpfront(cep);
+    };
+    await withTwoAssets({ onFacilitators }, async h => {
+      const res = await h.rpc("tools/call", { name: "paid_tool", arguments: {} });
+      assert.equal(res.status, 502);
+      assert.match(res.body.error?.message ?? "", /nothing was charged/);
+      assert.equal(res.headers.get("payment-required"), null);
+      assert.deepEqual([...work(h.legacy.calls), ...work(h.cep.calls)], []);
+      assert.equal(h.upstream.calls.length, 0);
+    });
+  });
+
+  it("never settles twice: a before-handler settlement x402 hands over is passed back, and x402 echoes it", async () => {
     const UPFRONT_TX = "77".repeat(32);
     const original = x402HTTPResourceServer.prototype.processHTTPRequest;
     const patched = mock.method(
@@ -557,7 +579,8 @@ describe("x402 2.29 flow hooks", () => {
       async function (this: x402HTTPResourceServer, ...args: Parameters<typeof original>) {
         const result = await original.apply(this, args);
         if (result.type !== "payment-verified") return result;
-        // As if the route had used x402's "upfront" flow: settled before the handler.
+        // CASCET_PAYMENT_FLOWS accepts no flow that settles before the handler, so x402 never does this
+        // for a CasCet route; if it did, the gateway must not settle the payment a second time.
         return {
           ...result,
           beforeHandlerSettlement: {
