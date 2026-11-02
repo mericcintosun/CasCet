@@ -1024,13 +1024,15 @@ describe("the hosted facilitator", () => {
      * balance funds exactly one payment. `pay()` presents a new payment of that payer. The
      * script gets `whileInFlight`: called at some stage of the first payment's call, it
      * presents one more payment of the payer right then (once) and keeps its answer in `during`.
+     * `setBalance()` changes the balance the node reports.
      */
     async function fundsOne(
       script: (whileInFlight: () => Promise<void>) => HostedScript = () => ({}),
       input: Record<string, unknown> = {},
       gatewayOptions: Pick<GatewayOptions, "preemptionChecker"> = {},
     ) {
-      const node = await startFakeNode(wcsprNodeRoutes({ balances: { [PAYER]: BigInt(WCSPR_PRICE_RAW) } }));
+      const routes = wcsprNodeRoutes({ balances: { [PAYER]: BigInt(WCSPR_PRICE_RAW) } });
+      const node = await startFakeNode(routes);
       const during: RpcResponse[] = [];
       let pay: (() => Promise<RpcResponse>) | undefined;
       let presented = false;
@@ -1053,12 +1055,18 @@ describe("the hosted facilitator", () => {
       try {
         const { accepted } = await payInAsset(gateway.h, "paid_tool", WCSPR_TOKEN);
         pay = () => callPaid(gateway.h, "paid_tool", paymentHeader(accepted).header);
-        return { ...gateway, during, pay, close };
+        /** The payer's balance as the node reports it from now on (a settled payment spent it, say). */
+        const setBalance = (value: bigint): void => {
+          routes[wcsprBalanceCall(PAYER)] = u256Response(value);
+        };
+        return { ...gateway, during, pay, close, setBalance };
       } catch (err) {
         await close();
         throw err;
       }
     }
+
+    type FundsOne = Awaited<ReturnType<typeof fundsOne>>;
 
     /** A script answer that runs `first` on the first call to `path` and keeps the default otherwise. */
     const onFirst = (path: string, first: () => Promise<HostedReply>): HostedScript["answer"] => {
@@ -1102,6 +1110,46 @@ describe("the hosted facilitator", () => {
         );
         assert.equal(g.upstream.calls.length, 1, "and only one tool ran");
         assert.deepEqual((await receipts(g.h)).map(receipt => receipt.status), ["settled"]);
+      } finally {
+        await g.close();
+      }
+    });
+
+    it("refuses a payment whose funds another payment of the payer spent while it was being verified", async () => {
+      // Payment A waits at /verify until B, presented meanwhile, passed its checks before verify (nothing was in flight)
+      // and waits at /verify too. B waits there until A's call ended: A was verified, reserved, ran and settled (the
+      // node shows its debit from then on), and is no longer in flight. The balance B was checked on is spent.
+      let a: Promise<RpcResponse> | undefined;
+      let b: Promise<RpcResponse> | undefined;
+      let bAtVerify = (): void => {};
+      const bWaits = new Promise<void>(resolve => (bAtVerify = resolve));
+      let verifies = 0;
+      const g: FundsOne = await fundsOne(() => ({
+        answer: async path => {
+          if (path === "/verify" && ++verifies === 1) {
+            b = g.pay();
+            await Promise.race([bWaits, b]);
+          } else if (path === "/verify") {
+            bAtVerify();
+            await a;
+          } else if (path === "/settle") {
+            g.setBalance(0n);
+          }
+          return undefined;
+        },
+      }));
+      try {
+        a = g.pay();
+        const first = await a;
+        assert.deepEqual([first.status, first.body.result?.content?.[0]?.text], [200, "ok:paid_tool"]);
+        const second = await b;
+        assert.deepEqual([second?.status, second?.body.error?.message], [402, "payment rejected: insufficient_funds"]);
+        assert.deepEqual(
+          g.hosted.filter(call => call.path !== "/supported").map(call => call.path),
+          ["/verify", "/verify", "/settle"],
+          "both were verified, only the first settled",
+        );
+        assert.equal(g.upstream.calls.length, 1, "and only its tool ran");
       } finally {
         await g.close();
       }

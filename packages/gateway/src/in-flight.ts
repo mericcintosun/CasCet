@@ -15,10 +15,13 @@ import { normalizeAccountAddress } from "./authorization.js";
  * balance to cover everything reserved plus the new amount, before verify
  * and again, with the reservation, after it. That check and the reservation
  * run with no await in between (Node runs them on one thread), so two
- * concurrent payments can never both be reserved on one balance. Only
- * verified payments are reserved (the facilitator checked their signature):
- * a payment forged from a payer's public key never holds back the payer's
- * real ones.
+ * concurrent payments can never both be reserved on one balance. The
+ * preflight then reads the balance once more, the payment counting meanwhile,
+ * and refuses it unless that balance covers it too: a payment of the payer
+ * that settled while this one was being verified is no longer reserved, and
+ * only a fresh read shows what it spent. Only verified payments are reserved
+ * (the facilitator checked their signature): a payment forged from a payer's
+ * public key never holds back the payer's real ones.
  *
  * Every reservation belongs to one paid call's {@link PaymentHold}. The
  * gateway opens a hold for each paid call, hands it to x402 with the call's

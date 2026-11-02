@@ -32,19 +32,27 @@ import { TokenUnsupportedError, type TokenProbe } from "./token-probe.js";
  * payments. The afterVerify hook checks the balance read before verify
  * against the payments in flight again and reserves the amount in one step,
  * so concurrent payments cannot each pass on a balance that funds only one of
- * them.
+ * them. It then reads the balance again, the payment counting meanwhile, and
+ * refuses the payment if that balance does not cover it: a payment of the
+ * payer that settled while this one was being verified is no longer in
+ * flight, and only a fresh read shows what it spent.
  *
  * Read failures fail closed: when the token state cannot be read within the
- * deadline the payment is refused with `preflight_unavailable` (nothing was
- * charged, the buyer may retry), as the self-hosted facilitator does. A token
- * that cannot be used at all is refused with `unsupported_asset`.
+ * deadline (one for the reads before verify and the read after it) the
+ * payment is refused with `preflight_unavailable` (nothing was charged, the
+ * buyer may retry), as the self-hosted facilitator does. A token that cannot
+ * be used at all is refused with `unsupported_asset`.
  *
  * Neither hook ever throws. x402 only logs a verify hook that throws and then
  * goes on as if it had passed, which would turn every failure here into a
  * pass.
  */
 
-/** Total time the preflight of one payment may take: every read, retries included. */
+/**
+ * Total time the preflight of one payment may spend reading the token state,
+ * retries included: the reads before verify and the balance read after it
+ * share it.
+ */
 export const HOSTED_PREFLIGHT_DEADLINE_MS = 5_000;
 
 /** The reasons a preflight refuses a payment with (x402 puts them in the 402 `error`). */
@@ -95,7 +103,8 @@ export interface HostedPreflightHooks {
   /**
    * With `inFlight`: once the facilitator verified a payment that passed the
    * checks, the funds check against the payments in flight and the
-   * reservation, in one step. Does nothing for a payment it did not verify.
+   * reservation, in one step, then the same check on the payer's balance read
+   * again. Does nothing for a payment it did not verify.
    */
   afterVerify: AfterVerifyHook;
 }
@@ -124,6 +133,8 @@ interface CheckedPayment {
   validBefore: number;
   /** The payer's balance, read before verify. */
   balance: bigint;
+  /** What the reads before verify left of the deadline (ms): the balance read after verify gets that long. */
+  leftMs: number;
 }
 
 /** The verify hooks that preflight payments in `assets` (see the module comment). */
@@ -133,6 +144,16 @@ export function hostedPreflightHooks(opts: HostedPreflightOptions): HostedPrefli
   const now = opts.now ?? Date.now;
   /** With in-flight tracking: the payments that passed the checks, by their call's hold, until the facilitator answered. */
   const checked = new WeakMap<PaymentHold, CheckedPayment>();
+
+  /** The refusal of a payment in `asset` whose token state could not be read (`err`, logged). */
+  const readRefusal = (asset: ResolvedAsset, err: unknown): Abort => {
+    if (err instanceof TokenUnsupportedError) {
+      log.error(`[x402] token of asset "${logSafe(asset.id, 64)}" cannot be used for x402 payments: ${logSafe(err)}`);
+      return abort(PreflightReason.unsupportedAsset, "the token cannot be used for x402 payments");
+    }
+    log.warn(`[x402] preflight of a payment in "${logSafe(asset.id, 64)}" failed: ${logSafe(err)}; refusing it`);
+    return abort(PreflightReason.preflightUnavailable, "could not read the token state; retry later");
+  };
 
   const beforeVerify: BeforeVerifyHook = async ({ paymentPayload, requirements, transportContext }) => {
     if (requirements.network !== opts.network) return undefined;
@@ -186,15 +207,12 @@ export function hostedPreflightHooks(opts: HostedPreflightOptions): HostedPrefli
       const pending = tracking ? tracking.inFlight.total(opts.network, token, from, tracking.hold) : NOTHING_IN_FLIGHT;
       const refused = shortOfFunds(balance, amount, pending);
       if (refused) return refused;
-      if (tracking) checked.set(tracking.hold, { payer: from, amount, validBefore: tracking.validBefore, balance });
+      if (tracking) {
+        checked.set(tracking.hold, { payer: from, amount, validBefore: tracking.validBefore, balance, leftMs: read.deadlineMs - now() });
+      }
       return undefined;
     } catch (err) {
-      if (err instanceof TokenUnsupportedError) {
-        log.error(`[x402] token of asset "${logSafe(asset.id, 64)}" cannot be used for x402 payments: ${logSafe(err)}`);
-        return abort(PreflightReason.unsupportedAsset, "the token cannot be used for x402 payments");
-      }
-      log.warn(`[x402] preflight of a payment in "${logSafe(asset.id, 64)}" failed: ${logSafe(err)}; refusing it`);
-      return abort(PreflightReason.preflightUnavailable, "could not read the token state; retry later");
+      return readRefusal(asset, err);
     }
   };
 
@@ -213,11 +231,12 @@ export function hostedPreflightHooks(opts: HostedPreflightOptions): HostedPrefli
         log.error(`[x402] a payment in "${logSafe(asset.id, 64)}" was verified without passing the preflight; refusing it`);
         return abort(PreflightReason.preflightUnavailable, "the gateway cannot track this payment while it is in flight");
       }
-      // No await from here on: the funds check (with the balance read before verify) and the reservation are
-      // one step, so two concurrent payments of this payer cannot both be reserved on a balance that covers one.
+      // No await from here to the reservation: the funds check (with the balance read before verify) and the
+      // reservation are one step, so two concurrent payments of this payer cannot both be reserved on a balance
+      // that covers one.
       const token = asset.packageHash;
-      const refused = shortOfFunds(payment.balance, payment.amount, inFlight.total(opts.network, token, payment.payer, hold));
-      if (refused) return refused;
+      const short = shortOfFunds(payment.balance, payment.amount, inFlight.total(opts.network, token, payment.payer, hold));
+      if (short) return short;
       const reserved = inFlight.reserve(hold, {
         network: opts.network,
         asset: token,
@@ -230,7 +249,19 @@ export function hostedPreflightHooks(opts: HostedPreflightOptions): HostedPrefli
         return abort(`${PreflightReason.preflightUnavailable}: too many payments in flight; retry later`, "the in-flight payments are at their limit");
       }
       if (reserved === "released") return abort(PreflightReason.preflightUnavailable, "the call of this payment has already ended");
-      return undefined;
+      // A payment of this payer that settled while this one was being verified is no longer in flight, and the
+      // balance read before verify may not show what it spent: read the balance again, this payment counting
+      // meanwhile, and check it once more. A refusal ends the call, so its hold is released here already.
+      let balance: bigint;
+      try {
+        balance = await opts.probe.balanceOf(token, payment.payer, { deadlineMs: now() + payment.leftMs });
+      } catch (err) {
+        hold.release();
+        return readRefusal(asset, err);
+      }
+      const refused = shortOfFunds(balance, payment.amount, inFlight.total(opts.network, token, payment.payer, hold));
+      if (refused) hold.release();
+      return refused;
     } catch (err) {
       log.warn(`[x402] tracking a verified payment in "${logSafe(asset.id, 64)}" failed: ${logSafe(err)}; refusing it`);
       return abort(PreflightReason.preflightUnavailable, "the gateway cannot track this payment while it is in flight");

@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { PaymentPayload, PaymentRequirements, VerifyResponse } from "@x402/core/types";
 import type { ResolvedAsset } from "@cascet/core";
-import { createCasperRpc, type RpcFetch } from "./casper-rpc.js";
+import { createCasperRpc, type CasperRpc, type RpcFetch } from "./casper-rpc.js";
 import { HOSTED_PREFLIGHT_DEADLINE_MS, hostedPreflightHooks, insufficientFundsInFlight, PreflightReason } from "./hosted-preflight.js";
 import { IN_FLIGHT_MARGIN_MS, InFlightPayments, withPaymentHold, type PaymentHold } from "./in-flight.js";
-import { WCSPR_TESTNET, wcsprNodeRoutes, wcsprNonceCall, wcsprRequirements } from "./testing/fake-node.js";
+import { u256Response, WCSPR_TESTNET, wcsprBalanceCall, wcsprNodeRoutes, wcsprNonceCall, wcsprRequirements } from "./testing/fake-node.js";
 import * as fx from "./testing/rpc-fixtures.js";
-import { hangingFetch, replayFetch, type Replay } from "./testing/rpc-replay.js";
+import { FakeClock, hangingFetch, replayFetch, rpcError, type Replay } from "./testing/rpc-replay.js";
 import { TokenProbe } from "./token-probe.js";
 
 const NETWORK = "casper:casper-test";
@@ -41,19 +41,32 @@ const payment = (requirements: PaymentRequirements, authorization: Record<string
 
 type Refusal = { abort: true; reason: string; message?: string };
 
-/** The hooks over a probe whose node answers `routes` (recorded testnet Wrapped CSPR state by default). */
+/**
+ * The hooks over a probe whose node answers `routes` (recorded testnet Wrapped CSPR state by default). With `now`, the
+ * probe and the hooks share that clock; with `rpc`, the probe's node client is wrapped in it.
+ */
 function preflight(
-  opts: { routes?: Record<string, Replay>; fetchImpl?: RpcFetch; asset?: Partial<ResolvedAsset>; deadlineMs?: number; inFlight?: InFlightPayments } = {},
+  opts: {
+    routes?: Record<string, Replay>;
+    fetchImpl?: RpcFetch;
+    asset?: Partial<ResolvedAsset>;
+    deadlineMs?: number;
+    inFlight?: InFlightPayments;
+    now?: () => number;
+    rpc?: (rpc: CasperRpc) => CasperRpc;
+  } = {},
 ) {
   const calls: string[] = [];
   const routes = opts.routes ?? wcsprNodeRoutes({ balances: { [PAYER]: 1_000_000_000n } });
-  const probe = new TokenProbe(createCasperRpc("http://node.invalid/rpc", { fetchImpl: opts.fetchImpl ?? replayFetch(routes, calls) }));
+  const rpc = createCasperRpc("http://node.invalid/rpc", { fetchImpl: opts.fetchImpl ?? replayFetch(routes, calls) });
+  const probe = new TokenProbe(opts.rpc ? opts.rpc(rpc) : rpc, { now: opts.now });
   const hooks = hostedPreflightHooks({
     probe,
     network: NETWORK,
     assets: [{ ...WCSPR_ASSET, ...opts.asset }],
     deadlineMs: opts.deadlineMs,
     inFlight: opts.inFlight,
+    now: opts.now,
   });
   /** The payment as x402 hands it to the hooks; with `hold`, as for a gateway call: with the call's hold in its request context. */
   const contextOf = (requirements: PaymentRequirements, paymentPayload: PaymentPayload, hold?: PaymentHold) => ({
@@ -226,6 +239,81 @@ describe("payments in flight in the hosted preflight", () => {
       message: `payer balance ${PRICE} does not cover ${PRICE} plus ${PRICE} already in flight`,
     });
     assert.equal(inFlight.size, 1);
+  });
+
+  it("checks the funds of a verified payment on the balance as it is then: a payment that settled meanwhile spent it", async () => {
+    // The payer's balance funds one payment, until a settlement spends it.
+    const routes = wcsprNodeRoutes({ balances: { [PAYER]: BigInt(PRICE) } });
+    const inFlight = new InFlightPayments();
+    const { hooks, contextOf, run } = preflight({ inFlight, routes });
+    // A payment passes its checks before verify and waits for the facilitator.
+    const waiting = contextOf(requirements, payment(requirements, { nonce: nonce("01") }), inFlight.open());
+    assert.equal(await hooks.beforeVerify(waiting), undefined);
+    // Meanwhile another payment of the payer is verified and reserved, settles (the node shows the debit), and its call ends.
+    const settled = inFlight.open();
+    assert.equal(await run(requirements, payment(requirements, { nonce: nonce("02") }), settled), undefined);
+    routes[wcsprBalanceCall(PAYER)] = u256Response(0n);
+    settled.release();
+    // Nothing is in flight any more, but the balance the first payment was checked on before verify is spent.
+    assert.deepEqual(await hooks.afterVerify({ ...waiting, result: { isValid: true } }), {
+      abort: true,
+      reason: PreflightReason.insufficientFunds,
+      message: `payer balance 0 is below ${PRICE}`,
+    });
+    assert.equal(inFlight.size, 0);
+  });
+
+  it("refuses a verified payment whose balance cannot be read again, as before verify, and reserves nothing", async () => {
+    const refusals: Array<[Replay, string]> = [
+      [new Error("ECONNRESET"), PreflightReason.preflightUnavailable],
+      [rpcError(-32018, "Node request failure", "dictionary URef not found"), PreflightReason.unsupportedAsset],
+    ];
+    for (const [answer, reason] of refusals) {
+      const routes = wcsprNodeRoutes({ balances: { [PAYER]: BigInt(PRICE) } });
+      const inFlight = new InFlightPayments();
+      const { hooks, contextOf } = preflight({ inFlight, routes });
+      const context = contextOf(requirements, payment(requirements), inFlight.open());
+      assert.equal(await hooks.beforeVerify(context), undefined);
+      routes[wcsprBalanceCall(PAYER)] = answer;
+      assert.equal(((await hooks.afterVerify({ ...context, result: { isValid: true } })) as Refusal | undefined)?.reason, reason);
+      assert.equal(inFlight.size, 0);
+    }
+  });
+
+  it("gives the balance read after verify only what the reads before it left of the deadline, however long verify took", async () => {
+    for (const [callMs, left] of [
+      [400, HOSTED_PREFLIGHT_DEADLINE_MS - 5 * 400],
+      [1_000, 0],
+    ] as const) {
+      const clock = new FakeClock(1_000_000);
+      const timeouts: Array<number | undefined> = [];
+      // Every node call takes `callMs` on the test clock and records the timeout it got.
+      const timed = (rpc: CasperRpc): CasperRpc => ({
+        url: rpc.url,
+        call: (method, params, callOpts) => {
+          timeouts.push(callOpts?.timeoutMs);
+          clock.advance(callMs);
+          return rpc.call(method, params, callOpts);
+        },
+      });
+      const inFlight = new InFlightPayments({ now: clock.now });
+      const routes = wcsprNodeRoutes({ balances: { [PAYER]: BigInt(PRICE) } });
+      const { hooks, contextOf } = preflight({ inFlight, now: clock.now, rpc: timed, routes });
+      const context = contextOf(requirements, payment(requirements), inFlight.open());
+      assert.equal(await hooks.beforeVerify(context), undefined);
+      assert.equal(timeouts.length, 5, "package, contract, name, nonce, balance");
+      clock.advance(60_000); // the facilitator's verify: not preflight time
+      const after = await hooks.afterVerify({ ...context, result: { isValid: true } });
+      if (left > 0) {
+        assert.equal(after, undefined);
+        assert.deepEqual(timeouts.slice(5), [left], `the balance read after verify got the ${left} ms left`);
+        assert.equal(inFlight.size, 1);
+      } else {
+        assert.deepEqual(after, { abort: true, reason: PreflightReason.preflightUnavailable, message: "could not read the token state; retry later" });
+        assert.equal(timeouts.length, 5, "a spent deadline: the node is not asked again");
+        assert.equal(inFlight.size, 0);
+      }
+    }
   });
 
   it("refuses a verified payment that did not pass its checks before verify", async () => {

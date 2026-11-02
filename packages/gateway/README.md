@@ -133,16 +133,21 @@ payer's other payments in flight in that token (below). A payment that
 fails a check gets a 402 naming it (`nonce_already_used`,
 `insufficient_funds`, `authorization_style_mismatch`,
 `token_domain_mismatch`, `unsupported_asset`). When the node cannot be read
-within 5 s the payment is refused with `preflight_unavailable` (fail closed:
-nothing was charged and the buyer may retry). Without a node the gateway
-warns at startup that this preflight is off.
+within 5 s (all of a payment's reads together, before and after verify) the
+payment is refused with `preflight_unavailable` (fail closed: nothing was
+charged and the buyer may retry). Without a node the gateway warns at
+startup that this preflight is off.
 
 Payments in flight count against the balance, because the balance a payment
 is checked against does not show the payer's payments that have not settled
 yet. A payment that passes the preflight and that the hosted facilitator
 then verifies reserves its amount for its payer and token; the balance must
 cover it on top of the payer's reservations, before verify and again once it
-is verified. Only verified payments count: the gateway's own checks do not
+is verified. The gateway then reads the balance once more, the payment
+counting meanwhile, and refuses the payment unless that balance covers it
+too: a payment of the payer that settled while this one was being verified
+no longer counts as in flight, and only a fresh read shows what it spent.
+Only verified payments count: the gateway's own checks do not
 verify the signature, so a payment forged from a payer's public key, which
 the facilitator refuses, never holds back the payer's real payments. A
 reservation lasts until its call ends: when its settlement finishes (settled
