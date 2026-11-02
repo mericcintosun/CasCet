@@ -26,13 +26,18 @@ export const SUGGESTED_HEADROOM_PERCENT = 130;
 /** Suggested limits are rounded up to 0.01 CSPR. */
 export const SUGGESTED_STEP_MOTES = 10_000_000n;
 /**
- * Casper's baseline payment, the chainspec's `baseline_motes_amount` (2.5 CSPR):
- * a deploy must pay at least this much and a transaction's initiator must hold
- * at least this much, and none of 418 recorded testnet transactions (CasCet's
- * deployer, Wrapped CSPR, csprUSD, the hosted fee payer) uses a lower limit
- * (the hosted facilitator settles with exactly 2.5 CSPR). Suggestions never go below it.
+ * Casper's minimum initiator balance, the chainspec's `baseline_motes_amount`
+ * (2.5 CSPR on testnet and mainnet): the node accepts a transaction only when
+ * its initiator (for a settle, the fee payer) holds at least this much. It is
+ * a minimum balance, not a minimum gas limit: the node refuses only a zero
+ * limit for a Version1 transaction, so a suggestion below it is a valid limit.
+ * The floors CasCet keeps on its own limits (2.5 CSPR for wrap-wcspr and
+ * fund-token, per style for settles) are CasCet policy, set where those limits
+ * are chosen. (None of 418 recorded testnet transactions of CasCet's deployer,
+ * Wrapped CSPR, csprUSD and the hosted fee payer used a lower limit; the hosted
+ * facilitator settles with exactly 2.5 CSPR.)
  */
-export const BASELINE_PAYMENT_MOTES = 2_500_000_000n;
+export const MIN_INITIATOR_BALANCE_MOTES = 2_500_000_000n;
 
 /** Gas figures of one executed transaction, in motes. */
 export interface TransactionCost {
@@ -366,9 +371,7 @@ export interface GasSuggestion {
   /** Successful transactions measured. */
   samples: number;
   maxConsumedMotes: bigint;
-  /** ceil(1.3 × max consumed), to 0.01 CSPR. */
-  measuredLimitMotes: bigint;
-  /** The measured limit, at least {@link BASELINE_PAYMENT_MOTES}. */
+  /** The suggested gas limit: ceil(1.3 × max consumed), to 0.01 CSPR. */
   suggestedLimitMotes: bigint;
   /** The limit currently configured for this kind, when the caller knows it. */
   currentLimitMotes?: bigint;
@@ -377,9 +380,8 @@ export interface GasSuggestion {
 /**
  * Suggested gas limits per kind of transaction, from the successful ones
  * (a reverted transaction's consumption says nothing about what a settle
- * needs): ceil(1.3 × max consumed), and never below Casper's 2.5 CSPR
- * baseline payment. `currentLimit` names the configured limit of a kind, for
- * comparison.
+ * needs): ceil(1.3 × max consumed), as measured. `currentLimit` names the
+ * configured limit of a kind, for comparison.
  */
 export function gasSuggestions(
   reports: readonly TransactionReport[],
@@ -396,13 +398,11 @@ export function gasSuggestions(
   }
   return [...groups.entries()].map(([label, { kind, consumed }]) => {
     const current = currentLimit(kind);
-    const measuredLimitMotes = suggestGasLimitMotes(consumed);
     return {
       label,
       samples: consumed.length,
       maxConsumedMotes: consumed.reduce((a, b) => (b > a ? b : a)),
-      measuredLimitMotes,
-      suggestedLimitMotes: measuredLimitMotes > BASELINE_PAYMENT_MOTES ? measuredLimitMotes : BASELINE_PAYMENT_MOTES,
+      suggestedLimitMotes: suggestGasLimitMotes(consumed),
       ...(current !== undefined ? { currentLimitMotes: current } : {}),
     };
   });
@@ -418,17 +418,25 @@ export function defaultLimitFor(kind: TransactionKind): bigint | undefined {
   return undefined;
 }
 
-/** Human-readable lines for {@link gasSuggestions}. */
+/**
+ * Human-readable lines for {@link gasSuggestions}, plus a note on Casper's
+ * minimum initiator balance when a suggestion is below it (so nobody reads a
+ * low limit as "the fee payer may hold less").
+ */
 export function formatGasSuggestions(suggestions: readonly GasSuggestion[]): string[] {
-  return suggestions.map(s => {
-    const why =
-      s.suggestedLimitMotes === s.measuredLimitMotes
-        ? "ceil(1.3 × max)"
-        : `ceil(1.3 × max) = ${formatCspr(s.measuredLimitMotes, 2)} CSPR, raised to Casper's ${formatCspr(BASELINE_PAYMENT_MOTES, 1)} CSPR baseline payment`;
+  const lines = suggestions.map(s => {
     const current = s.currentLimitMotes !== undefined ? `; current limit ${formatCspr(s.currentLimitMotes, 2)} CSPR` : "";
     return (
       `${s.label}: max consumed ${formatCspr(s.maxConsumedMotes)} CSPR over ${s.samples} transaction${s.samples === 1 ? "" : "s"} → ` +
-      `suggested limit ${formatCspr(s.suggestedLimitMotes, 2)} CSPR (${why})${current}`
+      `suggested limit ${formatCspr(s.suggestedLimitMotes, 2)} CSPR (ceil(1.3 × max))${current}`
     );
   });
+  if (suggestions.some(s => s.suggestedLimitMotes < MIN_INITIATOR_BALANCE_MOTES)) {
+    lines.push(
+      `note: Casper accepts a transaction only when its initiator (the fee payer) holds at least ` +
+        `${formatCspr(MIN_INITIATOR_BALANCE_MOTES, 1)} CSPR (chainspec baseline_motes_amount); ` +
+        "that is a minimum balance, not a minimum gas limit",
+    );
+  }
+  return lines;
 }

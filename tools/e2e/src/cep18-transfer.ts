@@ -20,6 +20,7 @@ export const CEP18_TRANSFER_ARGS: ReadonlyArray<readonly [string, unknown]> = [
 export const RECORDED_TRANSFER_CONSUMED_MOTES = 455_824_466n;
 /** Default gas limit of a transfer (fund-token's limit since it was written; about 10× the measured consumption). */
 export const DEFAULT_TRANSFER_GAS_MOTES = 5_000_000_000n;
+/** Floor of `--gas-cspr`: CasCet policy (wide headroom over the measured ~0.46 CSPR), not a node rule. */
 export const MIN_TRANSFER_GAS_MOTES = 2_500_000_000n;
 export const MAX_TRANSFER_GAS_MOTES = 20_000_000_000n;
 

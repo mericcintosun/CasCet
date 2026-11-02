@@ -4,7 +4,6 @@ import { DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE } from "@cascet/core";
 import { createCasperRpc } from "@cascet/gateway";
 import * as gx from "./gas-fixtures.js";
 import {
-  BASELINE_PAYMENT_MOTES,
   classifyTransaction,
   DEFAULT_ANCHOR_GAS_MOTES,
   defaultLimitFor,
@@ -14,6 +13,7 @@ import {
   formatGasSuggestions,
   gasSuggestions,
   kindLabel,
+  MIN_INITIATOR_BALANCE_MOTES,
   normalizeTransactionHash,
   parseTransactionCost,
   readTransactionReport,
@@ -252,14 +252,13 @@ describe("measured gas: report and suggestions", () => {
     assert.equal(widths.size, 1, "rows are aligned");
   });
 
-  test("suggests a limit per kind from successful transactions only", () => {
+  test("suggests a limit per kind from successful transactions only, as measured", () => {
     const suggestions = gasSuggestions([settle, reverted, anchor, mainnet], defaultLimitFor);
     assert.deepEqual(suggestions, [
       {
         label: "settle (legacy-amount)",
         samples: 2,
         maxConsumedMotes: 2_707_825_069n,
-        measuredLimitMotes: 3_530_000_000n,
         suggestedLimitMotes: 3_530_000_000n,
         currentLimitMotes: BigInt(DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE["legacy-amount"]),
       },
@@ -267,17 +266,24 @@ describe("measured gas: report and suggestions", () => {
         label: "anchor",
         samples: 1,
         maxConsumedMotes: 1_151_081_880n,
-        measuredLimitMotes: 1_500_000_000n,
-        suggestedLimitMotes: BASELINE_PAYMENT_MOTES,
+        suggestedLimitMotes: 1_500_000_000n, // not raised to 2.5 CSPR: that is a minimum balance, not a minimum limit
         currentLimitMotes: DEFAULT_ANCHOR_GAS_MOTES,
       },
     ]);
     assert.deepEqual(formatGasSuggestions(suggestions), [
       "settle (legacy-amount): max consumed 2.7078 CSPR over 2 transactions → suggested limit 3.53 CSPR (ceil(1.3 × max)); current limit 4.00 CSPR",
-      "anchor: max consumed 1.1511 CSPR over 1 transaction → suggested limit 2.50 CSPR " +
-        "(ceil(1.3 × max) = 1.50 CSPR, raised to Casper's 2.5 CSPR baseline payment); current limit 2.50 CSPR",
+      "anchor: max consumed 1.1511 CSPR over 1 transaction → suggested limit 1.50 CSPR (ceil(1.3 × max)); current limit 2.50 CSPR",
+      "note: Casper accepts a transaction only when its initiator (the fee payer) holds at least 2.5 CSPR " +
+        "(chainspec baseline_motes_amount); that is a minimum balance, not a minimum gas limit",
     ]);
     assert.deepEqual(gasSuggestions([reverted]), []);
+  });
+
+  test("prints the minimum-balance note only next to a suggestion below 2.5 CSPR", () => {
+    assert.equal(MIN_INITIATOR_BALANCE_MOTES, 2_500_000_000n);
+    const lines = formatGasSuggestions(gasSuggestions([settle, mainnet]));
+    assert.deepEqual(lines, ["settle (legacy-amount): max consumed 2.7078 CSPR over 2 transactions → suggested limit 3.53 CSPR (ceil(1.3 × max))"]);
+    assert.deepEqual(formatGasSuggestions([]), []);
   });
 
   test("knows the default limits it compares against", () => {
