@@ -60,10 +60,30 @@ describe("InFlightPayments", () => {
     inFlight.reserve(hold, payment({ amount: 30n }));
     assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER), { count: 1, amount: 30n }, "the second replaced the first");
     assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER, hold), none);
-    const stranger: PaymentHold = { release: () => {} };
+    const stranger: PaymentHold = { release: () => {}, keepUntilExpiry: () => {} };
     assert.equal(inFlight.reserve(stranger, payment()), "released");
     assert.equal(inFlight.reserve(new InFlightPayments().open(), payment()), "released");
     assert.equal(inFlight.size, 1);
+  });
+
+  it("keeps the reservation of a call whose payment may still execute until it expires, whatever release() follows", () => {
+    let now = 0;
+    const inFlight = new InFlightPayments({ now: () => now });
+    const hold = inFlight.open();
+    inFlight.reserve(hold, payment());
+    hold.keepUntilExpiry();
+    hold.release();
+    assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER), { count: 1, amount: 100n }, "still counts after its call ended");
+    assert.equal(inFlight.reserve(hold, payment({ amount: 7n })), "released", "nothing more is reserved on it");
+    assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER), { count: 1, amount: 100n });
+    now = VALID_BEFORE * 1_000 + IN_FLIGHT_MARGIN_MS;
+    assert.deepEqual([inFlight.total(NETWORK, ASSET, PAYER), inFlight.size], [none, 0], "until it expires");
+    // The first end counts: a call that was released keeps nothing.
+    const released = inFlight.open();
+    inFlight.reserve(released, payment({ validBefore: VALID_BEFORE * 10 }));
+    released.release();
+    released.keepUntilExpiry();
+    assert.equal(inFlight.size, 0);
   });
 
   it("stops counting a reservation once its authorization's validBefore plus the margin has passed", () => {

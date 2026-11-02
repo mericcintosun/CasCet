@@ -175,6 +175,12 @@ interface SettleOutcome {
   note?: string;
   /** x402 headers to return (PAYMENT-RESPONSE). */
   headers?: Record<string, string>;
+  /**
+   * The token's events show this authorization's nonce used or canceled:
+   * whatever the status, the transfer can no longer execute (and spend the
+   * payer's balance).
+   */
+  nonceUsed?: boolean;
 }
 
 /** x402's answer for a payment that matched a route and passed the facilitator's verify. */
@@ -207,7 +213,10 @@ interface PaidCall {
   paymentId: string;
   parentId?: string;
   started: number;
-  /** The payment's in-flight reservation (see PaidRequest.hold), released once its settlement finished. */
+  /**
+   * The payment's in-flight reservation (see PaidRequest.hold), released once its settlement finished, or
+   * kept until it expires when the outcome is unknown (the transfer may still execute).
+   */
   hold: PaymentHold;
 }
 
@@ -519,16 +528,22 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   }
 
   /**
-   * Settle a verified payment and classify the outcome. Once that is known
-   * (settled, failed or unknown), the payment no longer counts as in flight:
-   * its reservation is released before the tool runs (settleBeforeExecute)
-   * and before the receipt is written.
+   * Settle a verified payment and classify the outcome. A payment that
+   * settled or failed no longer counts as in flight: its reservation is
+   * released before the tool runs (settleBeforeExecute) and before the receipt
+   * is written. One whose outcome is unknown (or whose settling threw) may
+   * still execute until its authorization expires, so its reservation keeps
+   * counting until then (see in-flight.ts), unless the token's events show its
+   * nonce used.
    */
   async function settle(call: PaidCall): Promise<SettleOutcome> {
+    let outcome: SettleOutcome | undefined;
     try {
-      return await settleAndClassify(call);
+      outcome = await settleAndClassify(call);
+      return outcome;
     } finally {
-      call.hold.release();
+      if (outcome && (outcome.status !== "unknown" || outcome.nonceUsed)) call.hold.release();
+      else call.hold.keepUntilExpiry();
     }
   }
 
@@ -624,6 +639,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
               payer: auth.from,
               txHash: outcome.txHash,
               note: `facilitator answered "${clip(outcome.reason ?? "", 200)}", but token event #${found.eventIndex} shows this exact authorization paid payTo (${through ?? "settled by another submitter"})`,
+              nonceUsed: true,
             };
           }
           return {
@@ -633,15 +649,23 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
               `token event #${found.eventIndex} shows this exact authorization paid payTo, ` +
               `${through ?? "executed by a submitter other than this gateway's facilitator"}; ` +
               "settlement.acceptThirdPartySettlement is off, so the result was withheld",
+            nonceUsed: true,
           };
         }
         case "canceled":
-          return { ...outcome, status: "failed", note: `the payer canceled the authorization nonce on-chain (token event #${found.eventIndex})` };
+          return {
+            ...outcome,
+            status: "failed",
+            note: `the payer canceled the authorization nonce on-chain (token event #${found.eventIndex})`,
+            nonceUsed: true,
+          };
         case "consumed-elsewhere":
-          // Layout-dependent evidence: never turns an unknown outcome into a failure.
+          // Layout-dependent evidence: never turns an unknown outcome into a failure. The nonce is used, though,
+          // so this authorization can no longer execute.
           return {
             ...outcome,
             note: `the authorization nonce was used on-chain without the expected transfer to payTo right after it (token event #${found.eventIndex}: ${found.detail})`,
+            nonceUsed: true,
           };
         case "not-found":
           return outcome;
@@ -835,7 +859,8 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     }
 
     // However a paid call ends (its settlement, a refusal, a cancellation, an upstream error or
-    // timeout, a throw), the payment the preflight reserved for it is no longer in flight.
+    // timeout, a throw), the payment the preflight reserved for it is no longer in flight; unless
+    // its settlement outcome was unknown: settle() then kept the reservation, and this changes nothing.
     const hold = rail.inFlight.open();
     try {
       await handlePaidCall(req, res, { id, name, args, policy, table: snapshot, started, hold });

@@ -24,13 +24,16 @@ import { normalizeAccountAddress } from "./authorization.js";
  * gateway opens a hold for each paid call, hands it to x402 with the call's
  * request context ({@link withPaymentHold}; x402 passes that context on to the
  * preflight's verify hooks), and releases it when the call's settlement
- * finishes (settled, failed or unknown) or the call ends without one
- * (refused, canceled, an upstream error, a timeout, a throw). A reservation
- * that is never released expires {@link IN_FLIGHT_MARGIN_MS} after its
- * authorization's validBefore: by then the authorization can no longer
- * execute, so it cannot spend the balance any more. At most `maxPayments`
- * reservations are live; beyond that new payments are refused, never live
- * reservations forgotten (that would let an unfunded payment through).
+ * finishes (settled or failed) or the call ends without one (refused,
+ * canceled, an upstream error, a timeout, a throw). When the settlement's
+ * outcome is unknown the transfer may still execute and spend the balance,
+ * so the call ends keeping its reservation ({@link PaymentHold.keepUntilExpiry}).
+ * A reservation that is not released expires {@link IN_FLIGHT_MARGIN_MS}
+ * after its authorization's validBefore: by then the authorization can no
+ * longer execute, so it cannot spend the balance any more. At most
+ * `maxPayments` reservations are live; beyond that new payments are refused,
+ * never live reservations forgotten (that would let an unfunded payment
+ * through).
  */
 
 /** How long after its authorization's validBefore a reservation counts at most (clock skew, inclusion). */
@@ -58,10 +61,21 @@ export interface InFlightTotal {
   amount: bigint;
 }
 
-/** One paid call's share of the payments in flight: its payment's reservation, once the preflight made one. */
+/**
+ * One paid call's share of the payments in flight: its payment's reservation,
+ * once the preflight made one. The call ends once, with the first of
+ * release() and keepUntilExpiry(); later calls of either change nothing, and
+ * nothing can be reserved on the hold afterwards.
+ */
 export interface PaymentHold {
-  /** The call ended: its payment is no longer in flight. Idempotent; nothing can be reserved on it afterwards. */
+  /** The call ended: its payment is no longer in flight (it settled, failed, or never reached settlement). */
   release(): void;
+  /**
+   * The call ended, but its payment may still execute (the outcome of its
+   * settlement is unknown): its reservation keeps counting until it expires,
+   * {@link IN_FLIGHT_MARGIN_MS} after its authorization's validBefore.
+   */
+  keepUntilExpiry(): void;
 }
 
 export type ReserveOutcome = "reserved" | "full" | "released";
@@ -98,9 +112,9 @@ export class InFlightPayments {
     this.now = opts.now ?? Date.now;
   }
 
-  /** A hold for one paid call; release it when the call ends. */
+  /** A hold for one paid call; release it (or keep its reservation until it expires) when the call ends. */
   open(): PaymentHold {
-    const hold: PaymentHold = { release: () => this.end(hold) };
+    const hold: PaymentHold = { release: () => this.end(hold, false), keepUntilExpiry: () => this.end(hold, true) };
     this.opened.add(hold);
     return hold;
   }
@@ -152,9 +166,11 @@ export class InFlightPayments {
     return this.reservations.size;
   }
 
-  private end(hold: PaymentHold): void {
+  /** The call of `hold` ended; its reservation goes unless `keep` (it then counts until it expires). Only the first end counts. */
+  private end(hold: PaymentHold, keep: boolean): void {
+    if (this.ended.has(hold)) return;
     this.ended.add(hold);
-    this.forget(hold);
+    if (!keep) this.forget(hold);
   }
 
   private forget(hold: PaymentHold): void {

@@ -145,19 +145,24 @@ cover it on top of the payer's reservations, before verify and again once it
 is verified. Only verified payments count: the gateway's own checks do not
 verify the signature, so a payment forged from a payer's public key, which
 the facilitator refuses, never holds back the payer's real payments. A
-reservation lasts until its call ends: when its settlement finishes
-(settled, failed or unknown; with `settleBeforeExecute`, before the tool
-runs), or when the call ends without one (the gateway refused the verified
-payment, the tool failed or timed out, anything threw). Of two concurrent
-payments that one balance funds, only one passes; the other gets
-`insufficient_funds: insufficient balance once 1 in-flight payment is
-counted` and nothing runs for it. A reservation that is somehow never
-released stops counting 2 minutes after its authorization's `validBefore`,
-when the authorization can no longer execute. The gateway tracks at most
-10 000 payments in flight and refuses new ones beyond that
-(`preflight_unavailable: too many payments in flight; retry later`) rather
-than forget one. Like the replay guard, this is per gateway process:
-gateways that share a payer and a token do not see each other's payments.
+reservation lasts until its call ends: when its settlement finishes (settled
+or failed; with `settleBeforeExecute`, before the tool runs), or when the
+call ends without one (the gateway refused the verified payment, the tool
+failed or timed out, anything threw). A payment whose settlement outcome is
+unknown keeps counting after its call, because its transfer may still
+execute, until its authorization can no longer execute (2 minutes after its
+`validBefore`), unless the on-chain check of that settlement found its nonce
+already used. Until then the payer's next payment in that token passes only
+if the balance covers both. Of two concurrent payments that one balance
+funds, only one passes; the other gets `insufficient_funds: insufficient
+balance once 1 in-flight payment is counted` and nothing runs for it. A
+reservation that is somehow never released stops counting 2 minutes after
+its authorization's `validBefore`, when the authorization can no longer
+execute. The gateway tracks at most 10 000 payments in flight and refuses
+new ones beyond that (`preflight_unavailable: too many payments in flight;
+retry later`) rather than forget one. Like the replay guard, this is per
+gateway process: gateways that share a payer and a token do not see each
+other's payments.
 
 ## Payment flow
 

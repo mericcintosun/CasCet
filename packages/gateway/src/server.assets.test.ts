@@ -17,7 +17,7 @@ import { ExactCasperScheme } from "@x402/casper/exact/client";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_FACILITATOR_URL, type CascetConfig } from "@cascet/core";
 import type { PreemptionQuery, SettlementPreemptionChecker } from "./preemption.js";
-import { startGateway } from "./server.js";
+import { startGateway, type GatewayOptions } from "./server.js";
 import { startFakeFacilitator, type FakeFacilitator, type Reply } from "./testing/fake-facilitator.js";
 import { startFakeNode, u256Response, wcsprBalanceCall, wcsprNodeRoutes, wcsprNonceCall } from "./testing/fake-node.js";
 import { createFakeUpstream, type FakeTool } from "./testing/fake-upstream.js";
@@ -819,7 +819,7 @@ describe("the hosted facilitator", () => {
    * memory: nothing reaches the real host) and whose legacy token is settled by
    * a local fake facilitator.
    */
-  async function hostedGateway(input: Record<string, unknown> = {}, script: HostedScript = {}) {
+  async function hostedGateway(input: Record<string, unknown> = {}, script: HostedScript = {}, gatewayOptions: Pick<GatewayOptions, "preemptionChecker"> = {}) {
     const hosted: Array<{ path: string; authorization: string | null; body?: HostedBody }> = [];
     const facilitatorFetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));
@@ -856,6 +856,7 @@ describe("the hosted facilitator", () => {
         receiptsPath: join(dir, "receipts.jsonl"),
         preemptionChecker: null,
         facilitatorFetch,
+        ...gatewayOptions,
       });
     } catch (err) {
       await legacy.close();
@@ -988,7 +989,11 @@ describe("the hosted facilitator", () => {
      * script gets `whileInFlight`: called at some stage of the first payment's call, it
      * presents one more payment of the payer right then (once) and keeps its answer in `during`.
      */
-    async function fundsOne(script: (whileInFlight: () => Promise<void>) => HostedScript = () => ({}), input: Record<string, unknown> = {}) {
+    async function fundsOne(
+      script: (whileInFlight: () => Promise<void>) => HostedScript = () => ({}),
+      input: Record<string, unknown> = {},
+      gatewayOptions: Pick<GatewayOptions, "preemptionChecker"> = {},
+    ) {
       const node = await startFakeNode(wcsprNodeRoutes({ balances: { [PAYER]: BigInt(WCSPR_PRICE_RAW) } }));
       const during: RpcResponse[] = [];
       let pay: (() => Promise<RpcResponse>) | undefined;
@@ -1000,7 +1005,7 @@ describe("the hosted facilitator", () => {
       };
       let gateway: Awaited<ReturnType<typeof hostedGateway>>;
       try {
-        gateway = await hostedGateway({ settlement: { nodeUrl: node.url }, ...input }, script(whileInFlight));
+        gateway = await hostedGateway({ settlement: { nodeUrl: node.url }, ...input }, script(whileInFlight), gatewayOptions);
       } catch (err) {
         await node.close();
         throw err;
@@ -1141,11 +1146,6 @@ describe("the hosted facilitator", () => {
         first: res => assert.deepEqual([res.status, res.body.error?.message], [402, "payment settlement failed: invalid_exact_casper_facilitator_expired"]),
       },
       {
-        name: "its settlement outcome is unknown",
-        script: whileInFlight => ({ answer: onFirst("/settle", async () => (await whileInFlight(), { status: 502, raw: "<html>Bad Gateway</html>" })) }),
-        first: res => assert.deepEqual([res.status, res.body.error?.code], [200, -32003]),
-      },
-      {
         name: "its settlement failed before its tool would run (settleBeforeExecute)",
         input: settleFirst,
         script: whileInFlight => ({ answer: onFirst("/settle", async () => (await whileInFlight(), expired)) }),
@@ -1179,6 +1179,38 @@ describe("the hosted facilitator", () => {
         }
       });
     }
+
+    it("keeps counting a payment whose settlement outcome is unknown, until its authorization expires: its transfer may still execute", async () => {
+      const unknown = { status: 502, raw: "<html>Bad Gateway</html>" };
+      const g = await fundsOne(whileInFlight => ({ answer: onFirst("/settle", async () => (await whileInFlight(), unknown)) }));
+      try {
+        const first = await g.pay();
+        assert.deepEqual([first.status, first.body.error?.code], [200, -32003]);
+        refusedInFlight(g.during[0]!);
+        // Its call ended, but the balance, which funds one payment, is still committed to its transfer.
+        refusedInFlight(await g.pay());
+        assert.equal(g.upstream.calls.length, 1, "no tool ran for a payment that balance cannot fund");
+      } finally {
+        await g.close();
+      }
+    });
+
+    it("stops counting a payment whose outcome is unknown once the token's events show its nonce used", async () => {
+      // The on-chain check finds this authorization executed, but third-party settlement is off, so the outcome
+      // stays unknown. The transfer cannot execute again; its amount is in the balance the node reports (which is
+      // fixed in this test) from now on, not in flight.
+      const paid: SettlementPreemptionChecker = { check: async () => ({ kind: "paid", eventIndex: 3 }) };
+      const unknown = { status: 502, raw: "<html>Bad Gateway</html>" };
+      const g = await fundsOne(() => ({ answer: onFirst("/settle", async () => unknown) }), {}, { preemptionChecker: paid });
+      try {
+        const first = await g.pay();
+        assert.deepEqual([first.status, first.body.error?.code], [200, -32003]);
+        assert.match(String(first.body.error?.data?.note), /token event #3 shows this exact authorization paid payTo/);
+        assert.equal((await g.pay()).status, 200);
+      } finally {
+        await g.close();
+      }
+    });
 
     it("releases the payment when the gateway refuses it after verification, or x402 throws after the preflight", async () => {
       const original = x402HTTPResourceServer.prototype.processHTTPRequest;
