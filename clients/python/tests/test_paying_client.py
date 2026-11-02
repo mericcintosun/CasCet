@@ -163,6 +163,38 @@ class TestAllowlists(unittest.TestCase):
                     client.create_payment_payload(pr)
 
 
+class TestEip712Domain(unittest.TestCase):
+    """An entry without a usable extra.name or extra.version is skipped, as by the TS client, and nothing is reserved for it."""
+
+    UNUSABLE = (
+        {"version": "1"},
+        {"name": "CasCet X402 Token"},
+        {"name": "", "version": "1"},
+        {"name": "CasCet X402 Token", "version": 1},
+        {"name": "x" * 101, "version": "1"},
+        {"name": "CasCet X402 Token", "version": "1" * 21},
+    )
+
+    def test_the_next_entry_is_paid(self):
+        for extra in self.UNUSABLE:
+            with self.subTest(extra=extra):
+                client = quiet_client()
+                payload = pay(client, make_requirements(extra=extra), make_requirements(amount="7"))
+                self.assertEqual(payload["accepted"]["amount"], "7")
+                self.assertEqual(client.spending(), {TOKEN: 7})
+
+    def test_every_unusable_domain_is_reported(self):
+        client = quiet_client()
+        with self.assertRaises(x402.PaymentAborted) as ctx:
+            pay(client, *(make_requirements(extra=extra) for extra in self.UNUSABLE))
+        message = str(ctx.exception)
+        self.assertIn("accepts[0]: malformed EIP-712 domain: extra.name is missing", message)
+        self.assertIn("accepts[1]: malformed EIP-712 domain: extra.version is missing", message)
+        self.assertIn("accepts[4]: malformed EIP-712 domain: extra.name is 101 characters long", message)
+        self.assertIn("accepts[5]: malformed EIP-712 domain: extra.version is 21 characters long", message)
+        self.assertEqual(client.spending(), {})
+
+
 class TestValidityWindow(unittest.TestCase):
     """maxTimeoutSeconds is capped like the TS SpendPolicy's maxAuthorizationSeconds (default 900)."""
 

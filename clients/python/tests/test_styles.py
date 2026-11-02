@@ -200,6 +200,7 @@ class TestSelectRequirement(unittest.TestCase):
             (wcspr_requirements(network=MAINNET), "network casper:casper is not allowed"),
             (wcspr_requirements(amount="-1"), "amount"),
             (wcspr_requirements(extra={"name": "Wrapped CSPR"}), "extra"),
+            (wcspr_requirements(extra={**WCSPR_EXTRA, "name": "W" * 101}), "extra.name is 101 characters long"),
             (styled("unknown-style"), "authorizationStyle"),
             ("not an object", "JSON object"),
         ):

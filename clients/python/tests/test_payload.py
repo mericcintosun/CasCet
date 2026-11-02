@@ -142,6 +142,47 @@ class TestRequirementValidation(unittest.TestCase):
         self.assertRejected("surrogates", extra={"name": "CasCet \ud800 Token", "version": "1"})
         self.assertRejected("surrogates", extra={"name": "CasCet X402 Token", "version": "\udc00"})
 
+    def test_extra_name_and_version_reasons(self):
+        # The TS client's SpendPolicy refuses the same entries, in the same words.
+        name = "CasCet X402 Token"
+        for extra, reason in (
+            ({"version": "1"}, "extra.name is missing"),
+            ({"name": 42, "version": "1"}, "extra.name must be a string; got 42"),
+            ({"name": None, "version": "1"}, "extra.name must be a string; got None"),
+            ({"name": "", "version": "1"}, "extra.name is empty"),
+            ({"name": "CasCet \ud800 Token", "version": "1"},
+             "extra.name contains lone UTF-16 surrogates, which have no UTF-8 form to sign over"),
+            ({"name": "x" * 101, "version": "1"},
+             "extra.name is 101 characters long, above this client's 100-character limit"),
+            ({"name": name}, "extra.version is missing"),
+            ({"name": name, "version": 1}, "extra.version must be a string; got 1"),
+            ({"name": name, "version": ""}, "extra.version is empty"),
+            ({"name": name, "version": "\udc00"},
+             "extra.version contains lone UTF-16 surrogates, which have no UTF-8 form to sign over"),
+            ({"name": name, "version": "1" * 21},
+             "extra.version is 21 characters long, above this client's 20-character limit"),
+        ):
+            with self.subTest(reason=reason):
+                with self.assertRaises(x402.ProtocolError) as ctx:
+                    build(requirements=make_requirements(extra=extra))
+                self.assertEqual(str(ctx.exception), f"malformed EIP-712 domain: {reason}")
+        # No extra at all, or one that is not an object, names no domain either.
+        for extra in (DELETE, None, name, [name, "1"]):
+            with self.subTest(extra=extra):
+                self.assertRejected("malformed EIP-712 domain: extra.name is missing", extra=extra)
+
+    def test_extra_name_and_version_bounds(self):
+        self.assertEqual((x402.MAX_TOKEN_NAME_LENGTH, x402.MAX_TOKEN_VERSION_LENGTH), (100, 20))
+        for extra in (
+            {"name": "x" * 100, "version": "1" * 20},
+            {"name": "Jeton été \U0001FA99", "version": "2"},
+            # Counted in UTF-16 code units, as the TS client counts them: a character outside the BMP counts twice.
+            {"name": "\U0001FA99" * 50, "version": "1"},
+        ):
+            with self.subTest(extra=extra):
+                self.assertEqual(build(requirements=make_requirements(extra=extra))["accepted"]["extra"], extra)
+        self.assertRejected("extra.name is 102 characters long", extra={"name": "\U0001FA99" * 51, "version": "1"})
+
     def test_max_timeout_seconds(self):
         for bad in (0, -1, True, "300", 1.5, float("inf"), float("nan"), None):
             with self.subTest(maxTimeoutSeconds=bad):

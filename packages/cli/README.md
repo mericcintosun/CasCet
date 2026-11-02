@@ -129,11 +129,12 @@ Amounts are whole numbers of raw token units (`1000000000` = 1 token with 9
 decimals). The session limit applies per token and counts signed authorizations,
 and it resets when the bridge restarts. Every `402` is also checked field by field
 (strict amounts, an authorization window of at most 15 minutes, account-hash payees,
-a known authorization style), redirects are never followed, and oversized responses
-(a `402` body over 64 KiB, any other over 16 MiB) are refused. Plain `http://` is only
-accepted on loopback. When a gateway offers several tokens, the bridge pays the first
-one these checks accept (or the first of your `CASCET_PREFER_STYLES`), and refuses,
-naming each reason, when none passes.
+a known authorization style, the token's EIP-712 name and version), redirects are
+never followed, and oversized responses (a `402` body over 64 KiB, any other over
+16 MiB) are refused. Plain `http://` is only accepted on loopback. When a gateway
+offers several tokens, the bridge pays the first one these checks accept (or the
+first of your `CASCET_PREFER_STYLES`), and refuses, naming each reason, when none
+passes.
 
 **Tool pinning (tool-poisoning defense).** On first contact with a gateway, the
 bridge records a sha256 of every tool definition it serves (name, title,

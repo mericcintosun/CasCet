@@ -33,6 +33,8 @@ export { runBridge, type BridgeOptions } from "./bridge.js";
 export {
   CONTRACT_PAYEE_REASON,
   DEFAULT_MAX_AUTHORIZATION_SECONDS,
+  MAX_TOKEN_NAME_LENGTH,
+  MAX_TOKEN_VERSION_LENGTH,
   normalizeAllowedPayTo,
   normalizeAssetHash,
   normalizeNetworks,
