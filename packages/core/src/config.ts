@@ -179,10 +179,12 @@ export const corsSchema = z
  * A paid call in the default run-then-settle mode can take up to
  * facilitatorMs + upstreamMs + settleMs (165 s with the defaults) before the
  * gateway answers, plus its read-only chain checks when `settlement.nodeUrl`
- * is set (up to 15 s after a settlement that did not succeed, 5 s before the
- * hosted facilitator verifies a payment), so buyers must wait longer than
- * that: a buyer that gives up earlier may still be charged without receiving
- * the result.
+ * is set (up to 15 s after a settlement that did not succeed, 5 s for the
+ * preflight of a payment the hosted facilitator settles: 185 s), so buyers
+ * must wait longer than that: a buyer that gives up earlier may still be
+ * charged without receiving the result. A tool that settles before it runs
+ * (`settleBeforeExecute`) adds the upstream ping before its settlement, at
+ * most 5 s (170 s, or 190 s with a node).
  */
 export const timeoutsSchema = z
   .object({

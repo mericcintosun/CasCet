@@ -56,9 +56,12 @@ export interface PaymentReceipt {
    */
   nonce?: string;
   /**
-   * Who executed the settlement: the gateway's facilitator, or another
-   * submitter whose on-chain execution of this exact authorization the gateway
-   * verified from the token's events.
+   * Who settled the payment: `facilitator` when the gateway's facilitator
+   * reported the transfer as executed; `third-party` when it did not, but the
+   * token's events show this exact authorization paid payTo. The events do not
+   * name the transaction: another submitter executed it, or possibly a
+   * transfer the facilitator had reported as pending, whose hash is then the
+   * receipt's `txHash`.
    */
   settledBy?: "facilitator" | "third-party";
   /** Human-readable context, for example why the outcome is unknown. */

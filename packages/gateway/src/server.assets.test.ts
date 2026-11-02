@@ -16,8 +16,8 @@ import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { ExactCasperScheme } from "@x402/casper/exact/client";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_FACILITATOR_URL, type CascetConfig } from "@cascet/core";
-import type { PreemptionQuery, SettlementPreemptionChecker } from "./preemption.js";
-import { startGateway } from "./server.js";
+import type { PreemptionOutcome, PreemptionQuery, SettlementPreemptionChecker } from "./preemption.js";
+import { startGateway, type GatewayOptions } from "./server.js";
 import { startFakeFacilitator, type FakeFacilitator, type Reply } from "./testing/fake-facilitator.js";
 import { startFakeNode, u256Response, wcsprBalanceCall, wcsprNodeRoutes, wcsprNonceCall } from "./testing/fake-node.js";
 import { createFakeUpstream, type FakeTool } from "./testing/fake-upstream.js";
@@ -460,6 +460,69 @@ describe("x402's automatic retry of a settlement the facilitator reported as pen
     });
   });
 
+  it("keeps the pending transaction, as possibly the one that paid, when the on-chain check finds the authorization paid", async () => {
+    const paid: SettlementPreemptionChecker = { check: async () => ({ kind: "paid", eventIndex: 7 }) };
+    for (const accept of [true, false]) {
+      await withTwoAssets({ config: { settlement: { acceptThirdPartySettlement: accept } }, gateway: { preemptionChecker: paid } }, async h => {
+        pendingThen(h, refusal(429, "rate_limited", "too many requests; retry after the window resets"));
+        const { header } = await payInAsset(h, "paid_tool", LEGACY_TOKEN);
+        const res = await callPaid(h, "paid_tool", header);
+        const [receipt] = await receipts(h);
+        assert.equal(receipt?.txHash, PENDING_TX, `the receipt keeps the facilitator's transaction (acceptThirdPartySettlement ${accept})`);
+        assert.match(
+          String(receipt?.note),
+          new RegExp(`event #7 shows this exact authorization paid payTo.*possibly through transaction ${PENDING_TX}, which this gateway's facilitator broadcast`),
+        );
+        assert.doesNotMatch(String(receipt?.note), /another submitter|other than this gateway's facilitator/);
+        if (accept) {
+          assert.equal(res.status, 200, JSON.stringify(res.body));
+          assert.deepEqual([receipt?.status, receipt?.settledBy], ["settled", "third-party"]);
+          assert.equal((res.body.result?._meta as { cascet: Record<string, unknown> }).cascet.txHash, PENDING_TX);
+          assert.equal(res.headers.get("payment-response"), null, "never the failed settle's PAYMENT-RESPONSE with a delivered result");
+        } else {
+          assert.equal(res.body.error?.code, -32003);
+          assert.equal(receipt?.status, "unknown");
+        }
+      });
+    }
+  });
+
+  it("does not take the pending transaction for the one that paid once the retry reports it reverted", async () => {
+    // On x402's retry the facilitator follows its pending transaction and finds it reverted: another transaction had
+    // used the nonce. The on-chain check then finds this exact authorization paid.
+    const paid: SettlementPreemptionChecker = { check: async () => ({ kind: "paid", eventIndex: 7 }) };
+    const reverted: Reply = {
+      json: {
+        success: false,
+        errorReason: "settlement_failed",
+        errorMessage: "transaction execution failed: User error: 64001",
+        transaction: PENDING_TX,
+        network: NETWORK,
+        extra: { settlementStatus: "failed", reconciled: true },
+      },
+    };
+    for (const accept of [true, false]) {
+      await withTwoAssets({ config: { settlement: { acceptThirdPartySettlement: accept } }, gateway: { preemptionChecker: paid } }, async h => {
+        pendingThen(h, reverted);
+        const { header } = await payInAsset(h, "paid_tool", LEGACY_TOKEN);
+        const res = await callPaid(h, "paid_tool", header);
+        assert.equal(h.legacy.count("settle"), 2, "x402 settled twice");
+        const [receipt] = await receipts(h);
+        assert.doesNotMatch(String(receipt?.note), /possibly through/, `acceptThirdPartySettlement ${accept}`);
+        if (accept) {
+          assert.equal(res.status, 200, JSON.stringify(res.body));
+          assert.deepEqual([receipt?.status, receipt?.settledBy, receipt?.txHash], ["settled", "third-party", undefined]);
+          assert.equal((res.body.result?._meta as { cascet: Record<string, unknown> }).cascet.txHash, undefined);
+          assert.match(String(receipt?.note), new RegExp(`settled by another submitter; transaction ${PENDING_TX} of this gateway's facilitator reverted`));
+        } else {
+          assert.equal(res.body.error?.code, -32003);
+          assert.equal(receipt?.status, "unknown");
+          assert.match(String(receipt?.note), /paid payTo, executed by a submitter other than this gateway's facilitator;/);
+        }
+      });
+    }
+  });
+
   it("gives the retry only what is left of the facilitator's settle timeout, and keeps the hash when it does not answer", async () => {
     const config = (urls: { legacy: string }) => ({
       facilitators: { self: { url: urls.legacy, apiKey: "self-key", authScheme: "bearer", timeoutMs: 600 } },
@@ -792,7 +855,11 @@ describe("the hosted facilitator", () => {
    * memory: nothing reaches the real host) and whose legacy token is settled by
    * a local fake facilitator.
    */
-  async function hostedGateway(input: Record<string, unknown> = {}, script: HostedScript = {}) {
+  async function hostedGateway(
+    input: Record<string, unknown> = {},
+    script: HostedScript = {},
+    gatewayOptions: Pick<GatewayOptions, "preemptionChecker" | "receiptsPath"> = {},
+  ) {
     const hosted: Array<{ path: string; authorization: string | null; body?: HostedBody }> = [];
     const facilitatorFetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));
@@ -829,6 +896,7 @@ describe("the hosted facilitator", () => {
         receiptsPath: join(dir, "receipts.jsonl"),
         preemptionChecker: null,
         facilitatorFetch,
+        ...gatewayOptions,
       });
     } catch (err) {
       await legacy.close();
@@ -960,9 +1028,15 @@ describe("the hosted facilitator", () => {
      * balance funds exactly one payment. `pay()` presents a new payment of that payer. The
      * script gets `whileInFlight`: called at some stage of the first payment's call, it
      * presents one more payment of the payer right then (once) and keeps its answer in `during`.
+     * `setBalance()` changes the balance the node reports.
      */
-    async function fundsOne(script: (whileInFlight: () => Promise<void>) => HostedScript = () => ({}), input: Record<string, unknown> = {}) {
-      const node = await startFakeNode(wcsprNodeRoutes({ balances: { [PAYER]: BigInt(WCSPR_PRICE_RAW) } }));
+    async function fundsOne(
+      script: (whileInFlight: () => Promise<void>) => HostedScript = () => ({}),
+      input: Record<string, unknown> = {},
+      gatewayOptions: Pick<GatewayOptions, "preemptionChecker" | "receiptsPath"> = {},
+    ) {
+      const routes = wcsprNodeRoutes({ balances: { [PAYER]: BigInt(WCSPR_PRICE_RAW) } });
+      const node = await startFakeNode(routes);
       const during: RpcResponse[] = [];
       let pay: (() => Promise<RpcResponse>) | undefined;
       let presented = false;
@@ -973,7 +1047,7 @@ describe("the hosted facilitator", () => {
       };
       let gateway: Awaited<ReturnType<typeof hostedGateway>>;
       try {
-        gateway = await hostedGateway({ settlement: { nodeUrl: node.url }, ...input }, script(whileInFlight));
+        gateway = await hostedGateway({ settlement: { nodeUrl: node.url }, ...input }, script(whileInFlight), gatewayOptions);
       } catch (err) {
         await node.close();
         throw err;
@@ -985,12 +1059,18 @@ describe("the hosted facilitator", () => {
       try {
         const { accepted } = await payInAsset(gateway.h, "paid_tool", WCSPR_TOKEN);
         pay = () => callPaid(gateway.h, "paid_tool", paymentHeader(accepted).header);
-        return { ...gateway, during, pay, close };
+        /** The payer's balance as the node reports it from now on (a settled payment spent it, say). */
+        const setBalance = (value: bigint): void => {
+          routes[wcsprBalanceCall(PAYER)] = u256Response(value);
+        };
+        return { ...gateway, during, pay, close, setBalance };
       } catch (err) {
         await close();
         throw err;
       }
     }
+
+    type FundsOne = Awaited<ReturnType<typeof fundsOne>>;
 
     /** A script answer that runs `first` on the first call to `path` and keeps the default otherwise. */
     const onFirst = (path: string, first: () => Promise<HostedReply>): HostedScript["answer"] => {
@@ -1004,18 +1084,24 @@ describe("the hosted facilitator", () => {
     };
 
     it("lets exactly one of two concurrent payments through, and refuses the other naming the payment in flight", async () => {
-      // The payment that passes the preflight first waits at the hosted /verify until the other one is
-      // answered, 2 s at most: without in-flight counting both would pass and the test would fail, not hang.
+      // Neither payment counts before the hosted facilitator verified it, so both pass the checks before verify;
+      // both wait at /verify until both are there (2 s at most). Once verified, exactly one is reserved: without
+      // in-flight counting both would run and the test would fail, not hang.
+      let arrived = 0;
       let open = (): void => {};
       const gate = new Promise<void>(resolve => {
         open = resolve;
         setTimeout(resolve, 2_000).unref();
       });
-      const g = await fundsOne(() => ({ answer: async path => (path === "/verify" ? gate.then(() => undefined) : undefined) }));
+      const g = await fundsOne(() => ({
+        answer: async path => {
+          if (path !== "/verify") return undefined;
+          if (++arrived === 2) open();
+          return gate.then(() => undefined);
+        },
+      }));
       try {
-        const calls = [g.pay(), g.pay()];
-        for (const call of calls) void call.then(open, open);
-        const results = await Promise.all(calls);
+        const results = await Promise.all([g.pay(), g.pay()]);
         assert.deepEqual(results.map(res => res.status).sort(), [200, 402]);
         const refused = results.find(res => res.status === 402);
         assert.ok(refused);
@@ -1023,13 +1109,77 @@ describe("the hosted facilitator", () => {
         assert.equal(challengeOf(refused).error, IN_FLIGHT_REASON, "the 402 challenge names it too");
         assert.deepEqual(
           g.hosted.filter(call => call.path !== "/supported").map(call => call.path),
-          ["/verify", "/settle"],
-          "only one payment reached the hosted facilitator",
+          ["/verify", "/verify", "/settle"],
+          "both were verified, only one settled",
         );
         assert.equal(g.upstream.calls.length, 1, "and only one tool ran");
         assert.deepEqual((await receipts(g.h)).map(receipt => receipt.status), ["settled"]);
       } finally {
         await g.close();
+      }
+    });
+
+    it("refuses a payment whose funds another payment of the payer spent while it was being verified", async () => {
+      // Payment A waits at /verify until B, presented meanwhile, passed its checks before verify (nothing was in flight)
+      // and waits at /verify too. B waits there until A's call ended: A was verified, reserved, ran and settled (the
+      // node shows its debit from then on), and is no longer in flight. The balance B was checked on is spent.
+      let a: Promise<RpcResponse> | undefined;
+      let b: Promise<RpcResponse> | undefined;
+      let bAtVerify = (): void => {};
+      const bWaits = new Promise<void>(resolve => (bAtVerify = resolve));
+      let verifies = 0;
+      const g: FundsOne = await fundsOne(() => ({
+        answer: async path => {
+          if (path === "/verify" && ++verifies === 1) {
+            b = g.pay();
+            await Promise.race([bWaits, b]);
+          } else if (path === "/verify") {
+            bAtVerify();
+            await a;
+          } else if (path === "/settle") {
+            g.setBalance(0n);
+          }
+          return undefined;
+        },
+      }));
+      try {
+        a = g.pay();
+        const first = await a;
+        assert.deepEqual([first.status, first.body.result?.content?.[0]?.text], [200, "ok:paid_tool"]);
+        const second = await b;
+        assert.deepEqual([second?.status, second?.body.error?.message], [402, "payment rejected: insufficient_funds"]);
+        assert.deepEqual(
+          g.hosted.filter(call => call.path !== "/supported").map(call => call.path),
+          ["/verify", "/verify", "/settle"],
+          "both were verified, only the first settled",
+        );
+        assert.equal(g.upstream.calls.length, 1, "and only its tool ran");
+      } finally {
+        await g.close();
+      }
+    });
+
+    it("never counts a payment the hosted facilitator does not verify (a forged signature, a failed /verify): the payer's other payments pass meanwhile", async () => {
+      const refusals: Array<[HostedReply, string]> = [
+        [{ json: { isValid: false, invalidReason: "invalid_exact_casper_payload_signature" } }, "payment rejected: invalid_exact_casper_payload_signature"],
+        [{ status: 500, raw: "verify exploded" }, "payment rejected: facilitator verify failed with HTTP 500: verify exploded"],
+      ];
+      for (const [reply, message] of refusals) {
+        const g = await fundsOne(whileInFlight => ({
+          answer: onFirst("/verify", async () => {
+            await whileInFlight();
+            return reply;
+          }),
+        }));
+        try {
+          const first = await g.pay();
+          assert.deepEqual([first.status, first.body.error?.message], [402, message]);
+          assert.equal(g.during.length, 1, "a payment was presented while the first one waited at /verify");
+          assert.equal(g.during[0]!.status, 200, `the unverified payment held nothing back: ${JSON.stringify(g.during[0]!.body)}`);
+          assert.equal((await g.pay()).status, 200);
+        } finally {
+          await g.close();
+        }
       }
     });
 
@@ -1042,26 +1192,6 @@ describe("the hosted facilitator", () => {
       /** What the payment presented during that call gets: refused as in flight unless said otherwise. */
       during?: (res: RpcResponse) => void;
     }> = [
-      {
-        name: "the hosted facilitator refuses it at /verify",
-        script: whileInFlight => ({
-          answer: onFirst("/verify", async () => {
-            await whileInFlight();
-            return { json: { isValid: false, invalidReason: "invalid_exact_casper_payload_signature" } };
-          }),
-        }),
-        first: res => assert.deepEqual([res.status, res.body.error?.message], [402, "payment rejected: invalid_exact_casper_payload_signature"]),
-      },
-      {
-        name: "the hosted /verify fails",
-        script: whileInFlight => ({
-          answer: onFirst("/verify", async () => {
-            await whileInFlight();
-            return { status: 500, raw: "verify exploded" };
-          }),
-        }),
-        first: res => assert.deepEqual([res.status, res.body.error?.message], [402, "payment rejected: facilitator verify failed with HTTP 500: verify exploded"]),
-      },
       {
         name: "its tool throws (not charged)",
         script: whileInFlight => ({
@@ -1104,11 +1234,6 @@ describe("the hosted facilitator", () => {
         first: res => assert.deepEqual([res.status, res.body.error?.message], [402, "payment settlement failed: invalid_exact_casper_facilitator_expired"]),
       },
       {
-        name: "its settlement outcome is unknown",
-        script: whileInFlight => ({ answer: onFirst("/settle", async () => (await whileInFlight(), { status: 502, raw: "<html>Bad Gateway</html>" })) }),
-        first: res => assert.deepEqual([res.status, res.body.error?.code], [200, -32003]),
-      },
-      {
         name: "its settlement failed before its tool would run (settleBeforeExecute)",
         input: settleFirst,
         script: whileInFlight => ({ answer: onFirst("/settle", async () => (await whileInFlight(), expired)) }),
@@ -1142,6 +1267,105 @@ describe("the hosted facilitator", () => {
         }
       });
     }
+
+    it("keeps counting a payment whose settlement outcome is unknown, until its authorization expires: its transfer may still execute", async () => {
+      const unknown = { status: 502, raw: "<html>Bad Gateway</html>" };
+      const g = await fundsOne(whileInFlight => ({ answer: onFirst("/settle", async () => (await whileInFlight(), unknown)) }));
+      try {
+        const first = await g.pay();
+        assert.deepEqual([first.status, first.body.error?.code], [200, -32003]);
+        refusedInFlight(g.during[0]!);
+        // Its call ended, but the balance, which funds one payment, is still committed to its transfer.
+        refusedInFlight(await g.pay());
+        assert.equal(g.upstream.calls.length, 1, "no tool ran for a payment that balance cannot fund");
+      } finally {
+        await g.close();
+      }
+    });
+
+    it("stops counting a payment whose outcome is unknown once the token's events show its nonce used", async () => {
+      // The on-chain check finds this authorization executed (third-party settlement is off, so the outcome stays
+      // unknown), or its nonce used without the expected transfer (layout-dependent evidence: the outcome stays
+      // unknown too). Either way the authorization cannot execute again: whatever it moved is in the balance the
+      // node reports (which is fixed in this test) from now on, not in flight.
+      const unknown = { status: 502, raw: "<html>Bad Gateway</html>" };
+      const findings: Array<[PreemptionOutcome, RegExp]> = [
+        [{ kind: "paid", eventIndex: 3 }, /token event #3 shows this exact authorization paid payTo/],
+        [
+          { kind: "consumed-elsewhere", eventIndex: 4, detail: "no transfer event follows the authorization" },
+          /nonce was used on-chain without the expected transfer to payTo right after it \(token event #4/,
+        ],
+      ];
+      for (const [finding, note] of findings) {
+        const checker: SettlementPreemptionChecker = { check: async () => finding };
+        const g = await fundsOne(() => ({ answer: onFirst("/settle", async () => unknown) }), {}, { preemptionChecker: checker });
+        try {
+          const first = await g.pay();
+          assert.deepEqual([first.status, first.body.error?.code], [200, -32003], finding.kind);
+          assert.match(String(first.body.error?.data?.note), note);
+          const next = await g.pay();
+          assert.equal(next.status, 200, `${finding.kind}: ${JSON.stringify(next.body)}`);
+        } finally {
+          await g.close();
+        }
+      }
+    });
+
+    it("keeps counting a payment whose outcome is unknown when the on-chain check finds nothing about it, or fails", async () => {
+      const unknown = { status: 502, raw: "<html>Bad Gateway</html>" };
+      const checks: Array<[string, SettlementPreemptionChecker]> = [
+        ["nothing found", { check: async () => ({ kind: "not-found", scanned: 64 }) }],
+        ["the check failed", { check: () => Promise.reject(new Error("node unreachable")) }],
+      ];
+      for (const [name, checker] of checks) {
+        const g = await fundsOne(() => ({ answer: onFirst("/settle", async () => unknown) }), {}, { preemptionChecker: checker });
+        try {
+          const first = await g.pay();
+          assert.deepEqual([first.status, first.body.error?.code], [200, -32003], name);
+          refusedInFlight(await g.pay());
+          assert.equal(g.upstream.calls.length, 1, `${name}: no tool ran for a payment that balance cannot fund`);
+        } finally {
+          await g.close();
+        }
+      }
+    });
+
+    it("keeps counting, after a restart, a payment whose settlement outcome was unknown, and nothing else", async () => {
+      // A new gateway process on the same receipt log: the unknown payment's transfer may still execute until its
+      // authorization expires, so it counts again (from its receipt and its write-ahead record).
+      const outcomes: Array<[string, HostedReply, boolean]> = [
+        ["unknown", { status: 502, raw: "<html>Bad Gateway</html>" }, true],
+        ["settled", undefined, false],
+        ["failed", expired, false],
+      ];
+      for (const [name, settle, counts] of outcomes) {
+        const dir = mkdtempSync(join(tmpdir(), "cascet-restart-test-"));
+        const receiptsPath = join(dir, "receipts.jsonl");
+        try {
+          const before = await fundsOne(() => ({ answer: onFirst("/settle", async () => settle) }), {}, { receiptsPath });
+          try {
+            await before.pay();
+            assert.equal((await receipts(before.h))[0]?.status, name);
+          } finally {
+            await before.close();
+          }
+          const after = await fundsOne(() => ({}), {}, { receiptsPath });
+          try {
+            const next = await after.pay();
+            if (counts) {
+              refusedInFlight(next);
+              assert.equal(after.upstream.calls.length, 0, "no tool ran for a payment that balance cannot fund");
+            } else {
+              assert.equal(next.status, 200, `${name}: ${JSON.stringify(next.body)}`);
+            }
+          } finally {
+            await after.close();
+          }
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    });
 
     it("releases the payment when the gateway refuses it after verification, or x402 throws after the preflight", async () => {
       const original = x402HTTPResourceServer.prototype.processHTTPRequest;
@@ -1187,28 +1411,49 @@ describe("the hosted facilitator", () => {
     });
 
     it("releases the payment when its authorization cannot be recorded (write-ahead failure)", async () => {
+      const original = x402HTTPResourceServer.prototype.processHTTPRequest;
       const append = ReceiptStore.prototype.appendAuthorization;
-      let fail = true;
-      const patched = mock.method(ReceiptStore.prototype, "appendAuthorization", function (this: ReceiptStore, ...args: Parameters<typeof append>) {
+      let whileInFlight = async (): Promise<void> => {};
+      let verifiedOnce = false;
+      let fail = false;
+      const verified = mock.method(
+        x402HTTPResourceServer.prototype,
+        "processHTTPRequest",
+        async function (this: x402HTTPResourceServer, ...args: Parameters<typeof original>) {
+          const result = await original.apply(this, args);
+          if (verifiedOnce || result.type !== "payment-verified") return result;
+          verifiedOnce = true;
+          // Verified, so reserved: present one more payment now, then fail this one's write-ahead record.
+          await whileInFlight();
+          fail = true;
+          return result;
+        },
+      );
+      const recorded = mock.method(ReceiptStore.prototype, "appendAuthorization", function (this: ReceiptStore, ...args: Parameters<typeof append>) {
         if (!fail) return append.apply(this, args);
         fail = false;
         throw new Error("disk full");
       });
       try {
-        const g = await fundsOne(whileInFlight => ({ answer: onFirst("/verify", async () => (await whileInFlight(), undefined)) }));
+        const g = await fundsOne(probe => {
+          whileInFlight = probe;
+          return {};
+        });
         try {
           const first = await g.pay();
           assert.deepEqual(
             [first.status, first.body.error?.message],
             [503, "gateway cannot record payments right now; the tool was not run and nothing was charged"],
           );
+          assert.equal(g.during.length, 1);
           refusedInFlight(g.during[0]!);
           assert.equal((await g.pay()).status, 200);
         } finally {
           await g.close();
         }
       } finally {
-        patched.mock.restore();
+        verified.mock.restore();
+        recorded.mock.restore();
       }
     });
   });

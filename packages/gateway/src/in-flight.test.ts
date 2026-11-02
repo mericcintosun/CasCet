@@ -60,10 +60,30 @@ describe("InFlightPayments", () => {
     inFlight.reserve(hold, payment({ amount: 30n }));
     assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER), { count: 1, amount: 30n }, "the second replaced the first");
     assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER, hold), none);
-    const stranger: PaymentHold = { release: () => {} };
+    const stranger: PaymentHold = { release: () => {}, keepUntilExpiry: () => {} };
     assert.equal(inFlight.reserve(stranger, payment()), "released");
     assert.equal(inFlight.reserve(new InFlightPayments().open(), payment()), "released");
     assert.equal(inFlight.size, 1);
+  });
+
+  it("keeps the reservation of a call whose payment may still execute until it expires, whatever release() follows", () => {
+    let now = 0;
+    const inFlight = new InFlightPayments({ now: () => now });
+    const hold = inFlight.open();
+    inFlight.reserve(hold, payment());
+    hold.keepUntilExpiry();
+    hold.release();
+    assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER), { count: 1, amount: 100n }, "still counts after its call ended");
+    assert.equal(inFlight.reserve(hold, payment({ amount: 7n })), "released", "nothing more is reserved on it");
+    assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER), { count: 1, amount: 100n });
+    now = VALID_BEFORE * 1_000 + IN_FLIGHT_MARGIN_MS;
+    assert.deepEqual([inFlight.total(NETWORK, ASSET, PAYER), inFlight.size], [none, 0], "until it expires");
+    // The first end counts: a call that was released keeps nothing.
+    const released = inFlight.open();
+    inFlight.reserve(released, payment({ validBefore: VALID_BEFORE * 10 }));
+    released.release();
+    released.keepUntilExpiry();
+    assert.equal(inFlight.size, 0);
   });
 
   it("stops counting a reservation once its authorization's validBefore plus the margin has passed", () => {
@@ -76,6 +96,20 @@ describe("InFlightPayments", () => {
     assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER), none);
     assert.equal(inFlight.size, 0, "and forgets it");
     assert.equal(IN_FLIGHT_MARGIN_MS, 120_000);
+  });
+
+  it("keeps a payment with no call of its own until it expires (an unknown payment from before a restart), unless it already expired", () => {
+    let now = 0;
+    const inFlight = new InFlightPayments({ maxPayments: 2, now: () => now });
+    assert.equal(inFlight.keep(payment()), "kept");
+    assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER), { count: 1, amount: 100n });
+    assert.equal(inFlight.keep(payment({ payer: OTHER_PAYER, validBefore: VALID_BEFORE * 10 })), "kept");
+    assert.equal(inFlight.keep(payment({ amount: 7n, validBefore: VALID_BEFORE * 10 })), "full", "never by forgetting a live one");
+    assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER), { count: 1, amount: 100n });
+    now = VALID_BEFORE * 1_000 + IN_FLIGHT_MARGIN_MS;
+    assert.deepEqual(inFlight.total(NETWORK, ASSET, PAYER), none, "until it expires");
+    assert.equal(inFlight.keep(payment()), "expired", "an expired one is not kept at all");
+    assert.equal(inFlight.size, 1);
   });
 
   it("bounds its memory: when full it makes room from expired reservations, else refuses rather than forget a live one", () => {
@@ -92,7 +126,7 @@ describe("InFlightPayments", () => {
   });
 });
 
-describe("the hold of a paid call reaches x402's beforeVerify hooks", () => {
+describe("the hold of a paid call reaches x402's verify hooks", () => {
   const PAY_TO = `00${"11".repeat(32)}`;
   const adapter = (paymentHeader?: string): HTTPAdapter => ({
     getHeader: name => (/^payment-signature$/i.test(name) ? paymentHeader : undefined),
@@ -103,7 +137,7 @@ describe("the hold of a paid call reaches x402's beforeVerify hooks", () => {
     getUserAgent: () => "test",
   });
 
-  it("through the request context, which x402 2.29 copies into the hooks' transportContext", async () => {
+  it("through the request context, which x402 2.29 copies into the hooks' transportContext, before and after verify", async () => {
     const facilitator: FacilitatorClient = {
       verify: async () => ({ isValid: true }),
       settle: () => Promise.reject(new Error("unused")),
@@ -114,8 +148,12 @@ describe("the hold of a paid call reaches x402's beforeVerify hooks", () => {
       new CascetCasperServerScheme([{ network: NETWORK, asset: ASSET, decimals: 9 }]),
     );
     const seen: Array<PaymentHold | undefined> = [];
+    const seenAfter: Array<PaymentHold | undefined> = [];
     resourceServer.onBeforeVerify(async ({ transportContext }) => {
       seen.push(paymentHoldOf(transportContext));
+    });
+    resourceServer.onAfterVerify(async ({ transportContext }) => {
+      seenAfter.push(paymentHoldOf(transportContext));
     });
     await resourceServer.initialize();
     const http = new x402HTTPResourceServer(resourceServer, {
@@ -134,6 +172,7 @@ describe("the hold of a paid call reaches x402's beforeVerify hooks", () => {
     assert.equal(verified.type, "payment-verified");
     await http.processHTTPRequest({ adapter: adapter(header), path: "/tools/0", method: "POST", paymentHeader: header });
     assert.deepEqual(seen, [hold, undefined], "a context without a hold carries none");
+    assert.deepEqual(seenAfter, [hold, undefined], "the hook after verify gets the same context");
   });
 
   it("and is found only where a hold was put", () => {

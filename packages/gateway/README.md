@@ -64,7 +64,9 @@ reported as pending stays within the same `settleMs`. With
 `settlement.nodeUrl` (or `anchoring.nodeUrl`) set, add up to 15 s for the
 on-chain check of a settlement that did not succeed and, when the hosted
 facilitator settles one of the assets, 5 s for the on-chain preflight of its
-payments (185 s with the defaults).
+payments (185 s with the defaults). When a tool settles before it runs
+(`settleBeforeExecute`), add the upstream ping that precedes its settlement:
+`upstreamMs`, at most 5 s (170 s with the defaults, 190 s with a node).
 
 ## Accepting several tokens
 
@@ -131,25 +133,43 @@ payer's other payments in flight in that token (below). A payment that
 fails a check gets a 402 naming it (`nonce_already_used`,
 `insufficient_funds`, `authorization_style_mismatch`,
 `token_domain_mismatch`, `unsupported_asset`). When the node cannot be read
-within 5 s the payment is refused with `preflight_unavailable` (fail closed:
-nothing was charged and the buyer may retry). Without a node the gateway
-warns at startup that this preflight is off.
+within 5 s (all of a payment's reads together, before and after verify) the
+payment is refused with `preflight_unavailable` (fail closed: nothing was
+charged and the buyer may retry). Without a node the gateway warns at
+startup that this preflight is off.
 
 Payments in flight count against the balance, because the balance a payment
 is checked against does not show the payer's payments that have not settled
-yet. A payment that passes the preflight reserves its amount for its payer
-and token until its call ends: when its settlement finishes (settled, failed
-or unknown; with `settleBeforeExecute`, before the tool runs), or when the
-call ends without one (the facilitator or the gateway refused it, the tool
-failed or timed out, anything threw). Of two concurrent payments that one
-balance funds, only one passes; the other gets `insufficient_funds:
-insufficient balance once 1 in-flight payment is counted` and nothing runs
-for it. A reservation that is somehow never released stops counting 2
-minutes after its authorization's `validBefore`, when the authorization can
-no longer execute. The gateway tracks at most 10 000 payments in flight and
-refuses new ones beyond that (`preflight_unavailable: too many payments in
-flight; retry later`) rather than forget one. Like the replay guard, this is
-per gateway process: gateways that share a payer and a token do not see each
+yet. A payment that passes the preflight and that the hosted facilitator
+then verifies reserves its amount for its payer and token; the balance must
+cover it on top of the payer's reservations, before verify and again once it
+is verified. The gateway then reads the balance once more, the payment
+counting meanwhile, and refuses the payment unless that balance covers it
+too: a payment of the payer that settled while this one was being verified
+no longer counts as in flight, and only a fresh read shows what it spent.
+Only verified payments count: the gateway's own checks do not
+verify the signature, so a payment forged from a payer's public key, which
+the facilitator refuses, never holds back the payer's real payments. A
+reservation lasts until its call ends: when its settlement finishes (settled
+or failed; with `settleBeforeExecute`, before the tool runs), or when the
+call ends without one (the gateway refused the verified payment, the tool
+failed or timed out, anything threw). A payment whose settlement outcome is
+unknown keeps counting after its call, because its transfer may still
+execute, until its authorization can no longer execute (2 minutes after its
+`validBefore`), unless the on-chain check of that settlement found its nonce
+already used. Until then the payer's next payment in that token passes only
+if the balance covers both. Of two concurrent payments that one balance
+funds, only one passes; the other gets `insufficient_funds: insufficient
+balance once 1 in-flight payment is counted` and nothing runs for it. A
+reservation that is somehow never released stops counting 2 minutes after
+its authorization's `validBefore`, when the authorization can no longer
+execute. The gateway tracks at most 10 000 payments in flight and refuses
+new ones beyond that (`preflight_unavailable: too many payments in flight;
+retry later`) rather than forget one. After a restart the gateway counts
+again, until they expire, the payments its receipt log records as `unknown`
+in a preflighted token (a receipt does not say whether the on-chain check
+found the nonce used, so those count again too). Like the replay guard, this
+is per gateway: gateways that share a payer and a token do not see each
 other's payments.
 
 ## Payment flow
@@ -165,9 +185,10 @@ other's payments.
      the public key's, and the public key belongs to the payer (casper-x402
      1.0.0 verifies authorizations that break these rules, but they always
      revert on-chain);
-   - it stays valid long enough: `facilitatorMs` + `upstreamMs` (not with
-     `settleBeforeExecute`) + 30 s for the settle transaction, + 5 s when the
-     gateway preflights hosted-facilitator payments;
+   - it stays valid long enough: `facilitatorMs` + `upstreamMs` (with
+     `settleBeforeExecute`, the upstream ping before the settlement instead:
+     at most 5 s) + 30 s for the settle transaction, + 5 s when the gateway
+     preflights hosted-facilitator payments;
    - this `(payer, nonce)` was never presented before, in any of the
      gateway's tokens. Replays are refused, also across restarts.
 
@@ -229,7 +250,13 @@ token styles write this pair (checked on CasCet's token and on testnet
 Wrapped CSPR).
 
 - Exact authorization found: delivered as settled by a third party when
-  `acceptThirdPartySettlement` is on, otherwise recorded as `unknown`.
+  `acceptThirdPartySettlement` is on, otherwise recorded as `unknown`. The
+  events do not say which transaction executed it: when the facilitator had
+  reported a transfer of its own for the payment as pending, the receipt
+  keeps that `txHash`, noted as possibly the one that paid. A transfer it
+  reported as reverted never is (another transaction used the nonce first):
+  a settled receipt then has no `txHash`, and its note names the reverted
+  transaction.
   Leave it off when several gateways share this `payTo` without sharing one
   facilitator nonce cache: a buyer could present one authorization to each.
 - Nonce canceled by the payer: failed.
@@ -254,8 +281,9 @@ Wrapped CSPR).
 - Shutdown (`close()`, SIGINT/SIGTERM): new calls get 503 and calls in flight
   may finish settling and writing their receipts, for at most the longest
   paid call (see the buyer timeouts above: 165 s with the defaults, up to
-  185 s with a node configured). Give the process supervisor a stop timeout
-  at least that long. A second signal exits at once.
+  190 s with a node configured and a tool that settles before it runs). Give
+  the process supervisor a stop timeout at least that long. A second signal
+  exits at once.
 - Browser requests carrying an `Origin` that is not allowlisted get HTTP 403.
 - `GET /receipts`, `GET /pricing` (`assets`, and per tool its `accepts`:
   token id, symbol, package hash, raw amount, authorization style). As on

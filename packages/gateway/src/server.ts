@@ -21,6 +21,7 @@ import {
   HEADER_PAYMENT_SIGNATURE,
   isHostedFacilitatorUrl,
   normalizeOrigin,
+  normalizePackageHash,
   type CascetConfig,
   type PaymentReceipt,
   type ReceiptStatus,
@@ -59,6 +60,7 @@ import {
   requiredValiditySeconds,
   settlementNodeUrl,
   unmatchedConfiguredTools,
+  upstreamPingMs,
   type AssetPrice,
   type PaidToolPolicy,
   type PaymentRail,
@@ -80,7 +82,6 @@ import {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_CONCURRENT_CHAIN_CHECKS = 4;
-const UPSTREAM_PING_TIMEOUT_MS = 5_000;
 const CORS_ALLOW_HEADERS = [
   "accept",
   "authorization",
@@ -125,7 +126,8 @@ export interface GatewayOptions {
    * How long close() waits for calls in flight (a paid call may be settling) before it cuts
    * the remaining connections. Default: the longest a paid call can take (see longestPaidCallMs):
    * the preflight, the facilitator's verify, timeouts.upstreamMs, the settle timeout (x402's
-   * retry of a pending settlement shares it) and the on-chain settlement check when it is on.
+   * retry of a pending settlement shares it), the upstream ping before a settle-first call
+   * settles when a tool settles first, and the on-chain settlement check when it is on.
    */
   drainTimeoutMs?: number;
 }
@@ -174,6 +176,12 @@ interface SettleOutcome {
   note?: string;
   /** x402 headers to return (PAYMENT-RESPONSE). */
   headers?: Record<string, string>;
+  /**
+   * The token's events show this authorization's nonce used or canceled:
+   * whatever the status, the transfer can no longer execute (and spend the
+   * payer's balance).
+   */
+  nonceUsed?: boolean;
 }
 
 /** x402's answer for a payment that matched a route and passed the facilitator's verify. */
@@ -187,7 +195,7 @@ interface PaidRequest {
   policy: PaidToolPolicy;
   table: ToolTable;
   started: number;
-  /** Where the preflight reserves the call's payment while it is in flight; released when the call ends. */
+  /** Where the preflight reserves the call's payment, once verified, while it is in flight; released when the call ends. */
   hold: PaymentHold;
 }
 
@@ -206,7 +214,10 @@ interface PaidCall {
   paymentId: string;
   parentId?: string;
   started: number;
-  /** The payment's in-flight reservation (see PaidRequest.hold), released once its settlement finished. */
+  /**
+   * The payment's in-flight reservation (see PaidRequest.hold), released once its settlement finished, or
+   * kept until it expires when the outcome is unknown (the transfer may still execute).
+   */
   hold: PaymentHold;
 }
 
@@ -257,6 +268,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   const pushEvent = makeEventPusher(cfg.eventsUrl);
   const replay = new ReplayGuard();
   seedReplayGuard(replay, store, rail.maxTimeoutSeconds);
+  const keptInFlight = seedInFlight(rail, store);
 
   let table: ToolTable = buildToolTable(cfg, rail, []);
   let listening = false;
@@ -518,16 +530,22 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   }
 
   /**
-   * Settle a verified payment and classify the outcome. Once that is known
-   * (settled, failed or unknown), the payment no longer counts as in flight:
-   * its reservation is released before the tool runs (settleBeforeExecute)
-   * and before the receipt is written.
+   * Settle a verified payment and classify the outcome. A payment that
+   * settled or failed no longer counts as in flight: its reservation is
+   * released before the tool runs (settleBeforeExecute) and before the receipt
+   * is written. One whose outcome is unknown (or whose settling threw) may
+   * still execute until its authorization expires, so its reservation keeps
+   * counting until then (see in-flight.ts), unless the token's events show its
+   * nonce used.
    */
   async function settle(call: PaidCall): Promise<SettleOutcome> {
+    let outcome: SettleOutcome | undefined;
     try {
-      return await settleAndClassify(call);
+      outcome = await settleAndClassify(call);
+      return outcome;
     } finally {
-      call.hold.release();
+      if (outcome && (outcome.status !== "unknown" || outcome.nonceUsed)) call.hold.release();
+      else call.hold.keepUntilExpiry();
     }
   }
 
@@ -581,7 +599,12 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
    * Sharpen an unsuccessful settle with the token's on-chain events:
    * - this exact authorization already paid payTo (settlement preemption, or a
    *   facilitator that lost track of its own transfer): settled by a third
-   *   party when `settlement.acceptThirdPartySettlement` is on, else unknown;
+   *   party when `settlement.acceptThirdPartySettlement` is on, else unknown.
+   *   The events do not say which transaction executed it: the hash of a
+   *   transfer the facilitator reported as broadcast but not executed for this
+   *   payment (an unknown outcome) is kept, as possibly the one that paid. A
+   *   transfer it reported as reverted (a failed outcome) cannot be that one:
+   *   another transaction used the nonce first;
    * - the payer canceled the nonce: failed (the cancel event alone proves the
    *   transfer can never execute);
    * - the nonce was used without the expected transfer right after it: noted,
@@ -609,29 +632,47 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
         asset: call.price.asset.packageHash,
       });
       switch (found.kind) {
-        case "paid":
+        case "paid": {
+          // A transfer the facilitator reported as broadcast (pending) may well be the one that paid; one it
+          // reported as reverted never is.
+          const pendingTx = outcome.status === "unknown" ? outcome.txHash : undefined;
+          const through = pendingTx ? `possibly through transaction ${pendingTx}, which this gateway's facilitator broadcast` : undefined;
           if (cfg.settlement.acceptThirdPartySettlement) {
+            const reverted = outcome.txHash && !pendingTx ? `; transaction ${outcome.txHash} of this gateway's facilitator reverted` : "";
+            // Not the settle answer's headers: its PAYMENT-RESPONSE reports a failure.
             return {
               status: "settled",
               settledBy: "third-party",
               payer: auth.from,
-              note: `facilitator answered "${clip(outcome.reason ?? "", 200)}", but token event #${found.eventIndex} shows this exact authorization paid payTo (settled by another submitter)`,
+              txHash: pendingTx,
+              note: `facilitator answered "${clip(outcome.reason ?? "", 200)}", but token event #${found.eventIndex} shows this exact authorization paid payTo (${through ?? `settled by another submitter${reverted}`})`,
+              nonceUsed: true,
             };
           }
           return {
             ...outcome,
             status: "unknown",
             note:
-              `token event #${found.eventIndex} shows this exact authorization paid payTo, executed by a submitter other than this ` +
-              "gateway's facilitator; settlement.acceptThirdPartySettlement is off, so the result was withheld",
+              `token event #${found.eventIndex} shows this exact authorization paid payTo, ` +
+              `${through ?? "executed by a submitter other than this gateway's facilitator"}; ` +
+              "settlement.acceptThirdPartySettlement is off, so the result was withheld",
+            nonceUsed: true,
           };
+        }
         case "canceled":
-          return { ...outcome, status: "failed", note: `the payer canceled the authorization nonce on-chain (token event #${found.eventIndex})` };
+          return {
+            ...outcome,
+            status: "failed",
+            note: `the payer canceled the authorization nonce on-chain (token event #${found.eventIndex})`,
+            nonceUsed: true,
+          };
         case "consumed-elsewhere":
-          // Layout-dependent evidence: never turns an unknown outcome into a failure.
+          // Layout-dependent evidence: never turns an unknown outcome into a failure. The nonce is used, though,
+          // so this authorization can no longer execute.
           return {
             ...outcome,
             note: `the authorization nonce was used on-chain without the expected transfer to payTo right after it (token event #${found.eventIndex}: ${found.detail})`,
+            nonceUsed: true,
           };
         case "not-found":
           return outcome;
@@ -752,7 +793,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   async function settleThenExecute(req: Request, res: Response, call: PaidCall): Promise<void> {
     // Settling is irreversible: make sure the upstream still answers before charging for a call it must run.
     try {
-      await upstream.ping(Math.min(cfg.timeouts.upstreamMs, UPSTREAM_PING_TIMEOUT_MS));
+      await upstream.ping(upstreamPingMs(cfg));
     } catch (err) {
       log.warn(`[upstream] not answering before settlement of ${logSafe(call.name, 80)}: ${logSafe(err)}`);
       await cancelVerified(call.verified, call.name, { reason: "handler_failed", error: err, responseStatus: 503 });
@@ -825,7 +866,8 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     }
 
     // However a paid call ends (its settlement, a refusal, a cancellation, an upstream error or
-    // timeout, a throw), the payment the preflight reserved for it is no longer in flight.
+    // timeout, a throw), the payment the preflight reserved for it is no longer in flight; unless
+    // its settlement outcome was unknown: settle() then kept the reservation, and this changes nothing.
     const hold = rail.inFlight.open();
     try {
       await handlePaidCall(req, res, { id, name, args, policy, table: snapshot, started, hold });
@@ -836,8 +878,9 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
 
   /**
    * A paid tool call: the gateway's local checks, x402's verification (with the
-   * hosted preflight, which reserves the payment on the call's hold), the
-   * write-ahead record, then the tool and the settlement in the configured order.
+   * hosted preflight, which reserves the payment on the call's hold once the
+   * facilitator verified it), the write-ahead record, then the tool and the
+   * settlement in the configured order.
    */
   async function handlePaidCall(req: Request, res: Response, paid: PaidRequest): Promise<void> {
     const { id, name, args, policy, table: snapshot, started, hold } = paid;
@@ -891,7 +934,8 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     }
 
     // 2. x402: match the payment to one of this tool's requirements and verify it with the
-    //    facilitator of that token (its balance and nonce preflight runs here, right before execution).
+    //    facilitator of that token (its balance and nonce preflight runs here, right before execution,
+    //    and reserves the verified payment).
     let processed: HTTPProcessResult;
     try {
       processed = await snapshot.http.processHTTPRequest(context);
@@ -1184,7 +1228,9 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   const address = server.address() as AddressInfo;
   const urlHost = address.family === "IPv6" ? `[${address.address}]` : address.address;
   const url = `http://${urlHost}:${address.port}/mcp`;
-  log.info(`⛩️  CasCet gateway "${logSafe(cfg.name, 80)}" listening on ${url}`);
+  // Every stdout line starts with ASCII: the Node 22 test runner reads bytes 2-5 of output that directly follows one
+  // of its own messages as a message length, and a byte above 0x7f there fails the whole test file.
+  log.info(`CasCet gateway "${logSafe(cfg.name, 80)}" listening on ${url} ⛩️`);
   log.info(
     `    priced: ${logSafe(table.pricedToolNames.join(", ") || "none")}` +
       ` | free: ${logSafe(table.freeToolNames.join(", ") || "none")}` +
@@ -1213,6 +1259,9 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
       `    on-chain preflight of hosted-facilitator payments (nonce, balance with the payer's payments in flight, token ABI and name): ` +
         `on for ${logSafe(hosted.join(", "), 200)}`,
     );
+    if (keptInFlight > 0) {
+      log.info(`    payments in flight from before this start (settlement outcome unknown): ${keptInFlight}, counted until they expire`);
+    }
   } else if (hosted.length > 0) {
     log.warn(
       `    on-chain preflight of hosted-facilitator payments: off for ${logSafe(hosted.join(", "), 200)} (set settlement.nodeUrl to enable); ` +
@@ -1295,6 +1344,27 @@ function seedReplayGuard(replay: ReplayGuard, store: ReceiptStore, maxTimeoutSec
     const created = Date.parse(receipt.createdAt);
     if (Number.isFinite(created)) replay.markUsed(replayKey(normalizeAccountAddress(receipt.payer), receipt.nonce), created + horizonMs);
   }
+}
+
+/**
+ * After a restart, keep counting in flight the preflighted payments whose settlement outcome was unknown: their
+ * transfers may still execute until their authorizations expire (see in-flight.ts). Their receipts give the payer,
+ * token and amount, their write-ahead records the validBefore. Returns how many count.
+ */
+function seedInFlight(rail: PaymentRail, store: ReceiptStore): number {
+  const preflighted = new Set(rail.preflightAssets.map(asset => asset.packageHash));
+  if (preflighted.size === 0) return 0;
+  const validBefore = new Map(store.authorizations().map(record => [record.paymentId, record.validBefore]));
+  let kept = 0;
+  for (const receipt of store.list()) {
+    const until = validBefore.get(receipt.id);
+    if (receipt.status !== "unknown" || until === undefined || receipt.network !== rail.network) continue;
+    const { asset, payer, amountRaw } = receipt;
+    if (typeof asset !== "string" || !preflighted.has(normalizePackageHash(asset)) || typeof payer !== "string") continue;
+    if (typeof amountRaw !== "string" || !/^\d{1,78}$/.test(amountRaw)) continue;
+    if (rail.inFlight.keep({ network: rail.network, asset, payer, amount: BigInt(amountRaw), validBefore: until }) === "kept") kept++;
+  }
+  return kept;
 }
 
 function paymentRequiredOf(headers: Record<string, string>): PaymentRequired | undefined {
