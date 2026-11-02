@@ -274,10 +274,35 @@ describe("HTTP surface: rate limits (CodeQL js/missing-rate-limiting)", () => {
     const core = new FakeCore();
     const s = await serve(core, { maxRequestsPerPayerPerMinute: 1, maxRequestsPerMinute: 1, maxRequestsPerIpPerMinute: 6 });
     try {
-      for (let i = 0; i < 4; i++) assert.equal((await s.post("/verify", requestBody(), "wrong")).status, 401);
+      for (let i = 0; i < 5; i++) assert.equal((await s.post("/verify", requestBody(), "wrong")).status, 401);
       assert.equal((await s.post("/verify", requestBody())).status, 200);
       assert.equal((await fetch(`${s.base}/health`)).status, 200);
       assert.equal((await fetch(`${s.base}/health`)).status, 429, "per-IP limit covers every route");
+    } finally {
+      await s.close();
+    }
+  });
+
+  test("requests with the token never count per IP: traffic without it from the same address (a TLS proxy) cannot starve the gateway", async () => {
+    // Behind a proxy every client has the proxy's address; here every request comes from 127.0.0.1.
+    const core = new FakeCore();
+    const s = await serve(core, { maxRequestsPerIpPerMinute: 3 });
+    try {
+      for (let i = 0; i < 3; i++) assert.equal((await s.post("/verify", requestBody(), null)).status, 401);
+      const junk = await s.post("/settle", requestBody(), "Bearer guess");
+      assert.deepEqual([junk.status, junk.body["errorReason"]], [429, "rate_limited"], "traffic without the token is still limited");
+      assert.equal((await fetch(`${s.base}/health`)).status, 429);
+
+      // The gateway sends the token on every call: none of them is refused, however many.
+      const withToken = { headers: { authorization: TOKEN } };
+      for (let i = 0; i < 4; i++) {
+        assert.equal((await s.post("/verify", requestBody(`00${"a1".repeat(32)}`, `${i}`.padStart(64, "0")))).status, 200);
+        assert.equal((await s.post("/settle", requestBody(`00${"a1".repeat(32)}`, `${i}`.padStart(64, "0")), `Bearer ${TOKEN}`)).status, 200);
+        assert.equal((await fetch(`${s.base}/supported`, withToken)).status, 200);
+        assert.equal((await fetch(`${s.base}/health`, withToken)).status, 200);
+      }
+      assert.equal(core.calls.length, 8);
+      assert.equal((await s.post("/verify", requestBody(), "wrong")).status, 429, "and the token-less bucket stays spent");
     } finally {
       await s.close();
     }
@@ -626,6 +651,18 @@ describe("startRealFacilitator start-up rules (M07)", () => {
     const raised = await startRealFacilitator({ ...base, maxRequestsPerIpPerMinute: 6_000, logger: { ...quiet, warn: m => quietStart.push(m) } });
     await raised.close();
     assert.ok(!quietStart.some(w => w.includes("per-IP limit")));
+    // With a token, the gateway's requests do not count per IP: nothing to warn about.
+    const tokenStart: string[] = [];
+    const withToken = await startRealFacilitator({ ...base, authToken: TOKEN, maxRequestsPerIpPerMinute: 2, logger: { ...quiet, warn: m => tokenStart.push(m) } });
+    try {
+      assert.ok(!tokenStart.some(w => w.includes("per-IP limit")));
+      for (let i = 0; i < 3; i++) assert.equal((await fetch(`${withToken.url}/health`, { headers: { authorization: TOKEN } })).status, 200);
+      assert.equal((await fetch(`${withToken.url}/health`)).status, 200);
+      assert.equal((await fetch(`${withToken.url}/health`)).status, 200);
+      assert.equal((await fetch(`${withToken.url}/health`)).status, 429);
+    } finally {
+      await withToken.close();
+    }
   });
 });
 
