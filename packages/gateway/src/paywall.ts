@@ -20,9 +20,13 @@ import {
   type ToolPrice,
 } from "@cascet/core";
 import { normalizeAccountAddress } from "./authorization.js";
+import { createCasperRpc } from "./casper-rpc.js";
 import { TimeoutFacilitatorClient } from "./facilitator.js";
 import { AssetRoutingFacilitatorClient, ExtraStrippingFacilitatorClient, type AssetRoute } from "./facilitator-router.js";
+import { HOSTED_PREFLIGHT_DEADLINE_MS, hostedPreflightHook } from "./hosted-preflight.js";
+import { PREEMPTION_CHECK_TIMEOUT_MS } from "./preemption.js";
 import { CascetCasperServerScheme } from "./server-scheme.js";
+import { TokenProbe } from "./token-probe.js";
 
 /** Seconds an authorization must still be valid when settlement starts (inclusion + execution on Casper). */
 export const SETTLE_HEADROOM_SECONDS = 30;
@@ -41,6 +45,12 @@ export interface PaymentRail {
    * settled by its own facilitator.
    */
   assets: readonly ResolvedAsset[];
+  /**
+   * The tokens whose payments the gateway preflights on-chain itself before
+   * the facilitator verifies them: those the hosted facilitator settles, when
+   * a node is configured (see {@link hostedPreflightAssets}).
+   */
+  preflightAssets: readonly ResolvedAsset[];
   /** Validity window the gateway asks buyers to sign (x402 maxTimeoutSeconds). */
   maxTimeoutSeconds: number;
 }
@@ -50,21 +60,40 @@ export interface PaymentRailOptions {
   fetch?: typeof fetch;
 }
 
+/** The Casper node of the gateway's read-only checks: `settlement.nodeUrl`, else `anchoring.nodeUrl`. */
+export function settlementNodeUrl(cfg: CascetConfig): string | undefined {
+  return cfg.settlement.nodeUrl ?? cfg.anchoring?.nodeUrl;
+}
+
+/**
+ * The assets whose payments the gateway preflights itself (unused nonce,
+ * balance, token ABI and name; see hosted-preflight.ts): those the hosted
+ * facilitator settles, whose own nonce pre-check does not work. Needs a node
+ * ({@link settlementNodeUrl}); without one there is no preflight.
+ */
+export function hostedPreflightAssets(cfg: CascetConfig): ResolvedAsset[] {
+  if (!settlementNodeUrl(cfg)) return [];
+  return cfg.assets.filter(asset => isHostedFacilitatorUrl(facilitatorFor(cfg, asset).url));
+}
+
 /** The timeouts a paid call can take, in milliseconds. */
 export interface GatewayTimeouts {
+  /** The gateway's own on-chain preflight before verify (hosted-facilitator assets only; 0 when there is none). */
+  preflightMs: number;
   /** Longest /verify (and /supported) call. */
   facilitatorMs: number;
-  /** Longest /settle call. */
+  /** Longest settle phase: one /settle timeout, which x402's retry of a pending settlement shares. */
   settleMs: number;
   /** One upstream MCP request. */
   upstreamMs: number;
 }
 
 /**
- * The gateway's effective timeouts: the upstream's, and the longest verify and
+ * The gateway's effective timeouts: the upstream's, the longest verify and
  * settle timeouts of the facilitators that settle the configured assets (a
  * facilitator's own `timeoutMs` replaces `timeouts.facilitatorMs` and
- * `timeouts.settleMs` for its calls).
+ * `timeouts.settleMs` for its calls), and the preflight deadline when some
+ * asset is preflighted.
  */
 export function gatewayTimeouts(cfg: CascetConfig): GatewayTimeouts {
   let facilitatorMs = 0;
@@ -74,18 +103,20 @@ export function gatewayTimeouts(cfg: CascetConfig): GatewayTimeouts {
     facilitatorMs = Math.max(facilitatorMs, timeouts.verifyMs);
     settleMs = Math.max(settleMs, timeouts.settleMs);
   }
-  return { facilitatorMs, settleMs, upstreamMs: cfg.timeouts.upstreamMs };
+  const preflightMs = hostedPreflightAssets(cfg).length > 0 ? HOSTED_PREFLIGHT_DEADLINE_MS : 0;
+  return { preflightMs, facilitatorMs, settleMs, upstreamMs: cfg.timeouts.upstreamMs };
 }
 
 /**
  * How long an authorization must still be valid when it arrives: the
- * facilitator's verify, then (in the default run-then-settle mode) the tool
- * run, must leave SETTLE_HEADROOM_SECONDS for the settle transaction. Sized
- * with the slowest facilitator, so it holds whichever asset a buyer pays in.
+ * preflight and the facilitator's verify, then (in the default run-then-settle
+ * mode) the tool run, must leave SETTLE_HEADROOM_SECONDS for the settle
+ * transaction. Sized with the slowest facilitator, so it holds whichever
+ * asset a buyer pays in.
  */
 export function requiredValiditySeconds(cfg: CascetConfig, settleBeforeExecute: boolean): number {
-  const { facilitatorMs, upstreamMs } = gatewayTimeouts(cfg);
-  const beforeSettleMs = facilitatorMs + (settleBeforeExecute ? 0 : upstreamMs);
+  const { preflightMs, facilitatorMs, upstreamMs } = gatewayTimeouts(cfg);
+  const beforeSettleMs = preflightMs + facilitatorMs + (settleBeforeExecute ? 0 : upstreamMs);
   return Math.ceil(beforeSettleMs / 1_000) + SETTLE_HEADROOM_SECONDS;
 }
 
@@ -94,8 +125,21 @@ export function requiredValiditySeconds(cfg: CascetConfig, settleBeforeExecute: 
  * so it grows with the configured timeouts; never below x402's customary 300 s.
  */
 export function maxTimeoutSecondsFor(cfg: CascetConfig): number {
-  const { facilitatorMs, upstreamMs, settleMs } = gatewayTimeouts(cfg);
-  return Math.max(300, Math.ceil((facilitatorMs + upstreamMs + settleMs) / 1_000) + SETTLE_HEADROOM_SECONDS);
+  const { preflightMs, facilitatorMs, upstreamMs, settleMs } = gatewayTimeouts(cfg);
+  return Math.max(300, Math.ceil((preflightMs + facilitatorMs + upstreamMs + settleMs) / 1_000) + SETTLE_HEADROOM_SECONDS);
+}
+
+/**
+ * The longest a paid call can take before the gateway answers: the preflight,
+ * the facilitator's verify, the tool, the settle phase (x402's retry of a
+ * pending settlement included: the facilitator router keeps both calls within
+ * one settle timeout) and, with `settlementCheck`, the on-chain check of a
+ * settlement that did not succeed. Buyers must wait longer than this, and
+ * close() waits this long for calls in flight.
+ */
+export function longestPaidCallMs(cfg: CascetConfig, settlementCheck: boolean): number {
+  const { preflightMs, facilitatorMs, upstreamMs, settleMs } = gatewayTimeouts(cfg);
+  return preflightMs + facilitatorMs + upstreamMs + settleMs + (settlementCheck ? PREEMPTION_CHECK_TIMEOUT_MS : 0);
 }
 
 /**
@@ -300,9 +344,10 @@ export function assetRoutes(cfg: CascetConfig, network: Network, options: Paymen
 
 /**
  * Create the x402 resource server: every asset's facilitator behind one
- * AssetRoutingFacilitatorClient, the CasCet scheme with every asset, and the
- * startup checks (payTo, every price converts, every facilitator answers and
- * supports "exact" payments on this network).
+ * AssetRoutingFacilitatorClient, the CasCet scheme with every asset, the
+ * on-chain preflight of payments the hosted facilitator settles (when a node
+ * is configured), and the startup checks (payTo, every price converts, every
+ * facilitator answers and supports "exact" payments on this network).
  */
 export async function createPaymentRail(cfg: CascetConfig, options: PaymentRailOptions = {}): Promise<PaymentRail> {
   const network = cfg.network as Network;
@@ -312,6 +357,13 @@ export async function createPaymentRail(cfg: CascetConfig, options: PaymentRailO
   const router = new AssetRoutingFacilitatorClient(assetRoutes(cfg, network, options));
   const scheme = new CascetCasperServerScheme(assets.map(asset => ({ network, asset: asset.packageHash, decimals: asset.decimals })));
   const resourceServer = new x402ResourceServer(router).register(network, scheme);
+  const nodeUrl = settlementNodeUrl(cfg);
+  const preflightIds = new Set(hostedPreflightAssets(cfg).map(asset => asset.id));
+  const preflightAssets = assets.filter(asset => preflightIds.has(asset.id));
+  if (nodeUrl && preflightAssets.length > 0) {
+    // Runs before x402 asks the facilitator to verify; refuses (never throws) what would revert on-chain.
+    resourceServer.onBeforeVerify(hostedPreflightHook({ probe: new TokenProbe(createCasperRpc(nodeUrl)), network, assets: preflightAssets }));
+  }
   try {
     await resourceServer.initialize();
   } catch (err) {
@@ -320,7 +372,7 @@ export async function createPaymentRail(cfg: CascetConfig, options: PaymentRailO
     throw new Error(`cannot load the supported payment kinds of the facilitators: ${reason}`, { cause: err });
   }
   await router.assertCoverage();
-  return { resourceServer, network, payTo, assets, maxTimeoutSeconds: maxTimeoutSecondsFor(cfg) };
+  return { resourceServer, network, payTo, assets, preflightAssets, maxTimeoutSeconds: maxTimeoutSecondsFor(cfg) };
 }
 
 /** What the gateway does with one upstream tool. */

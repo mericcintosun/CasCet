@@ -27,6 +27,7 @@ function rail(): PaymentRail {
     network: "casper:casper-test" as Network,
     payTo: PAY_TO,
     assets: testConfig().assets,
+    preflightAssets: [],
     maxTimeoutSeconds: 300,
   };
 }

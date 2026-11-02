@@ -35,9 +35,9 @@ Or from the command line: `npx @cascet/cli wrap cascet.config.json`.
 | `facilitator.authScheme` | `"raw"` | How `apiKey` is sent: `raw` (`Authorization: <key>`, what the hosted CSPR.cloud facilitator expects; `bearer` is refused for it) or `bearer` (`Authorization: Bearer <key>`). |
 | `facilitator.timeoutMs` | none | Per-request timeout of this facilitator; replaces `timeouts.facilitatorMs` and `timeouts.settleMs` for its calls. |
 | `timeouts.facilitatorMs` | `15000` | Facilitator `/verify` and `/supported`. |
-| `timeouts.settleMs` | `90000` | Facilitator `/settle` (a Casper facilitator answers after the transfer executed). |
+| `timeouts.settleMs` | `90000` | Facilitator `/settle` (a Casper facilitator answers after the transfer executed). x402's automatic second call for a settlement reported as pending shares it. |
 | `timeouts.upstreamMs` | `60000` | One upstream MCP request. |
-| `settlement.nodeUrl` | `anchoring.nodeUrl` | Casper node used for read-only checks when a settlement fails. Without it the check is off. |
+| `settlement.nodeUrl` | `anchoring.nodeUrl` | Casper node used for read-only checks: when a settlement fails, and before the hosted facilitator verifies a payment (see *The hosted facilitator*). Without it both are off. |
 | `settlement.eventScanWindow` | `64` | Recent token events a check scans. |
 | `settlement.acceptThirdPartySettlement` | `false` | See *Settlement preemption*. |
 | `anchoring.gasMotes` | `2500000000` | Gas limit per anchor. Casper charges the whole limit. |
@@ -54,12 +54,17 @@ free by accident.
 MCP SDK's minimal default set (HOME, LOGNAME, PATH, SHELL, TERM, USER on
 POSIX) plus exactly `upstream.env`. Pass any secret the upstream needs there.
 
-**Buyer timeouts must be longer than `facilitatorMs + upstreamMs + settleMs`**
-(165 s with the defaults). In the default mode the gateway answers a paid call
-only after the tool ran and the payment settled; a buyer that gives up earlier
-may be charged without receiving the result. With several facilitators the
-gateway sizes this with the slowest one. x402's automatic second settle call
-for a settlement reported as pending stays within the same `settleMs`.
+**Buyer timeouts must be longer than the longest paid call:
+`facilitatorMs + upstreamMs + settleMs`** (165 s with the defaults). In the
+default mode the gateway answers a paid call only after the tool ran and the
+payment settled; a buyer that gives up earlier may be charged without
+receiving the result. With several facilitators the gateway sizes this with
+the slowest one. x402's automatic second settle call for a settlement
+reported as pending stays within the same `settleMs`. With
+`settlement.nodeUrl` (or `anchoring.nodeUrl`) set, add up to 15 s for the
+on-chain check of a settlement that did not succeed and, when the hosted
+facilitator settles one of the assets, 5 s for the on-chain preflight of its
+payments (185 s with the defaults).
 
 ## Accepting several tokens
 
@@ -92,7 +97,8 @@ official Wrapped CSPR (cep3009-value, settled by the hosted facilitator):
   rounds to zero units of one of its tokens.
 - The hosted facilitator gets the raw access key, and requirements without
   CasCet's own `extra.authorizationStyle` (no facilitator needs it; buyers
-  still see it).
+  still see it). With a node configured, the gateway preflights its payments
+  on-chain (see *The hosted facilitator*).
 - Receipts, `_meta.cascet` (`asset`, `assetSymbol`, `amountRaw`) and the
   on-chain settlement check use the token and amount of each payment's matched
   requirements; `GET /pricing` and the discovery document list every token of
@@ -102,6 +108,29 @@ official Wrapped CSPR (cep3009-value, settled by the hosted facilitator):
   token and the official Wrapped CSPR both called "WCSPR", say) would be told
   apart only by the package hash in `asset`. The gateway warns at startup when
   two assets share a symbol.
+
+## The hosted facilitator
+
+The hosted CSPR.cloud facilitator (`https://x402-facilitator.cspr.cloud`)
+settles CEP-3009 tokens only (`value`); a legacy-amount asset routed to it is
+a config error. It gets the raw access key, and requirements without CasCet's
+own `extra.authorizationStyle`.
+
+Its nonce pre-check (@x402/casper 2.29) does not work: an authorization whose
+nonce was already used on-chain passes its verify, the tool runs, and the
+settle reverts at the hosted fee payer's expense. With `settlement.nodeUrl` (or
+`anchoring.nodeUrl`) set, the gateway therefore checks every payment in an
+asset the hosted facilitator settles against the token's on-chain state
+before the facilitator verifies it, as CasCet's self-hosted facilitator does
+for its own assets: the token's `transfer_with_authorization` takes the
+configured style's argument, the nonce is unused, the token's `name` is the
+signed EIP-712 name, and the payer's balance covers the price. A payment that
+fails a check gets a 402 naming it (`nonce_already_used`,
+`insufficient_funds`, `authorization_style_mismatch`,
+`token_domain_mismatch`, `unsupported_asset`). When the node cannot be read
+within 5 s the payment is refused with `preflight_unavailable` (fail closed:
+nothing was charged and the buyer may retry). Without a node the gateway
+warns at startup that this preflight is off.
 
 ## Payment flow
 
@@ -117,7 +146,8 @@ official Wrapped CSPR (cep3009-value, settled by the hosted facilitator):
      1.0.0 verifies authorizations that break these rules, but they always
      revert on-chain);
    - it stays valid long enough: `facilitatorMs` + `upstreamMs` (not with
-     `settleBeforeExecute`) + 30 s for the settle transaction;
+     `settleBeforeExecute`) + 30 s for the settle transaction, + 5 s when the
+     gateway preflights hosted-facilitator payments;
    - this `(payer, nonce)` was never presented before, in any of the
      gateway's tokens. Replays are refused, also across restarts.
 
@@ -197,9 +227,10 @@ Wrapped CSPR).
   `startGateway`'s `onFatal` runs (default: close and set exit code 1 so a
   supervisor restarts the process).
 - Shutdown (`close()`, SIGINT/SIGTERM): new calls get 503 and calls in flight
-  may finish settling, for at most `facilitatorMs + upstreamMs + settleMs`.
-  Give the process supervisor a stop timeout at least that long. A second
-  signal exits at once.
+  may finish settling and writing their receipts, for at most the longest
+  paid call (see the buyer timeouts above: 165 s with the defaults, up to
+  185 s with a node configured). Give the process supervisor a stop timeout
+  at least that long. A second signal exits at once.
 - Browser requests carrying an `Origin` that is not allowlisted get HTTP 403.
 - `GET /receipts`, `GET /pricing` (`assets`, and per tool its `accepts`:
   token id, symbol, package hash, raw amount, authorization style). As on

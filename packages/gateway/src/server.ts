@@ -19,6 +19,7 @@ import {
   HEADER_PAYMENT_REQUIRED,
   HEADER_PAYMENT_RESPONSE,
   HEADER_PAYMENT_SIGNATURE,
+  isHostedFacilitatorUrl,
   normalizeOrigin,
   type CascetConfig,
   type PaymentReceipt,
@@ -51,10 +52,11 @@ import {
   buildToolTable,
   createPaymentRail,
   facilitatorOrigin,
-  gatewayTimeouts,
+  longestPaidCallMs,
   MAX_CLOCK_SKEW_SECONDS,
   priceIn,
   requiredValiditySeconds,
+  settlementNodeUrl,
   unmatchedConfiguredTools,
   type AssetPrice,
   type PaidToolPolicy,
@@ -120,8 +122,9 @@ export interface GatewayOptions {
   upstreamHealthCheck?: Partial<HealthCheckPolicy>;
   /**
    * How long close() waits for calls in flight (a paid call may be settling) before it cuts
-   * the remaining connections. Default: the facilitator's verify and settle timeouts plus
-   * timeouts.upstreamMs (see gatewayTimeouts).
+   * the remaining connections. Default: the longest a paid call can take (see longestPaidCallMs):
+   * the preflight, the facilitator's verify, timeouts.upstreamMs, the settle timeout (x402's
+   * retry of a pending settlement shares it) and the on-chain settlement check when it is on.
    */
   drainTimeoutMs?: number;
 }
@@ -213,7 +216,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     );
   }
 
-  const settlementNode = cfg.settlement.nodeUrl ?? anchoringCfg?.nodeUrl;
+  const settlementNode = settlementNodeUrl(cfg);
   // One event checker per token: a payment's on-chain trace is in the events of the token it paid in.
   const preemption: SettlementPreemptionChecker | undefined =
     options.preemptionChecker === null
@@ -246,8 +249,8 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   let closing: Promise<void> | undefined;
   /** /mcp requests being handled; close() lets them finish (paid calls may be settling). */
   const inFlight = new Set<Promise<void>>();
-  const timeouts = gatewayTimeouts(cfg);
-  const drainTimeoutMs = options.drainTimeoutMs ?? timeouts.facilitatorMs + timeouts.upstreamMs + timeouts.settleMs;
+  // Cutting a call short could leave a settled payment without its receipt.
+  const drainTimeoutMs = options.drainTimeoutMs ?? longestPaidCallMs(cfg, preemption !== undefined);
 
   const announceOnline = (): void => {
     pushEvent({
@@ -1154,6 +1157,15 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     );
   }
   log.info(`    on-chain settlement check: ${preemption ? "on" : "off (set settlement.nodeUrl to enable)"}`);
+  const hosted = rail.assets.filter(asset => isHostedFacilitatorUrl(facilitatorFor(cfg, asset).url)).map(asset => asset.id);
+  if (rail.preflightAssets.length > 0) {
+    log.info(`    on-chain preflight of hosted-facilitator payments (nonce, balance, token ABI and name): on for ${logSafe(hosted.join(", "), 200)}`);
+  } else if (hosted.length > 0) {
+    log.warn(
+      `    on-chain preflight of hosted-facilitator payments: off for ${logSafe(hosted.join(", "), 200)} (set settlement.nodeUrl to enable); ` +
+        "the hosted facilitator's own nonce pre-check does not work, so a spent authorization reaches its settle",
+    );
+  }
   announceOnline();
 
   /**

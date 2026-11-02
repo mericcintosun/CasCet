@@ -18,6 +18,7 @@ import { DEFAULT_FACILITATOR_URL, type CascetConfig } from "@cascet/core";
 import type { PreemptionQuery, SettlementPreemptionChecker } from "./preemption.js";
 import { startGateway } from "./server.js";
 import { startFakeFacilitator, type FakeFacilitator, type Reply } from "./testing/fake-facilitator.js";
+import { startFakeNode, u256Response, wcsprBalanceCall, wcsprNodeRoutes, wcsprNonceCall } from "./testing/fake-node.js";
 import { createFakeUpstream } from "./testing/fake-upstream.js";
 import {
   callPaid,
@@ -766,7 +767,7 @@ describe("the hosted facilitator", () => {
    * memory: nothing reaches the real host) and whose legacy token is settled by
    * a local fake facilitator.
    */
-  async function hostedGateway() {
+  async function hostedGateway(input: Record<string, unknown> = {}) {
     const hosted: Array<{ path: string; authorization: string | null; body?: HostedBody }> = [];
     const facilitatorFetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));
@@ -788,7 +789,10 @@ describe("the hosted facilitator", () => {
     const legacy = await startFakeFacilitator({ label: "legacy", settleTx: LEGACY_SETTLE_TX });
     const upstream = createFakeUpstream({ tools: [{ name: "paid_tool" }] });
     const dir = mkdtempSync(join(tmpdir(), "cascet-gateway-test-"));
-    const cfg = twoAssetConfig(legacy.url, DEFAULT_FACILITATOR_URL, { facilitator: { url: DEFAULT_FACILITATOR_URL, apiKey: "cspr-cloud-key" } });
+    const cfg = twoAssetConfig(legacy.url, DEFAULT_FACILITATOR_URL, {
+      facilitator: { url: DEFAULT_FACILITATOR_URL, apiKey: "cspr-cloud-key" },
+      ...input,
+    });
     let gateway;
     try {
       gateway = await startGateway(cfg, {
@@ -847,6 +851,50 @@ describe("the hosted facilitator", () => {
       assert.equal(hosted.length, 3, "the legacy payment never reached the hosted facilitator");
     } finally {
       await close();
+    }
+  });
+
+  it("gets no payment the token state refuses, when a node is configured: a spent nonce, a short balance, an unreadable node", async () => {
+    const spent = "5a".repeat(32);
+    const routes = wcsprNodeRoutes({ usedNonces: [{ payer: PAYER, nonce: spent }] });
+    let balance = BigInt(WCSPR_PRICE_RAW);
+    routes[wcsprBalanceCall(PAYER)] = () => u256Response(balance);
+    const node = await startFakeNode(routes);
+    const { hosted, legacy, h, close } = await hostedGateway({ settlement: { nodeUrl: node.url } });
+    const askedToWork = () => hosted.filter(call => call.path !== "/supported").map(call => call.path);
+    const refusedWith = async (header: string, reason: string) => {
+      const res = await callPaid(h, "paid_tool", header);
+      assert.equal(res.status, 402);
+      assert.equal(res.body.error?.code, -32002);
+      assert.equal(res.body.error?.message, `payment rejected: ${reason}`);
+      assert.equal(challengeOf(res).error, reason);
+    };
+    try {
+      // The hosted facilitator's own nonce check would let this one through, and its settle would revert.
+      await refusedWith((await payInAsset(h, "paid_tool", WCSPR_TOKEN, { nonce: spent })).header, "nonce_already_used");
+      balance -= 1n;
+      const later = await payInAsset(h, "paid_tool", WCSPR_TOKEN);
+      await refusedWith(later.header, "insufficient_funds");
+      balance += 1n;
+      node.down = true;
+      await refusedWith(later.header, "preflight_unavailable");
+      assert.deepEqual(askedToWork(), [], "the hosted facilitator was never asked to verify or settle");
+
+      // The node is back: the same authorization (released after each refusal) goes through.
+      node.down = false;
+      const res = await callPaid(h, "paid_tool", later.header);
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      assert.deepEqual(askedToWork(), ["/verify", "/settle"]);
+      assert.ok(node.calls.includes(wcsprNonceCall(PAYER, later.nonce)));
+
+      // A payment in the legacy token goes to its self-hosted facilitator, which preflights it itself.
+      const read = node.calls.length;
+      assert.equal((await callPaid(h, "paid_tool", (await payInAsset(h, "paid_tool", LEGACY_TOKEN)).header)).status, 200);
+      assert.equal(node.calls.length, read, "the gateway read no token state for it");
+      assert.equal(legacy.count("settle"), 1);
+    } finally {
+      await close();
+      await node.close();
     }
   });
 

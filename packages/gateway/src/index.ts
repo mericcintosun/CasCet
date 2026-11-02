@@ -10,10 +10,13 @@ export {
   createPaymentRail,
   gatewayAssets,
   gatewayTimeouts,
+  hostedPreflightAssets,
+  longestPaidCallMs,
   priceIn,
   requirementExtra,
   resolveToolPolicy,
   routeForTool,
+  settlementNodeUrl,
   type AssetPrice,
   type GatewayTimeouts,
   type PaidToolPolicy,
@@ -33,6 +36,12 @@ export {
 } from "./facilitator-router.js";
 export { CASCET_PAYMENT_FLOWS, CascetCasperServerScheme, type ServerSchemeAsset } from "./server-scheme.js";
 export {
+  HOSTED_PREFLIGHT_DEADLINE_MS,
+  hostedPreflightHook,
+  PreflightReason,
+  type HostedPreflightOptions,
+} from "./hosted-preflight.js";
+export {
   connectUpstream,
   createUpstreamTransport,
   listAllTools,
@@ -47,6 +56,7 @@ export { TimeoutFacilitatorClient, SettlementIndeterminateError, classifySettleF
 export {
   createCesPreemptionChecker,
   decodeCesEvent,
+  PREEMPTION_CHECK_TIMEOUT_MS,
   routePreemptionChecks,
   type PreemptionOutcome,
   type PreemptionQuery,

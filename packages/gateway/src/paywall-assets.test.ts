@@ -12,6 +12,8 @@ import {
   createPaymentRail,
   gatewayAssets,
   gatewayTimeouts,
+  hostedPreflightAssets,
+  longestPaidCallMs,
   maxTimeoutSecondsFor,
   requiredValiditySeconds,
   resolveToolPolicy,
@@ -177,18 +179,36 @@ describe("the payment rail uses the asset's own facilitator", () => {
 
   it("sizes the signing window with a facilitator's own timeout", () => {
     const own = testConfig({ facilitator: { url: "http://127.0.0.1:9", timeoutMs: 120_000 }, timeouts: { upstreamMs: 60_000 } });
-    assert.deepEqual(gatewayTimeouts(own), { facilitatorMs: 120_000, settleMs: 120_000, upstreamMs: 60_000 });
+    assert.deepEqual(gatewayTimeouts(own), { preflightMs: 0, facilitatorMs: 120_000, settleMs: 120_000, upstreamMs: 60_000 });
     assert.equal(requiredValiditySeconds(own, false), 120 + 60 + 30);
     assert.equal(maxTimeoutSecondsFor(own), 120 + 60 + 120 + 30);
-    assert.deepEqual(gatewayTimeouts(testConfig()), { facilitatorMs: 15_000, settleMs: 90_000, upstreamMs: 60_000 });
+    assert.deepEqual(gatewayTimeouts(testConfig()), { preflightMs: 0, facilitatorMs: 15_000, settleMs: 90_000, upstreamMs: 60_000 });
   });
 
   it("sizes the signing window with the slowest of several facilitators, so it holds in every asset", () => {
     const cfg = twoAssetConfig(SELF, CEP, {
       facilitators: { self: { url: SELF, apiKey: "self-key", authScheme: "bearer", timeoutMs: 120_000 } },
     });
-    assert.deepEqual(gatewayTimeouts(cfg), { facilitatorMs: 120_000, settleMs: 120_000, upstreamMs: 60_000 });
+    assert.deepEqual(gatewayTimeouts(cfg), { preflightMs: 0, facilitatorMs: 120_000, settleMs: 120_000, upstreamMs: 60_000 });
     assert.equal(maxTimeoutSecondsFor(cfg), 120 + 60 + 120 + 30);
+  });
+
+  it("adds the hosted-facilitator preflight to the windows when a node is configured, and the on-chain check to the longest call", () => {
+    const hosted = { facilitator: { url: DEFAULT_FACILITATOR_URL, apiKey: "cspr-cloud-key" } };
+    const withNode = twoAssetConfig(SELF, CEP, { ...hosted, settlement: { nodeUrl: "http://127.0.0.1:9/rpc" } });
+    assert.deepEqual(hostedPreflightAssets(withNode).map(asset => asset.id), ["wcspr"], "only the asset the hosted facilitator settles");
+    assert.deepEqual(gatewayTimeouts(withNode), { preflightMs: 5_000, facilitatorMs: 15_000, settleMs: 90_000, upstreamMs: 60_000 });
+    assert.equal(requiredValiditySeconds(withNode, false), 5 + 15 + 60 + 30);
+    assert.equal(requiredValiditySeconds(withNode, true), 5 + 15 + 30);
+    // The longest paid call: preflight, verify, tool, one settle timeout (x402's retry included), the on-chain check.
+    assert.equal(longestPaidCallMs(withNode, true), 5_000 + 15_000 + 60_000 + 90_000 + 15_000);
+    assert.equal(longestPaidCallMs(withNode, false), 5_000 + 15_000 + 60_000 + 90_000);
+
+    // Without a node there is no preflight (and no on-chain check).
+    const withoutNode = twoAssetConfig(SELF, CEP, hosted);
+    assert.deepEqual(hostedPreflightAssets(withoutNode), []);
+    assert.equal(gatewayTimeouts(withoutNode).preflightMs, 0);
+    assert.equal(longestPaidCallMs(testConfig(), false), 165_000);
   });
 });
 

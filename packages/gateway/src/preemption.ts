@@ -232,12 +232,15 @@ export function routePreemptionChecks(byAsset: ReadonlyMap<string, SettlementPre
   };
 }
 
+/** Default budget of one whole preemption check (every RPC call of it). */
+export const PREEMPTION_CHECK_TIMEOUT_MS = 15_000;
+
 /** Preemption checker backed by a Casper node's JSON-RPC and the token's CES events. */
 export function createCesPreemptionChecker(opts: CesCheckerOptions): SettlementPreemptionChecker {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const packageHex = normalizePackageHash(opts.tokenPackageHash);
   const batchSize = Math.max(1, opts.batchSize ?? 8);
-  const timeoutMs = opts.timeoutMs ?? 15_000;
+  const timeoutMs = opts.timeoutMs ?? PREEMPTION_CHECK_TIMEOUT_MS;
 
   return {
     async check(query: PreemptionQuery): Promise<PreemptionOutcome> {

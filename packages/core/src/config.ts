@@ -178,8 +178,11 @@ export const corsSchema = z
  *
  * A paid call in the default run-then-settle mode can take up to
  * facilitatorMs + upstreamMs + settleMs (165 s with the defaults) before the
- * gateway answers, so buyers must wait longer than that: a buyer that gives up
- * earlier may still be charged without receiving the result.
+ * gateway answers, plus its read-only chain checks when `settlement.nodeUrl`
+ * is set (up to 15 s after a settlement that did not succeed, 5 s before the
+ * hosted facilitator verifies a payment), so buyers must wait longer than
+ * that: a buyer that gives up earlier may still be charged without receiving
+ * the result.
  */
 export const timeoutsSchema = z
   .object({
@@ -189,7 +192,9 @@ export const timeoutsSchema = z
      * Facilitator /settle call. Longer than `facilitatorMs` because a Casper
      * facilitator only answers once the transfer has executed on-chain
      * (casper-x402 polls for up to 60 s); when it expires the outcome is
-     * recorded as "unknown", never as failed.
+     * recorded as "unknown", never as failed. x402 settles once more when the
+     * facilitator reports the settlement as pending; the gateway keeps both
+     * calls within this timeout.
      */
     settleMs: z.number().int().positive().default(90_000),
     /** One upstream MCP request (tools/list page, tools/call). */
@@ -197,12 +202,14 @@ export const timeoutsSchema = z
   })
   .prefault({});
 
-/** Read-only on-chain checks used when a settlement does not succeed. */
+/** Read-only on-chain checks of the gateway: when a settlement does not succeed, and before the hosted facilitator verifies. */
 export const settlementSchema = z
   .object({
     /**
      * Casper node JSON-RPC used to look up the token's events when a settle
-     * fails (falls back to `anchoring.nodeUrl`; without either the check is off).
+     * fails, and to check payments the hosted facilitator settles (unused
+     * nonce, balance, token ABI and name) before it verifies them. Falls back
+     * to `anchoring.nodeUrl`; without either both checks are off.
      */
     nodeUrl: z.string().url().optional(),
     /** How many of the token's most recent events a check scans. */
