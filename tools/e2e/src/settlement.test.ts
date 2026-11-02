@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import casperSdk from "casper-js-sdk";
+import { AUTHORIZATION_STYLES, type AuthorizationStyle } from "@cascet/core";
 import { createCasperRpc } from "@cascet/gateway";
 import * as fx from "./rpc-fixtures.js";
 import {
@@ -8,6 +9,7 @@ import {
   createCasperSettlementChain,
   netCostMotes,
   parseExecutionInfo,
+  SETTLEABLE_STYLES,
   type SettlementInput,
 } from "./settlement.js";
 import { FakeClock, replayFetch, rpcError, rpcResult } from "./test-helpers.js";
@@ -52,6 +54,26 @@ describe("settlement transaction builder", () => {
       assert.equal(rebuilt[name]?.bytes, recordedArgs[name]!.bytes, `arg ${name}`);
       assert.deepEqual(rebuilt[name]?.cl_type, recordedArgs[name]!.cl_type, `arg ${name} type`);
     }
+  });
+
+  test("SETTLEABLE_STYLES are exactly the styles whose amount argument the builder sends", () => {
+    const amountArgument: Record<AuthorizationStyle, string> = { "legacy-amount": "amount", "cep3009-value": "value" };
+    const tx = buildSettlementTransaction(settledInput, {
+      feePayerPublicKey: recorded.payload.initiator_addr.PublicKey,
+      chainName: "casper-test",
+      paymentMotes: 4_000_000_000n,
+      ttlMs: 10 * 60_000,
+    });
+    const json = TransactionWrapper.toJSON(tx.getTransactionWrapper()) as {
+      Version1: { payload: { fields: { args: { Named: Array<[string, unknown]> } } } };
+    };
+    const sent = new Set(json.Version1.payload.fields.args.Named.map(([name]) => name));
+    assert.deepEqual(
+      [...SETTLEABLE_STYLES],
+      AUTHORIZATION_STYLES.filter(style => sent.has(amountArgument[style])),
+    );
+    assert.deepEqual([...SETTLEABLE_STYLES], ["legacy-amount"], "this builder sends `amount` only");
+    assert.ok(Object.isFrozen(SETTLEABLE_STYLES));
   });
 
   test("uses the requested gas limit (4 CSPR default path)", () => {

@@ -16,6 +16,7 @@ import {
   selfHostedEnv,
   TESTNET_DEMO_ASSETS,
 } from "./demo-matrix.js";
+import { SETTLEABLE_STYLES } from "./settlement.js";
 
 /** GET https://x402-facilitator.cspr.cloud/supported, recorded 2026-11-01 (no authentication needed). */
 const hostedSupported = {
@@ -71,6 +72,7 @@ describe("demo-real mode: token and facilitator", () => {
   });
 
   test("refuses Wrapped CSPR on the self-hosted facilitator until it settles cep3009-value", () => {
+    assert.equal(SELF_HOSTED_SETTLE_STYLES, SETTLEABLE_STYLES, "the settlement builder's own list, not a copy");
     assert.deepEqual([...SELF_HOSTED_SETTLE_STYLES], ["legacy-amount"]);
     assert.throws(() => resolveDemoMode({ CASCET_ASSET: "wcspr" }, []), /does not settle cep3009-value tokens yet/);
     const later = resolveDemoMode({ CASCET_ASSET: "wcspr" }, [], ["legacy-amount", "cep3009-value"]);

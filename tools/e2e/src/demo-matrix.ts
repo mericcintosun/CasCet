@@ -2,6 +2,7 @@ import { DEFAULT_FACILITATOR_URL, normalizePackageHash, type AuthorizationStyle 
 import { formatCspr } from "./amounts.js";
 import { NETWORKS } from "./facilitator-env.js";
 import { normalizePayTo } from "./facilitator-core.js";
+import { SETTLEABLE_STYLES } from "./settlement.js";
 import { parseCli, UsageError } from "./testnet-tx.js";
 import { TESTNET_WCSPR } from "./wcspr.js";
 
@@ -74,13 +75,12 @@ export const TESTNET_DEMO_ASSETS: Readonly<Record<DemoAssetKey, DemoAsset>> = Ob
 
 /**
  * Authorization styles the in-process self-hosted facilitator
- * (real-facilitator.ts) settles. On this branch it settles with the `amount`
- * argument only (settlement.ts), so a cep3009-value token such as Wrapped CSPR
- * would revert with User error 64658 and burn the gas limit. Add
- * "cep3009-value" here once the self-hosted facilitator settles by the
- * token's on-chain style.
+ * (real-facilitator.ts) settles: those of its settlement builder
+ * (SETTLEABLE_STYLES in settlement.ts), which sends `amount` only, so a
+ * cep3009-value token such as Wrapped CSPR would revert with User error 64658
+ * and burn the gas limit. The list follows the builder: no copy to keep in sync.
  */
-export const SELF_HOSTED_SETTLE_STYLES: readonly AuthorizationStyle[] = Object.freeze(["legacy-amount"]);
+export const SELF_HOSTED_SETTLE_STYLES: readonly AuthorizationStyle[] = SETTLEABLE_STYLES;
 
 /** The hosted CSPR.cloud facilitator. */
 export const HOSTED_FACILITATOR_URL = DEFAULT_FACILITATOR_URL;

@@ -1,4 +1,5 @@
 import casperSdk from "casper-js-sdk";
+import type { AuthorizationStyle } from "@cascet/core";
 import { isNoSuchTransaction, RpcNodeError, type CasperRpc } from "@cascet/gateway";
 
 const { Args, CLValue, CLTypeUInt8, ContractCallBuilder, Key, PublicKey, Timestamp, TransactionWrapper } = casperSdk;
@@ -75,6 +76,16 @@ export interface SettlementChain {
 
 const hexToBytes = (hex: string): Uint8Array => Uint8Array.from(Buffer.from(hex, "hex"));
 const u8List = (bytes: Uint8Array) => CLValue.newCLList(CLTypeUInt8, Array.from(bytes).map(b => CLValue.newCLUint8(b)));
+
+/**
+ * The authorization styles this builder settles. It always sends `amount`
+ * (see {@link transferWithAuthorizationArgs}), the argument of `legacy-amount`
+ * tokens: a `cep3009-value` token such as Wrapped CSPR takes `value` and would
+ * revert with User error 64658, burning the whole gas limit. demo-real refuses
+ * Wrapped CSPR on the self-hosted facilitator from this list. Derive it from
+ * the builder once the builder sends `value` as well.
+ */
+export const SETTLEABLE_STYLES: readonly AuthorizationStyle[] = Object.freeze(["legacy-amount"]);
 
 /** Runtime args of `transfer_with_authorization`, identical to casper-x402 1.0.0. */
 export function transferWithAuthorizationArgs(input: SettlementInput) {
