@@ -134,15 +134,21 @@ jobs:
             # folder with npm would ship the workspace: protocol verbatim.
             tgz="$(cd "$dir" && pnpm pack --pack-destination "$out" --json \
               | node -e 'let s = ""; process.stdin.on("data", d => (s += d)).on("end", () => process.stdout.write(JSON.parse(s).filename))')"
-            if tar -xOzf "$tgz" package/package.json | grep -q '"workspace:'; then
+            # Read the tarball first: `tar … | grep -q` under pipefail fails
+            # whenever grep stops at an early match (tar gets SIGPIPE), which
+            # turned a found dist/ into "no dist/" and would let a found key
+            # or workspace: dependency through.
+            manifest="$(tar -xOzf "$tgz" package/package.json)"
+            listing="$(tar -tzf "$tgz")"
+            if grep -q '"workspace:' <<< "$manifest"; then
               echo "::error::$tgz still contains a workspace: dependency"
               exit 1
             fi
-            if ! tar -tzf "$tgz" | grep -q '^package/dist/'; then
+            if ! grep -q '^package/dist/' <<< "$listing"; then
               echo "::error::$tgz contains no dist/ build output"
               exit 1
             fi
-            if tar -tzf "$tgz" | grep -Eq '\.pem$|(^|/)\.env(\.|$)|(^|/)keys/'; then
+            if grep -Eq '\.pem$|(^|/)\.env(\.|$)|(^|/)keys/' <<< "$listing"; then
               echo "::error::$tgz contains a key or .env file"
               exit 1
             fi
