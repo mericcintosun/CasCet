@@ -1,15 +1,13 @@
 import "server-only";
-import {
-  HttpHandler,
-  RpcClient,
-  ContractCallBuilder,
-  Args,
-  CLValue,
-  Key,
-  PublicKey,
-  Transaction,
-} from "casper-js-sdk";
-import { CHAIN_NAME, NODE_URL, RELEASE_GAS_MOTES, REVENUE_SPLIT_PACKAGE } from "./constants";
+import { HttpHandler, RpcClient } from "casper-js-sdk";
+import { withTimeout } from "../timeout";
+import { CHAIN_NAME, NODE_URL, PAYEES, RELEASE_GAS_MOTES, REVENUE_SPLIT_PACKAGE } from "./constants";
+import { attachWalletSignature, buildUnsignedReleaseTx, RelayTimeoutError } from "./release-core";
+
+export { RelayRejectedError, RelayTimeoutError } from "./release-core";
+
+/** How long the relay waits for the node to answer putTransaction (L27). */
+export const SUBMIT_TIMEOUT_MS = 20_000;
 
 function rpc(): InstanceType<typeof RpcClient> {
   return new RpcClient(new HttpHandler(NODE_URL, "fetch"));
@@ -22,48 +20,30 @@ function rpc(): InstanceType<typeof RpcClient> {
  * released tokens always go to `payeeAccountHash`.
  */
 export function buildUnsignedRelease(payeeAccountHash: string, fromPublicKeyHex: string): unknown {
-  const from = PublicKey.fromHex(fromPublicKeyHex);
-  const args = Args.fromMap({ account: CLValue.newCLKey(Key.newKey(payeeAccountHash)) });
-  const tx = new ContractCallBuilder()
-    .byPackageHash(REVENUE_SPLIT_PACKAGE)
-    .entryPoint("release")
-    .runtimeArgs(args)
-    .from(from)
-    .chainName(CHAIN_NAME)
-    .payment(RELEASE_GAS_MOTES)
-    .build();
-  return tx.toJSON();
+  return buildUnsignedReleaseTx(payeeAccountHash, fromPublicKeyHex, {
+    packageHash: REVENUE_SPLIT_PACKAGE,
+    chainName: CHAIN_NAME,
+    paymentMotes: RELEASE_GAS_MOTES,
+  }).toJSON();
 }
 
-function hexToBytes(hex: string): Uint8Array {
-  let h = hex.startsWith("0x") ? hex.slice(2) : hex;
-  // Casper Wallet may prefix the signature with a 1-byte key-algo tag (65 bytes total).
-  if (h.length === 130) h = h.slice(2);
-  const out = new Uint8Array(h.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
-
-/** Attach a wallet signature to a prepared tx and submit it; resolves with the tx hash. */
+/**
+ * Attach a wallet signature to a prepared tx, verify it locally, and submit it;
+ * resolves with the tx hash. Throws RelayRejectedError (a 400) before any RPC
+ * call when the transaction or signature is not acceptable, and
+ * RelayTimeoutError (a 504) when the node does not answer in time.
+ */
 export async function submitSigned(txJson: unknown, signatureHex: string, publicKeyHex: string): Promise<string> {
-  const tx = Transaction.fromJSON(txJson);
-
-  // Defence-in-depth: /submit must only relay the RevenueSplit `release` we
-  // prepared, never an arbitrary transaction a caller pastes in. The wallet
-  // only pays gas (release is permissionless), so this is not fund-loss today,
-  // but it keeps the trust boundary correct if the design ever changes.
-  const entryPoint = tx.entryPoint?.customEntryPoint;
-  if (entryPoint !== "release") {
-    throw new Error(`refusing to relay: unexpected entry point "${entryPoint ?? "?"}"`);
-  }
-  const pkg = REVENUE_SPLIT_PACKAGE.replace(/^hash-/, "").toLowerCase();
-  if (!JSON.stringify(txJson).toLowerCase().includes(pkg)) {
-    throw new Error("refusing to relay: transaction does not target the RevenueSplit contract");
-  }
-
-  const pub = PublicKey.fromHex(publicKeyHex);
-  tx.setSignature(hexToBytes(signatureHex), pub);
-  const res = await rpc().putTransaction(tx);
+  const tx = attachWalletSignature(txJson, signatureHex, publicKeyHex, {
+    packageHash: REVENUE_SPLIT_PACKAGE,
+    chainName: CHAIN_NAME,
+    allowedPayees: PAYEES.map((p) => p.accountHash),
+  });
+  const res = await withTimeout(
+    rpc().putTransaction(tx),
+    SUBMIT_TIMEOUT_MS,
+    () => new RelayTimeoutError(tx.hash.toHex(), SUBMIT_TIMEOUT_MS),
+  );
   const h = res.transactionHash as { toHex?: () => string } | string;
   if (typeof h === "string") return h;
   if (h && typeof h.toHex === "function") return h.toHex();

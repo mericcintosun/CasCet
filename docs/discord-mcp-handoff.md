@@ -12,19 +12,20 @@ scored Buildathon criterion, so a real server matters, not just an invite link.
 > alternative; you do not need it — the script gets the same result with no extra
 > moving parts.
 
-## Current state (already done)
+## Current state
 
-- **Discord server exists.** Name: **CasCet**. Public invite:
-  **<https://discord.gg/fcjevk47k>** (live).
-- The invite is already **wired into the product** and docs — keep these in sync
-  if the invite ever changes:
+- **Discord server exists** (name: **CasCet**), but its public invite expired and
+  has been removed from the README and the docs. Questions and support go to
+  [GitHub issues](https://github.com/mericcintosun/CasCet/issues) until the
+  server reopens.
+- To reopen it, create a **non-expiring** invite and add it in the same change to:
   - `apps/dashboard/app/page.tsx` → the `SOCIALS` object (rendered in the landing
-    footer + final CTA).
+    footer + final CTA; it still links the expired invite and must drop it);
   - `README.md` → the socials line under the title, and the "Socials & launch"
-    line in the Roadmap section.
+    line in the Roadmap section;
   - `docs/launch-kit.md` → the handles table + Discord copy.
-- **Live socials:** X `@cascet_xyz` (<https://x.com/cascet_xyz>), Discord (above),
-  GitHub `mericcintosun/CasCet`. **Telegram is not planned** — do not add one.
+- **Live socials:** X `@cascet_xyz` (<https://x.com/cascet_xyz>) and GitHub
+  `mericcintosun/CasCet`. **Telegram is not planned** — do not add one.
 
 ## The finalized design (what the script builds)
 
@@ -65,9 +66,10 @@ for @everyone):
 needs Level-2 Boosts, so upload it manually once boosted.
 
 Keep everything consistent with `docs/launch-kit.md` (canonical copy, bio, pinned
-text). If the invite link changes, update `apps/dashboard/app/page.tsx`
-(`SOCIALS`), `README.md`, and `docs/launch-kit.md`, then re-run
-`pnpm --filter @cascet/dashboard build`.
+text). When an invite is added or changes, update `apps/dashboard/app/page.tsx`
+(`SOCIALS`), `README.md`, and `docs/launch-kit.md` together, then re-run
+`pnpm --filter @cascet/dashboard build`. Check that the invite resolves before
+you publish it.
 
 ## Connecting a Discord MCP server
 

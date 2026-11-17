@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import {
@@ -7,6 +8,7 @@ import {
   GitBranch,
   Github,
   Lock,
+  MessageSquare,
   Network,
   Receipt,
   ShieldCheck,
@@ -23,29 +25,33 @@ import { Steps } from "@/components/landing/steps";
 import { GetStarted } from "@/components/landing/get-started";
 import { Reveal } from "@/components/landing/reveal";
 import { CascadeFlow } from "@/components/landing/cascade-flow";
-import { XIcon, DiscordIcon } from "@/components/social-icons";
+import { XIcon } from "@/components/social-icons";
 import { cn } from "@/lib/utils";
+
+export const metadata: Metadata = { alternates: { canonical: "/" } };
 
 const GH = "https://github.com/mericcintosun/CasCet";
 const SOCIALS = {
   x: "https://x.com/cascet_xyz",
-  discord: "https://discord.gg/fcjevk47k",
+  // Questions, bugs and ideas go to GitHub issues.
+  issues: `${GH}/issues`,
   github: GH,
 };
 const CONTRACT = (hash: string) => `https://cspr.live/contract-package/${hash}`;
 
-// Live on Casper MAINNET (chain "casper"). Full testnet set is in docs/onchain.md.
+// Live on Casper MAINNET (chain "casper"). Full testnet set is in docs/onchain.md. Lock status read from
+// mainnet global state (query_global_state, 2026-11-02): Cep18X402 is Unlocked, the other five are Locked.
 const CONTRACTS = [
   { name: "CascadeController", note: "budget-bounded cascade tree + recursive attribution", hash: "c7e56988214c62dc5eda20b14894a7514f7388560850b6db3094758363a62189" },
   { name: "ReceiptRegistry", note: "on-chain settled-call receipts with cascade parent links", hash: "f86bef35062e92d06b8171cf4131fdf557463589aca9112a348e5eb24159eb93" },
   { name: "PaymentChannel", note: "prepaid channels, off-chain signed vouchers", hash: "db2dc42b76f354e7716cafea8619ae6bc85fe50bc3e73979c2360dbba1458c57" },
   { name: "RevenueSplit", note: "on-chain CEP-18 revenue splitter", hash: "269afcceb147db41f68f5721df7b3957e5efeefb3bedbb9deba324c3a45d09c5" },
   { name: "DemoToken", note: "CasCet CEP-18 payment token (WCSPR-style)", hash: "3da88daf3f276d915ea4f6734e0d4b3d4781358734c369b95de028a2c094fe74" },
-  { name: "Cep18X402", note: "payment token with transfer_with_authorization", hash: "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41" },
+  { name: "Cep18X402", note: "payment token with transfer_with_authorization; its package is unlocked, so the owner key can upgrade it", hash: "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41" },
 ];
 
 const STATS = [
-  { k: "mainnet", v: "live + security-reviewed" },
+  { k: "mainnet", v: "contracts + x402 settlement live" },
   { k: "x402", v: "real settlement, no mock" },
   { k: "N-hop", v: "cascading payments" },
   { k: "1", v: "autonomous LLM buyer" },
@@ -82,7 +88,6 @@ function Hero() {
           src="/hero.png"
           alt=""
           fill
-          priority
           sizes="100vw"
           className="object-cover object-right opacity-80 dark:opacity-90"
         />
@@ -135,6 +140,10 @@ function Hero() {
               </div>
             ))}
           </dl>
+          <p className="mt-6 flex items-center gap-2 text-xs text-muted-foreground">
+            <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden />
+            Internal security review; external audit planned.
+          </p>
         </div>
       </div>
     </section>
@@ -176,8 +185,8 @@ function GetStartedSection() {
 function CascadePrimitive() {
   return (
     <section id="cascade" className="relative border-y border-border bg-card/30">
-      <div className="mx-auto grid max-w-6xl items-center gap-12 px-6 py-24 lg:grid-cols-2">
-        <Reveal>
+      <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-12 px-6 py-24 lg:grid-cols-2">
+        <Reveal className="min-w-0">
           <Badge variant="outline" className="mb-5 border-primary/30 font-mono text-[11px] text-primary">
             the primitive
           </Badge>
@@ -191,9 +200,10 @@ function CascadePrimitive() {
           </p>
           <ul className="mt-7 space-y-5">
             <Feat icon={Wallet} title="On-chain budget tree">
-              An agent opens a cascade with <span className="text-foreground">one deposit that caps the whole call tree</span>.
-              The contract pays each hop out of it and refuses any hop that would exceed the budget. Enforcement by construction,
-              not by trusting the gateway.
+              In the CascadeController, an agent opens a cascade with{" "}
+              <span className="text-foreground">one deposit that caps the whole call tree</span>. The contract pays each hop out
+              of it and refuses any hop that would exceed the budget, by construction rather than by trusting a gateway. The live
+              gateway flow does not route payments through it yet; there, budgets are enforced by the buyer&apos;s bridge.
             </Feat>
             <Feat icon={Network} title="Recursive attribution">
               A configurable share of a child hop&apos;s earnings flows <span className="text-foreground">up</span> to the parent
@@ -222,7 +232,7 @@ function CascadePrimitive() {
           </Button>
         </Reveal>
 
-        <Reveal delay={120}>
+        <Reveal delay={120} className="min-w-0">
           <div className="glow-primary rounded-2xl border border-border bg-background/70 p-6">
             <div className="mb-4 flex items-center justify-between">
               <span className="font-mono text-xs text-muted-foreground">cascade.trace</span>
@@ -243,8 +253,8 @@ function Features() {
   const feats = [
     { icon: ShieldCheck, t: "Real x402 settlement, no mock", d: <>Agents pay from an on-chain balance of a real <span className="font-mono text-foreground">transfer_with_authorization</span> CEP-18 token; a self-hosted x402 facilitator verifies and settles it; receipts anchor on-chain. Every hop is a real Casper transaction.</> },
     { icon: Receipt, t: "Receipts, on-chain", d: <>Every settled call is anchored with its cascade parent id, so the whole payment graph reconstructs from chain data alone, no central coordinator.</> },
-    { icon: Lock, t: "Upgradable contracts", d: <>The ReceiptRegistry was upgraded v1.1 to v1.2 in-place on Casper, and all anchored state survived the upgrade.</> },
-    { icon: Coins, t: "Revenue splits", d: <>Point a server&apos;s payTo at the RevenueSplit contract and earnings split between co-authors on-chain, pull-based.</> },
+    { icon: Lock, t: "Upgradable registry (testnet)", d: <>On testnet the ReceiptRegistry was upgraded v1.1 to v1.2 in place and all anchored state survived. On mainnet the CascadeController, ReceiptRegistry, PaymentChannel, RevenueSplit and DemoToken packages are locked (not upgradable); the Cep18X402 payment token package is unlocked, so its owner key can upgrade it.</> },
+    { icon: Coins, t: "Revenue splits", d: <>The RevenueSplit contract splits the tokens it holds between co-authors by fixed weights, on-chain and pull-based: each payee withdraws their own share. x402 settles to account hashes today, so earnings reach the splitter by a transfer.</> },
     { icon: GitBranch, t: "Wrap any MCP server", d: <>CasCet monetizes the unmodified official <span className="font-mono text-foreground">server-everything</span>, not just first-party tools.</> },
   ];
   return (
@@ -252,15 +262,16 @@ function Features() {
       <div className="border-t border-border">
         {feats.map((f, i) => (
           <Reveal key={i} delay={(i % 2) * 60}>
-            <div className="group relative grid grid-cols-[auto_1fr] items-start gap-5 border-b border-border py-7 pl-5 pr-4 transition-colors hover:bg-card/40 sm:grid-cols-[220px_1fr] sm:gap-10 sm:pl-6">
+            {/* stacked on phones: long mono words (transfer_with_authorization) can't squeeze into a second column */}
+            <div className="group relative grid grid-cols-1 items-start gap-3 border-b border-border py-7 pl-5 pr-4 transition-colors hover:bg-card/40 sm:grid-cols-[220px_minmax(0,1fr)] sm:gap-10 sm:pl-6">
               <span className="absolute left-0 top-0 h-full w-[3px] origin-top scale-y-0 bg-primary transition-transform duration-300 group-hover:scale-y-100" />
               <div className="flex items-center gap-3">
-                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20 transition-transform duration-300 group-hover:-translate-y-0.5">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20 transition-transform duration-300 group-hover:-translate-y-0.5">
                   <f.icon className="h-[18px] w-[18px]" />
                 </span>
                 <h3 className="text-base font-semibold leading-tight">{f.t}</h3>
               </div>
-              <p className="text-pretty text-sm leading-relaxed text-muted-foreground">{f.d}</p>
+              <p className="min-w-0 text-pretty break-words text-sm leading-relaxed text-muted-foreground">{f.d}</p>
             </div>
           </Reveal>
         ))}
@@ -273,8 +284,8 @@ function Features() {
 function X402Flow() {
   return (
     <section className="border-y border-border bg-card/30">
-      <div className="mx-auto grid max-w-6xl items-center gap-12 px-6 py-24 lg:grid-cols-2">
-        <Reveal>
+      <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-12 px-6 py-24 lg:grid-cols-2">
+        <Reveal className="min-w-0">
           <Badge variant="outline" className="mb-5 border-primary/30 font-mono text-[11px] text-primary">
             show the call, not the dashboard
           </Badge>
@@ -290,7 +301,7 @@ function X402Flow() {
             <span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-success" /> settled</span>
           </div>
         </Reveal>
-        <Reveal delay={120}>
+        <Reveal delay={120} className="min-w-0">
           <CodeCard />
         </Reveal>
       </div>
@@ -300,30 +311,30 @@ function X402Flow() {
 
 function CodeCard() {
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-[hsl(228_16%_7%)] font-mono text-[13px] leading-relaxed shadow-xl">
-      <div className="flex items-center gap-1.5 border-b border-border/60 px-4 py-3">
+    <div className="overflow-hidden rounded-xl border border-white/10 bg-[hsl(228_16%_7%)] font-mono text-[13px] leading-relaxed shadow-xl">
+      <div className="flex items-center gap-1.5 border-b border-white/10 px-4 py-3">
         <span className="h-3 w-3 rounded-full bg-destructive/70" />
         <span className="h-3 w-3 rounded-full bg-warning/70" />
         <span className="h-3 w-3 rounded-full bg-success/70" />
-        <span className="ml-2 text-xs text-white/40">agent → paid MCP tool</span>
+        <span className="ml-2 text-xs text-white/60">agent → paid MCP tool</span>
       </div>
       <pre className="overflow-x-auto p-5 text-white/80">
         <code>
-          <span className="text-white/40"># 1. agent calls a priced tool</span>
+          <span className="text-white/60"># 1. agent calls a priced tool</span>
           {"\n"}POST /mcp <span className="text-[#8be9fd]">tools/call</span> get_rwa_price{"\n"}
           {"\n"}
-          <span className="text-warning">← 402 Payment Required</span>{"\n"}
-          <span className="text-white/40">  price: $0.02 · asset: CEP-18 · network: casper-test</span>
+          <span className="text-amber-300">← 402 Payment Required</span>{"\n"}
+          <span className="text-white/60">  price: $0.02 · asset: CEP-18 · network: casper-test</span>
           {"\n\n"}
-          <span className="text-white/40"># 2. wallet signs transfer_with_authorization, retries</span>
+          <span className="text-white/60"># 2. wallet signs transfer_with_authorization, retries</span>
           {"\n"}POST /mcp <span className="text-[#8be9fd]">PAYMENT-SIGNATURE</span> 0x…{"\n"}
           {"\n"}
           <span className="text-[#C6F94E]">→ 200 OK</span>{"  "}
-          <span className="text-white/40">x-cascet-payment-id: 21e0be7a…</span>
+          <span className="text-white/60">x-cascet-payment-id: 21e0be7a…</span>
           {"\n"}
           {"  "}{"{"} &quot;asset&quot;: &quot;gold&quot;, &quot;priceUsd&quot;: <span className="text-[#C6F94E]">4095.83</span> {"}"}
           {"\n\n"}
-          <span className="text-success">✓ settled on Casper</span> <span className="text-white/40">· receipt anchored on-chain</span>
+          <span className="text-emerald-400">✓ settled on Casper</span> <span className="text-white/60">· receipt anchored on-chain</span>
         </code>
       </pre>
     </div>
@@ -332,12 +343,12 @@ function CodeCard() {
 
 /* ── Autonomous agent ──────────────────────────────────────────────────── */
 function AgentSection() {
-  const steps = ["discovers the paid tools + their x402 prices", "decides which to buy for a DeFi/RWA goal", "pays per call under a fixed on-chain budget", "cites the data it purchased in a recommendation"];
+  const steps = ["discovers the paid tools + their x402 prices", "decides which to buy for a DeFi/RWA goal", "pays per call within a spending cap its bridge enforces", "cites the data it purchased in a recommendation"];
   return (
     <Section id="agent" eyebrow="The autonomous buyer" title="An LLM that prices, budgets, and buys tools on its own">
-      <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
-        <Reveal>
-          <div className="card-lift h-full rounded-2xl border border-border bg-card p-8">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+        <Reveal className="min-w-0">
+          <div className="card-lift h-full rounded-2xl border border-border bg-card p-6 sm:p-8">
             <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
               <Sparkles className="h-5 w-5" />
             </div>
@@ -356,25 +367,25 @@ function AgentSection() {
             </ol>
             <p className="mt-6 rounded-lg border border-border bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
               <span className="font-medium text-foreground">How it runs:</span> the free live demo drives real Claude on your
-              Max/Pro plan via <span className="font-mono text-foreground">cascet connect</span> (no paid API key), and tool
-              discovery, x402 pricing, payments, budget enforcement and settlement are all real on-chain.
+              Max/Pro plan via <span className="font-mono text-foreground">cascet connect</span> (no paid API key). Tool discovery,
+              x402 pricing and payments are real; the bridge checks the budget before it signs, and every payment settles on-chain.
             </p>
           </div>
         </Reveal>
-        <Reveal delay={120}>
-          <div className="h-full overflow-hidden rounded-2xl border border-border bg-[hsl(228_16%_7%)] p-6 font-mono text-[12.5px] leading-relaxed">
-            <div className="mb-4 text-xs text-white/40">$ cascet agent</div>
+        <Reveal delay={120} className="min-w-0">
+          <div className="h-full overflow-hidden rounded-2xl border border-white/10 bg-[hsl(228_16%_7%)] p-6 font-mono text-[12.5px] leading-relaxed">
+            <div className="mb-4 text-xs text-white/60">$ cascet agent</div>
             <div className="space-y-2 text-white/80">
               <p className="text-[#C6F94E]">🧠 buy get_cspr_market_data ($0.01)</p>
-              <p className="pl-4 text-white/50">💸 x402 · ✅ paid</p>
+              <p className="pl-4 text-white/60">💸 x402 · ✅ paid</p>
               <p className="text-[#C6F94E]">🧠 buy get_defi_yields ($0.02)</p>
-              <p className="pl-4 text-white/50">💸 x402 · ✅ paid</p>
+              <p className="pl-4 text-white/60">💸 x402 · ✅ paid</p>
               <p className="text-[#C6F94E]">🧠 buy get_rwa_price gold + treasury</p>
-              <p className="pl-4 text-white/50">💸 x402 ×2 · ✅ paid</p>
+              <p className="pl-4 text-white/60">💸 x402 ×2 · ✅ paid</p>
               <p className="mt-3 border-t border-white/10 pt-3 text-white/70">
                 → keep ~55% stCSPR liquid staking (9.9% APY, liquid), rotate ~30% into tokenized treasuries, ~15% gold hedge.
               </p>
-              <p className="text-success">✓ 4 tools bought under budget · grounded in real data</p>
+              <p className="text-emerald-400">✓ 4 tools bought under budget · grounded in real data</p>
             </div>
           </div>
         </Reveal>
@@ -387,7 +398,7 @@ function AgentSection() {
 function Contracts() {
   return (
     <Section id="contracts" eyebrow="On-chain layer" title="Six contracts, live on Casper mainnet">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {CONTRACTS.map((c, i) => (
           <Reveal key={c.name} delay={(i % 3) * 70}>
             <Link
@@ -400,7 +411,7 @@ function Contracts() {
                 <ArrowUpRight className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-primary" />
               </div>
               <p className="mt-2 flex-1 text-xs leading-relaxed text-muted-foreground">{c.note}</p>
-              <span className="mt-3 truncate font-mono text-[10px] text-muted-foreground/60">{c.hash.slice(0, 20)}…</span>
+              <span className="mt-3 truncate font-mono text-[10px] text-muted-foreground">{c.hash.slice(0, 20)}…</span>
             </Link>
           </Reveal>
         ))}
@@ -440,7 +451,11 @@ function Faq() {
     },
     {
       q: "Is this actually on-chain, or a mock?",
-      a: "On-chain, on Casper mainnet. The full contract set is live on mainnet (and testnet), real x402 settlement is verified end-to-end through a self-hosted x402 facilitator with no mock anywhere in the path, and the CascadeController primitive itself ran a full budget-capped cascade on mainnet: open, root and child hops with attribution up the tree, an over-budget hop rejected on-chain, and a refund on close. Every transaction opens on cspr.live.",
+      a: "On-chain. The full contract set is deployed on Casper mainnet (and testnet), real x402 settlement is verified end-to-end through a self-hosted x402 facilitator with no mock anywhere in the path, and the CascadeController primitive itself ran a full budget-capped cascade on mainnet: open, root and child hops with attribution up the tree, an over-budget hop rejected on-chain, and a refund on close. Every one of those transactions opens on cspr.live. The live dashboard and explorer on this site read the testnet ReceiptRegistry and are labelled as testnet data.",
+    },
+    {
+      q: "Has CasCet been audited?",
+      a: "Not yet. CasCet went through an internal security review before mainnet; an external audit is planned. Until it has happened, treat the mainnet deployment as early software: keep the balances you route through it small, and set seller allowlists and spending caps on every buyer.",
     },
     {
       q: "What does the autonomous agent do?",
@@ -482,7 +497,7 @@ function Roadmap() {
         "5 Odra contracts; real x402 settlement, no mock.",
         "CascadeController: budget-bounded cascades + recursive attribution.",
         "Autonomous LLM buyer, live dashboard, cascade playground, and a proposed x402-MCP spec.",
-        "CLI + libraries published on npm: npx @cascet/cli.",
+        "CLI + libraries published on npm (@cascet/cli, core, client, gateway).",
       ],
     },
     {
@@ -492,8 +507,8 @@ function Roadmap() {
       points: [
         "Full contract set live on Casper mainnet; real x402 settled from both the TypeScript and Python clients.",
         "The CascadeController primitive proven on mainnet: budget cap, attribution up the tree, over-budget revert, and refund.",
-        "Pre-mainnet adversarial security review — findings fixed and redeployed.",
-        "On-chain-backed dashboard + explorer (rebuilt from the ReceiptRegistry), a /build config wizard, and a wallet-signed RevenueSplit withdraw.",
+        "Internal pre-mainnet security review; its findings were fixed and the contracts redeployed. External audit planned.",
+        "On-chain-backed dashboard + explorer (rebuilt from the testnet ReceiptRegistry), a /build config wizard, and a Casper Wallet withdraw page for RevenueSplit payees (testnet).",
       ],
     },
     {
@@ -501,6 +516,8 @@ function Roadmap() {
       when: "Q4 2026",
       title: "Monetization & control plane",
       points: [
+        "@cascet/* 0.1.1: the fixes from the 2026-10-20 internal review; cascet connect requires allowlists and caps.",
+        "An external security audit of the contracts and the payment path.",
         "A protocol take-rate on settled volume: the business model.",
         "Hosted CasCet control plane: register a server, get a paid endpoint + dashboard in one step.",
         "Per-second / streaming price schemes and a public metrics API.",
@@ -530,7 +547,7 @@ function Roadmap() {
         <div className="space-y-2">
           {phases.map((p, i) => (
             <Reveal key={i} delay={(i % 2) * 60}>
-              <div className="group relative grid grid-cols-[auto_1fr] gap-5 rounded-lg py-6 pl-1 pr-4 transition-colors hover:bg-card/40 sm:gap-8">
+              <div className="group relative grid grid-cols-[auto_minmax(0,1fr)] gap-5 rounded-lg py-6 pl-1 pr-4 transition-colors hover:bg-card/40 sm:gap-8">
                 <span
                   className={cn(
                     "relative z-10 mt-1.5 h-4 w-4 shrink-0 rounded-full border-2 transition-all sm:h-5 sm:w-5",
@@ -599,7 +616,7 @@ function FinalCta() {
             <span className="mr-1 font-mono text-xs text-muted-foreground">Follow the build</span>
             {[
               { href: SOCIALS.x, label: "X", Icon: XIcon },
-              { href: SOCIALS.discord, label: "Discord", Icon: DiscordIcon },
+              { href: SOCIALS.issues, label: "GitHub issues", Icon: MessageSquare },
             ].map(s => (
               <Link
                 key={s.label}
@@ -622,7 +639,7 @@ function FinalCta() {
 function Footer() {
   const socials = [
     { href: SOCIALS.x, label: "X", Icon: XIcon },
-    { href: SOCIALS.discord, label: "Discord", Icon: DiscordIcon },
+    { href: SOCIALS.issues, label: "GitHub issues", Icon: MessageSquare },
     { href: SOCIALS.github, label: "GitHub", Icon: Github },
   ];
   return (
@@ -651,12 +668,21 @@ function Footer() {
           <div className="grid grid-cols-2 gap-x-12 gap-y-2 text-sm sm:grid-cols-3">
             <FooterCol title="Product" links={[["Dashboard", "/dashboard"], ["Playground", "/playground"], ["Explorer", "/explorer"]]} />
             <FooterCol title="Learn" links={[["How it works", "#how"], ["The primitive", "#cascade"], ["Roadmap", "#roadmap"]]} />
-            <FooterCol title="Build" links={[["GitHub", SOCIALS.github], ["x402 spec", `${GH}/blob/main/docs/x402-mcp-spec.md`]]} />
+            <FooterCol
+              title="Build"
+              links={[
+                ["Seller config", "/build"],
+                ["Buyer setup", "/connect"],
+                ["GitHub", SOCIALS.github],
+                ["Issues & questions", SOCIALS.issues],
+                ["x402 spec", `${GH}/blob/main/docs/x402-mcp-spec.md`],
+              ]}
+            />
           </div>
         </div>
         <div className="mt-10 flex flex-col items-center justify-between gap-3 border-t border-border pt-6 sm:flex-row">
-          <p className="font-mono text-xs text-muted-foreground/70">Casper Agentic Buildathon 2026 · Apache-2.0</p>
-          <p className="font-mono text-xs text-muted-foreground/70">Built on Casper</p>
+          <p className="font-mono text-xs text-muted-foreground">Casper Agentic Buildathon 2026 · Apache-2.0</p>
+          <p className="font-mono text-xs text-muted-foreground">Built on Casper</p>
         </div>
       </div>
     </footer>
@@ -666,11 +692,16 @@ function Footer() {
 function FooterCol({ title, links }: { title: string; links: [string, string][] }) {
   return (
     <div>
-      <div className="mb-2.5 font-mono text-xs uppercase tracking-wide text-muted-foreground/60">{title}</div>
+      <div className="mb-2.5 font-mono text-xs uppercase tracking-wide text-muted-foreground">{title}</div>
       <ul className="space-y-2">
         {links.map(([label, href]) => (
           <li key={label}>
-            <Link href={href} target={href.startsWith("http") ? "_blank" : undefined} className="text-muted-foreground transition-colors hover:text-foreground">
+            <Link
+              href={href}
+              target={href.startsWith("http") ? "_blank" : undefined}
+              rel={href.startsWith("http") ? "noreferrer" : undefined}
+              className="text-muted-foreground transition-colors hover:text-foreground"
+            >
               {label}
             </Link>
           </li>

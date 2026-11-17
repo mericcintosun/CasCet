@@ -1,8 +1,10 @@
-import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { cascetConfigSchema, type CascetConfig } from "@cascet/core";
 import { startGateway } from "@cascet/gateway";
 import { createPayingFetch, PaidMcpHttpClient } from "@cascet/client";
+import { NETWORKS, readFacilitatorEnv } from "./facilitator-env.js";
+import { checkRecorderSeparation } from "./facilitator-roles.js";
+import { accountHashOfKeyFile } from "./key-file.js";
 import { startRealFacilitator } from "./real-facilitator.js";
 
 /**
@@ -18,31 +20,63 @@ import { startRealFacilitator } from "./real-facilitator.js";
  *    transfer_with_authorization), package hash below,
  *  - the demo agent, which already holds a balance of that token on-chain.
  *
+ * Keys come from the environment (same variables as the standalone
+ * facilitator, see src/facilitator-env.ts); on testnet they default to the
+ * deployer key so the demo runs as before:
+ *   CASCET_FACILITATOR_KEY      fee-payer PEM
+ *   CASCET_RECORDER_KEY         ReceiptRegistry recorder PEM (anchoring)
+ *   CASCET_SELLER_ACCOUNT_HASH  payTo
+ *   CASCET_FACILITATOR_TOKEN    optional shared token (also sent by the gateway)
+ *
  * Run: pnpm --filter @cascet/e2e demo-real
  */
 
 const ROOT = resolve(import.meta.dirname, "../../..");
 const KEYS = resolve(import.meta.dirname, "../keys");
-const FACILITATOR_PORT = 4501;
-const NODE_URL = "https://node.testnet.casper.network/rpc";
+const TESTNET = NETWORKS["casper:casper-test"];
+const NODE_URL = TESTNET.rpcUrl;
+
+const fac = readFacilitatorEnv(process.env, ROOT, "casper:casper-test");
+for (const warning of fac.warnings) console.warn(`[demo] warning: ${warning}`);
+const recorderEnv = process.env.CASCET_RECORDER_KEY?.trim();
+const RECORDER_KEY = recorderEnv ? resolve(recorderEnv) : resolve(ROOT, "contracts/keys/deployer_secret_key.pem");
+// Same role rules as mainnet, as warnings: the testnet demo may run on one key.
+for (const warning of checkRecorderSeparation({
+  network: "casper:casper-test",
+  recorderAccountHash: accountHashOfKeyFile(RECORDER_KEY, "ed25519", "recorder"),
+  feePayerAccountHash: accountHashOfKeyFile(fac.keyPath, fac.keyAlgo, "fee-payer"),
+  ownerAccountHashes: fac.ownerAccountHashes,
+  sellerAccountHashes: fac.allowedPayTo,
+}).warnings) {
+  console.warn(`[demo] warning: ${warning}`);
+}
 
 // Real x402 payment token deployed by CasCet (transfer_with_authorization).
-const X402_TOKEN = "hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3";
+const X402_TOKEN = `hash-${TESTNET.token}`;
 // payTo MUST be a serialized account-hash Key: "00" (account tag) + 32-byte
 // account hash — NOT a public key. The x402 authorization signs `to` as this
 // 33-byte value and the facilitator settles the transfer to that account hash.
-const SELLER_DATA_ACCOUNT_HASH = "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36";
+const SELLER_DATA_ACCOUNT_HASH = fac.allowedPayTo[0]!;
 
-// Self-hosted facilitator: fee-sponsored by the deployer key (funded with CSPR).
-// Allowlist the one seller + token so it refuses to fee-sponsor any other settle.
+// Self-hosted facilitator: fee-sponsored by CASCET_FACILITATOR_KEY (funded with CSPR).
+// Allowlist the seller + token so it refuses to fee-sponsor any other settle.
 const facilitator = await startRealFacilitator({
-  port: FACILITATOR_PORT,
+  port: fac.port,
   network: "casper:casper-test",
-  keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
-  keyAlgo: "ed25519",
-  rpcUrl: NODE_URL,
-  allowedPayTo: [SELLER_DATA_ACCOUNT_HASH],
-  allowedAssets: [X402_TOKEN],
+  keyPath: fac.keyPath,
+  keyAlgo: fac.keyAlgo,
+  rpcUrl: fac.rpcUrl,
+  ...(fac.authToken ? { authToken: fac.authToken } : {}),
+  allowedPayTo: fac.allowedPayTo,
+  allowedAssets: fac.allowedAssets,
+  ownerAccountHashes: fac.ownerAccountHashes,
+  paymentMotes: fac.paymentMotes,
+  dailyGasCapMotes: fac.dailyGasCapMotes,
+  settleWaitMs: fac.settleWaitMs,
+  preflight: fac.preflight,
+  preflightDeadlineMs: fac.preflightDeadlineMs,
+  tokenVersion: fac.tokenVersion,
+  ...(fac.tokenName ? { tokenName: fac.tokenName } : {}),
 });
 
 const dataConfig: CascetConfig = cascetConfigSchema.parse({
@@ -55,12 +89,12 @@ const dataConfig: CascetConfig = cascetConfigSchema.parse({
   network: "casper:casper-test",
   payTo: SELLER_DATA_ACCOUNT_HASH,
   asset: { packageHash: X402_TOKEN, name: "CasCet X402 Token", symbol: "WCSPR", decimals: 9, version: "1", tokensPerUsd: 50 },
-  facilitator: { url: facilitator.url },
+  facilitator: { url: facilitator.url, ...(fac.authToken ? { apiKey: fac.authToken } : {}) },
   anchoring: {
-    contractPackageHash: "hash-bdf8422b69d7bfb7581e7b2c63fbfb0fc8b23701181289411170bce5cf996f97",
-    keyPath: resolve(ROOT, "contracts/keys/deployer_secret_key.pem"),
+    contractPackageHash: TESTNET.receiptRegistry,
+    keyPath: RECORDER_KEY,
     keyAlgo: "ed25519",
-    nodeUrl: "https://node.testnet.casper.network/rpc",
+    nodeUrl: NODE_URL,
     chainName: "casper-test",
   },
   pricing: { tools: { get_cspr_market_data: { price: "$0.01" } } },
@@ -86,7 +120,9 @@ console.log(`\n[agent] paid + received (payment ${paymentId}):\n${text}\n`);
 const receipts = ((await (await fetch("http://localhost:4402/receipts")).json()) as {
   receipts: Array<{ id: string; tool: string; status: string; txHash?: string }>;
 }).receipts;
-const settled = receipts.find(r => r.status === "settled");
+// This payment's own receipt: gateway receipts persist, so "any settled receipt"
+// could be one from an earlier run (L12).
+const settled = receipts.find(r => r.id === paymentId && r.status === "settled");
 console.log("──────── real settlement ────────");
 console.log(`settlement tx: ${settled?.txHash ?? "(pending)"}`);
 if (settled?.txHash) console.log(`  https://testnet.cspr.live/transaction/${settled.txHash}`);
@@ -95,5 +131,5 @@ console.log(`\n✅ REAL x402 settlement succeeded on Casper Testnet\n`);
 
 await new Promise(r => setTimeout(r, 12_000)); // let anchoring submit
 await gateway.close();
-facilitator.close();
+await facilitator.close();
 process.exit(0);

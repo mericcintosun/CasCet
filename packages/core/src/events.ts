@@ -8,6 +8,10 @@ export type CascetEvent =
 
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isOptStr = (v: unknown): boolean => v === undefined || typeof v === "string";
+const isOptBoundedStr = (v: unknown, max: number): boolean =>
+  v === undefined || (typeof v === "string" && v.length <= max);
+const RECEIPT_STATUSES: ReadonlySet<unknown> = new Set(["settled", "failed", "unknown"]);
+const SETTLED_BY: ReadonlySet<unknown> = new Set(["facilitator", "third-party"]);
 
 /**
  * Strictly validate a receipt from an untrusted source (the /ingest endpoint is
@@ -29,12 +33,15 @@ function isValidReceipt(r: unknown): r is PaymentReceipt {
     isStr(o.amountRaw) && /^\d{1,40}$/.test(o.amountRaw) &&
     isStr(o.asset) &&
     isStr(o.assetSymbol) &&
-    (o.status === "settled" || o.status === "failed") &&
+    RECEIPT_STATUSES.has(o.status) &&
     isOptStr(o.parentId) &&
     isOptStr(o.priceUsd) &&
     isOptStr(o.txHash) &&
     isOptStr(o.anchoredTxHash) &&
-    (o.latencyMs === undefined || typeof o.latencyMs === "number")
+    (o.latencyMs === undefined || typeof o.latencyMs === "number") &&
+    isOptBoundedStr(o.nonce, 130) &&
+    (o.settledBy === undefined || SETTLED_BY.has(o.settledBy)) &&
+    isOptBoundedStr(o.note, 1_000)
   );
 }
 

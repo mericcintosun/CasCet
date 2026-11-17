@@ -46,7 +46,7 @@ export function CascadeFlow({ className }: { className?: string }) {
         <circle cx={root.x + 16} cy={root.y + 18} r="3.5" fill="hsl(var(--primary))" filter="url(#glow)" />
         <text x={root.x + 28} y={root.y + 22} className="fill-foreground" fontSize="12.5" fontWeight="600" fontFamily="var(--font-geist-mono)">analyze_portfolio</text>
         <text x={root.x + 14} y={root.y + 44} className="fill-muted-foreground" fontSize="10.5" fontFamily="var(--font-geist-mono)">buys 3 tools ↓</text>
-        <text x={root.x + root.w - 14} y={root.y + 44} textAnchor="end" fill="hsl(var(--primary))" fontSize="11" fontWeight="600" fontFamily="var(--font-geist-mono)">$0.10</text>
+        <text x={root.x + root.w - 14} y={root.y + 44} textAnchor="end" fill="hsl(var(--primary-text))" fontSize="11" fontWeight="600" fontFamily="var(--font-geist-mono)">$0.10</text>
       </g>
 
       {/* child nodes */}
@@ -100,7 +100,7 @@ function Node({
       <circle cx={x + 14} cy={y + 17} r="3" fill={accent ? "hsl(var(--flow))" : "hsl(var(--primary))"} filter="url(#glow)" />
       <text x={x + 26} y={y + 21} className="fill-foreground" fontSize="11.5" fontWeight="600" fontFamily="var(--font-geist-mono)">{title.length > 16 ? title.slice(0, 15) + "…" : title}</text>
       {sub && <text x={x + 14} y={y + 40} className="fill-muted-foreground" fontSize="10" fontFamily="var(--font-geist-mono)">{sub}</text>}
-      {price && <text x={x + w - 14} y={y + 40} textAnchor="end" fill="hsl(var(--primary))" fontSize="10.5" fontWeight="600" fontFamily="var(--font-geist-mono)">{price}</text>}
+      {price && <text x={x + w - 14} y={y + 40} textAnchor="end" fill="hsl(var(--primary-text))" fontSize="10.5" fontWeight="600" fontFamily="var(--font-geist-mono)">{price}</text>}
     </g>
   );
 }

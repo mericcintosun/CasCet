@@ -4,30 +4,36 @@ import * as React from "react";
 import { buildPaymentGraph, type PaymentReceipt } from "@cascet/core";
 import { formatTokens, toBigIntSafe } from "@/lib/utils";
 import type { DashboardState } from "@/lib/use-live-state";
+import type { OnchainState } from "@/lib/onchain";
+import { useOnchainReceipts } from "@/lib/use-onchain-receipts";
 
 /**
  * Seller dashboard state, reconstructed from the on-chain ReceiptRegistry via
  * /api/onchain — the same canonical source the explorer reads. This replaces the
  * in-memory event store on the live deployment, where no gateway process is
- * running to feed /api/stream, so the dashboard shows the real economy instead
- * of an empty one. Local dev can still POST to /api/ingest; the truth is chain.
+ * running to feed /api/stream. Local dev can still POST to /api/ingest; the
+ * truth is chain.
  */
 const EMPTY: DashboardState = { receipts: [], servers: [], graph: { nodes: [], edges: [] } };
 
-/** Synthesize the seller-facing server + pricing list from settled receipts. */
+/**
+ * Synthesize the seller-facing server + pricing list from settled receipts. A
+ * receipt proves a server sold a tool, not that it is up now, so `online` is
+ * false: the dashboard labels these "seen on-chain" rather than "online".
+ */
 function serversFromReceipts(receipts: PaymentReceipt[]): DashboardState["servers"] {
   const byServer = new Map<string, { symbol: string; tools: Map<string, bigint> }>();
   for (const r of receipts) {
     if (r.status !== "settled" || !r.server) continue;
     const entry = byServer.get(r.server) ?? { symbol: r.assetSymbol || "WCSPR", tools: new Map() };
     const amount = toBigIntSafe(r.amountRaw);
-    // List price = the largest per-call amount observed for that tool.
+    // Listed price = the largest per-call amount observed for that tool.
     if (amount > (entry.tools.get(r.tool) ?? 0n)) entry.tools.set(r.tool, amount);
     byServer.set(r.server, entry);
   }
   return [...byServer.entries()].map(([name, { symbol, tools }]) => ({
     name,
-    online: true,
+    online: false,
     tools: [...tools.entries()].map(([tool, amount]) => ({
       name: tool,
       priceUsd: formatTokens(amount, 9, symbol),
@@ -35,34 +41,15 @@ function serversFromReceipts(receipts: PaymentReceipt[]): DashboardState["server
   }));
 }
 
-/**
- * Mirrors the shape of {@link useLiveState} so the dashboard page is source-
- * agnostic, but polls the on-chain projection instead of subscribing to SSE.
- */
-export function useOnchainState(): { state: DashboardState; latestReceiptId: string | null; connected: boolean } {
-  const [receipts, setReceipts] = React.useState<PaymentReceipt[]>([]);
-  const [connected, setConnected] = React.useState(false);
+export interface OnchainDashboard extends Omit<OnchainState, "receipts"> {
+  state: DashboardState;
+  latestReceiptId: string | null;
+  refresh: () => void;
+}
 
-  React.useEffect(() => {
-    let alive = true;
-    const load = () =>
-      fetch("/api/onchain", { cache: "no-store" })
-        .then(r => r.json())
-        .then(d => {
-          if (!alive) return;
-          setReceipts((d.receipts ?? []) as PaymentReceipt[]);
-          setConnected(true);
-        })
-        .catch(() => {
-          if (alive) setConnected(false);
-        });
-    void load();
-    const id = setInterval(load, 30_000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, []);
+/** Mirrors the shape of {@link useLiveState} so the dashboard page is source-agnostic. */
+export function useOnchainState(): OnchainDashboard {
+  const { receipts, refresh, ...meta } = useOnchainReceipts();
 
   const state = React.useMemo<DashboardState>(
     () =>
@@ -75,5 +62,5 @@ export function useOnchainState(): { state: DashboardState; latestReceiptId: str
   // /api/onchain returns receipts newest-first, so the freshest is index 0.
   const latestReceiptId = receipts[0]?.id ?? null;
 
-  return { state, latestReceiptId, connected };
+  return { ...meta, state, latestReceiptId, refresh };
 }

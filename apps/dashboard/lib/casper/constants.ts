@@ -1,15 +1,34 @@
-import { CONTRACTS, CSPR_LIVE_CONTRACT } from "@/lib/economy";
+import { CONTRACTS, CSPR_LIVE_CONTRACT } from "../economy";
 
-/** Casper Testnet endpoints + the deployed RevenueSplit config. */
+/**
+ * Casper Testnet endpoints + the deployed RevenueSplit config.
+ *
+ * Testnet only: the package hashes, payees, token and cspr.live links below are
+ * testnet values, so the chain name is fixed rather than read from the
+ * environment (L26). Overriding it produced transactions that mixed networks.
+ * CASPER_NODE_URL may point at another casper-test node; a node of any other
+ * network rejects a casper-test transaction.
+ */
 export const NODE_URL = process.env.CASPER_NODE_URL ?? "https://node.testnet.casper.network/rpc";
-export const CHAIN_NAME = process.env.CASPER_CHAIN_NAME ?? "casper-test";
-export const RELEASE_GAS_MOTES = Number(process.env.RELEASE_GAS_MOTES ?? "5000000000");
+export const CHAIN_NAME = "casper-test";
+
+const DEFAULT_RELEASE_GAS_MOTES = 5_000_000_000;
+/** Gas for the `release` call; a malformed RELEASE_GAS_MOTES falls back to the default instead of NaN. */
+export const RELEASE_GAS_MOTES = positiveInt(process.env.RELEASE_GAS_MOTES, DEFAULT_RELEASE_GAS_MOTES);
+
+function positiveInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+}
 
 export const TOKEN_DECIMALS = 9;
 export const TOKEN_SYMBOL = "WCSPR";
 
 export const REVENUE_SPLIT_PACKAGE = CONTRACTS.revenueSplit;
 export const DEMO_TOKEN_PACKAGE = CONTRACTS.demoToken;
+/** The token x402 settlements on testnet were paid in (Cep18X402, on-chain symbol WCSPR). */
+export const X402_TOKEN_PACKAGE = CONTRACTS.x402Token;
 
 export const CSPR_LIVE_TX = "https://testnet.cspr.live/transaction/";
 export const CSPR_LIVE_ACCOUNT = "https://testnet.cspr.live/account/";

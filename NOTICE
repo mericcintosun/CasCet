@@ -17,10 +17,17 @@ components that CasCet builds on and are subject to their own licenses:
 - Cep18X402 payment token (`contracts/external/Cep18X402.wasm`)
   Reference CEP-18 token with `transfer_with_authorization` (EIP-3009) from
   make-software/casper-x402 — https://github.com/make-software/casper-x402
-  Deployed to Casper Testnet only so the hosted CSPR.cloud facilitator can
-  settle real x402 payments; CasCet did not author this contract.
+  (Apache License 2.0). CasCet did not author this contract.
+  CasCet installed it on Casper testnet, package
+    hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3
+  and on Casper mainnet, package (upgradable by the CasCet operator key)
+    hash-8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41
+  CasCet's self-hosted x402 facilitator (tools/e2e) settles payments in it,
+  because the hosted CSPR.cloud facilitator only settles CEP-3009 tokens
+  whose `transfer_with_authorization` takes `value`.
 
-- @make-software/casper-x402 and @x402/* — x402 middleware / client libraries.
+- @make-software/casper-x402 (Apache License 2.0) and @x402/* — x402
+  middleware / client libraries.
 
 - @modelcontextprotocol/sdk and @modelcontextprotocol/server-everything
   (used in examples/wrap-third-party to demonstrate wrapping a third-party MCP
@@ -29,4 +36,5 @@ components that CasCet builds on and are subject to their own licenses:
 - Odra framework and odra-modules (CEP-18 base) — https://odra.dev
 
 - The hosted x402 facilitator at x402-facilitator.cspr.cloud (Casper / CSPR.cloud)
-  is an external service CasCet calls; it is not part of this repository.
+  is an external service that CasCet does not use for its own tokens; it is
+  not part of this repository.

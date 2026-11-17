@@ -1,0 +1,6 @@
+# Pinned toolchain for reproducible wasm builds (rustup reads this file).
+# CI pins the same channel in .github/workflows/ci.yml.
+[toolchain]
+channel = "nightly-2026-01-01"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

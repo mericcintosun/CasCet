@@ -2,9 +2,9 @@ import type { Metadata, Viewport } from "next";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { ThemeProvider } from "@/components/theme-provider";
+import { SITE_URL as SITE } from "@/lib/site";
 import "./globals.css";
 
-const SITE = "https://cascet.vercel.app";
 const TITLE = "CasCet · Payments that cascade";
 const DESCRIPTION =
   "The monetization layer for MCP on Casper. Turn any MCP server into a paid service with per-tool x402 micropayments, plus composable, budget-bounded cascading payments settled on-chain.";
@@ -34,7 +34,8 @@ export const metadata: Metadata = {
   publisher: "CasCet",
   category: "technology",
   formatDetection: { email: false, telephone: false, address: false },
-  alternates: { canonical: "/" },
+  // No site-wide canonical: inherited by every page, it pointed them all at the home page (L93).
+  // Each page sets its own.
   robots: {
     index: true,
     follow: true,

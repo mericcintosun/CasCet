@@ -1,0 +1,234 @@
+{
+  "description": "Cross-implementation test vectors for clients/python/cascet_x402.py, produced by running the TypeScript implementations listed under `generator` (as installed in this repo's node_modules). tests/test_vectors.py asserts that the Python digest, signature, payload and headers equal these values.",
+  "generator": {
+    "@casper-ecosystem/casper-eip-712": "1.2.1",
+    "@make-software/casper-x402": "1.0.0",
+    "casper-js-sdk": "5.0.12",
+    "@x402/core": "2.17.0",
+    "node": "v24.21.0"
+  },
+  "key": {
+    "note": "TEST-ONLY ed25519 key: seed = sha256(label). It is public, holds no funds and must never be funded or reused.",
+    "label": "cascet-python-client-test-vector-v1",
+    "seedHex": "db697dfa8db028937dfddfcc7faf2915e425e9ff12c58a90149f35c97296735f",
+    "publicKeyHex": "01418431c0832fad5de0560ee20e31998bf65d05949054783d15c400864828dcc6",
+    "accountHashHex": "25cec21df0bb85774aa718e937b441bb0e017f7daae5fe0c9457fa5a66d72c9f",
+    "accountAddress": "0025cec21df0bb85774aa718e937b441bb0e017f7daae5fe0c9457fa5a66d72c9f"
+  },
+  "accountHashes": [
+    {
+      "publicKeyHex": "01418431c0832fad5de0560ee20e31998bf65d05949054783d15c400864828dcc6",
+      "accountHashHex": "25cec21df0bb85774aa718e937b441bb0e017f7daae5fe0c9457fa5a66d72c9f"
+    },
+    {
+      "publicKeyHex": "010000000000000000000000000000000000000000000000000000000000000000",
+      "accountHashHex": "72717ad4149fad982af4fa76eaccb83541ff416d7e06af7b273f57ce3ba919a1"
+    },
+    {
+      "publicKeyHex": "020279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "accountHashHex": "86937931937ee0281e50806b94f8d4993e8869b0689dfa0a21d2946ab677183c"
+    }
+  ],
+  "digests": [
+    {
+      "name": "testnet CasCet token, account-hash payTo",
+      "domain": {
+        "name": "CasCet X402 Token",
+        "version": "1",
+        "network": "casper:casper-test",
+        "asset": "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3"
+      },
+      "message": {
+        "from": "0x0025cec21df0bb85774aa718e937b441bb0e017f7daae5fe0c9457fa5a66d72c9f",
+        "to": "0x00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36",
+        "value": "500000000",
+        "validAfter": "1767225000",
+        "validBefore": "1767225900",
+        "nonce": "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+      },
+      "domainSeparatorHex": "ff1327bae2e6d9cd4a083a3c589ec28eb9afc27a33eec7d9e233a7b78c593c7e",
+      "structHashHex": "b860d12cf5d56d46ac31469cb4f7458921226525ed299de253ed99fec090c00e",
+      "digestHex": "1e630243dc5a265d63c784d313e101c347d11937d69206a0390975592b89d083"
+    },
+    {
+      "name": "mainnet, value 1, validAfter 0, validBefore u64 max",
+      "domain": {
+        "name": "CasCet X402 Token",
+        "version": "1",
+        "network": "casper:casper",
+        "asset": "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41"
+      },
+      "message": {
+        "from": "0x0025cec21df0bb85774aa718e937b441bb0e017f7daae5fe0c9457fa5a66d72c9f",
+        "to": "0x00b9a38c827771d6bc510dd5f1e24fee61acdd4f97f758f4d68fe1dea13a7a140d",
+        "value": "1",
+        "validAfter": "0",
+        "validBefore": "18446744073709551615",
+        "nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "domainSeparatorHex": "ad6029f000463aa4fb86c8e5f09bbaea75f6085879d35c04f17750ae42161522",
+      "structHashHex": "51f85e5fe3c06de7fd360dac2461a4d1f13f496d83d2a3ec683e0434b4f0176d",
+      "digestHex": "e222393f0e3e115c4a44f37caaf9b8bea0482c61ddbfc233bd8f4d1e4d5516d3"
+    },
+    {
+      "name": "contract-package payee (01 tag), uint256 max value, zero nonce",
+      "domain": {
+        "name": "Wrapped CSPR",
+        "version": "1",
+        "network": "casper:casper-test",
+        "asset": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "message": {
+        "from": "0x0025cec21df0bb85774aa718e937b441bb0e017f7daae5fe0c9457fa5a66d72c9f",
+        "to": "0x01abababababababababababababababababababababababababababababababab",
+        "value": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        "validAfter": "1",
+        "validBefore": "4294967296",
+        "nonce": "0x0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "domainSeparatorHex": "d2d88dc761394a371430dc21c48925b637e60493f03bdb1bd185dd3dae7cda6e",
+      "structHashHex": "a2405cba78e28b83ca29d01deb4b2650a6e289b38b3ac48bb04e13a9a7bc5abe",
+      "digestHex": "4bbc672879fb6f3a2141edcb59ff375953cc21508b98bdec52596da5bc67638c"
+    },
+    {
+      "name": "non-ASCII token name and version, uppercase hex inputs",
+      "domain": {
+        "name": "Tökén ✓ 🚀",
+        "version": "2.0-β",
+        "network": "casper:casper-test",
+        "asset": "ABCDEF0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789"
+      },
+      "message": {
+        "from": "0x0025CEC21DF0BB85774AA718E937B441BB0E017F7DAAE5FE0C9457FA5A66D72C9F",
+        "to": "0x00CDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCD",
+        "value": "123456789012345678901234567890",
+        "validAfter": "1767225600",
+        "validBefore": "1767229200",
+        "nonce": "0x10171E252C333A41484F565D646B727980878E959CA3AAB1B8BFC6CDD4DBE2E9"
+      },
+      "domainSeparatorHex": "fc2f0338d5f14f14798eabc8b555b22a263288765b519557ccbec8a6f1ad9425",
+      "structHashHex": "803653ba5f3d1ade9c0eac166cb0be8bcb772f39fe2fb3f4cc16e92c2e8ce371",
+      "digestHex": "275c23021fa33144f4e5d4dcd6e01a4281cb231d4f9f81a6875b047a8305fecf"
+    },
+    {
+      "name": "20-byte (EVM-style) addresses are left-padded, not hashed",
+      "domain": {
+        "name": "CasCet X402 Token",
+        "version": "1",
+        "network": "casper:casper-test",
+        "asset": "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3"
+      },
+      "message": {
+        "from": "0x1212121212121212121212121212121212121212",
+        "to": "0x3434343434343434343434343434343434343434",
+        "value": "42",
+        "validAfter": "100",
+        "validBefore": "200",
+        "nonce": "0x808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f"
+      },
+      "domainSeparatorHex": "ff1327bae2e6d9cd4a083a3c589ec28eb9afc27a33eec7d9e233a7b78c593c7e",
+      "structHashHex": "81a684984f5f839a787d8e734937d9a8fb90a0a938d41387e9606fb0d5597444",
+      "digestHex": "ca7a9ecd000239a4faa8e8a2755ce4107c7624873721f9007ab52be9bd91716d"
+    }
+  ],
+  "payment": {
+    "now": 1767225600,
+    "nonceHex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "paymentRequired": {
+      "x402Version": 2,
+      "error": "Payment required",
+      "resource": {
+        "url": "http://127.0.0.1:4402/tools/get_token_price",
+        "description": "Paid MCP tool: get_token_price",
+        "mimeType": "application/json",
+        "serviceName": "casper-defi-data"
+      },
+      "accepts": [
+        {
+          "scheme": "exact",
+          "network": "casper:casper-test",
+          "amount": "500000000",
+          "asset": "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3",
+          "payTo": "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36",
+          "maxTimeoutSeconds": 300,
+          "extra": {
+            "name": "CasCet X402 Token",
+            "symbol": "WCSPR",
+            "version": "1",
+            "decimals": "9"
+          }
+        }
+      ]
+    },
+    "paymentRequiredHeader": "eyJ4NDAyVmVyc2lvbiI6MiwiZXJyb3IiOiJQYXltZW50IHJlcXVpcmVkIiwicmVzb3VyY2UiOnsidXJsIjoiaHR0cDovLzEyNy4wLjAuMTo0NDAyL3Rvb2xzL2dldF90b2tlbl9wcmljZSIsImRlc2NyaXB0aW9uIjoiUGFpZCBNQ1AgdG9vbDogZ2V0X3Rva2VuX3ByaWNlIiwibWltZVR5cGUiOiJhcHBsaWNhdGlvbi9qc29uIiwic2VydmljZU5hbWUiOiJjYXNwZXItZGVmaS1kYXRhIn0sImFjY2VwdHMiOlt7InNjaGVtZSI6ImV4YWN0IiwibmV0d29yayI6ImNhc3BlcjpjYXNwZXItdGVzdCIsImFtb3VudCI6IjUwMDAwMDAwMCIsImFzc2V0IjoiY2I2NWE5MjhmOGUxYjdjZTE3MmJkZGQwNzVjMTBkZDBkZThiY2ZkOWNmODA4Yzc5OWZkNDA5NzY2YTE3MzVjMyIsInBheVRvIjoiMDA4ODFjYWUzMjMzN2NlMjk4NmJiZGM4ZDM5MWY4ODI0MmFmMGYzNjI2YTE0YzYyYmJlMDUwZjdiYjY0ZjYzZjM2IiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsibmFtZSI6IkNhc0NldCBYNDAyIFRva2VuIiwic3ltYm9sIjoiV0NTUFIiLCJ2ZXJzaW9uIjoiMSIsImRlY2ltYWxzIjoiOSJ9fV19",
+    "paymentPayload": {
+      "x402Version": 2,
+      "payload": {
+        "signature": "0143f9932bef1a3735f315bfdfd040f1c4094bd742688409e01ab182b1d12dbd98ff730c7d567d5d73edbf9470bc9328786ea74f6774cf4385acf6ead0601d9403",
+        "publicKey": "01418431c0832fad5de0560ee20e31998bf65d05949054783d15c400864828dcc6",
+        "authorization": {
+          "from": "0025cec21df0bb85774aa718e937b441bb0e017f7daae5fe0c9457fa5a66d72c9f",
+          "to": "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36",
+          "value": "500000000",
+          "validAfter": "1767225000",
+          "validBefore": "1767225900",
+          "nonce": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+        }
+      },
+      "resource": {
+        "url": "http://127.0.0.1:4402/tools/get_token_price",
+        "description": "Paid MCP tool: get_token_price",
+        "mimeType": "application/json",
+        "serviceName": "casper-defi-data"
+      },
+      "accepted": {
+        "scheme": "exact",
+        "network": "casper:casper-test",
+        "amount": "500000000",
+        "asset": "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3",
+        "payTo": "00881cae32337ce2986bbdc8d391f88242af0f3626a14c62bbe050f7bb64f63f36",
+        "maxTimeoutSeconds": 300,
+        "extra": {
+          "name": "CasCet X402 Token",
+          "symbol": "WCSPR",
+          "version": "1",
+          "decimals": "9"
+        }
+      }
+    },
+    "paymentSignatureHeader": "eyJ4NDAyVmVyc2lvbiI6MiwicGF5bG9hZCI6eyJzaWduYXR1cmUiOiIwMTQzZjk5MzJiZWYxYTM3MzVmMzE1YmZkZmQwNDBmMWM0MDk0YmQ3NDI2ODg0MDllMDFhYjE4MmIxZDEyZGJkOThmZjczMGM3ZDU2N2Q1ZDczZWRiZjk0NzBiYzkzMjg3ODZlYTc0ZjY3NzRjZjQzODVhY2Y2ZWFkMDYwMWQ5NDAzIiwicHVibGljS2V5IjoiMDE0MTg0MzFjMDgzMmZhZDVkZTA1NjBlZTIwZTMxOTk4YmY2NWQwNTk0OTA1NDc4M2QxNWM0MDA4NjQ4MjhkY2M2IiwiYXV0aG9yaXphdGlvbiI6eyJmcm9tIjoiMDAyNWNlYzIxZGYwYmI4NTc3NGFhNzE4ZTkzN2I0NDFiYjBlMDE3ZjdkYWFlNWZlMGM5NDU3ZmE1YTY2ZDcyYzlmIiwidG8iOiIwMDg4MWNhZTMyMzM3Y2UyOTg2YmJkYzhkMzkxZjg4MjQyYWYwZjM2MjZhMTRjNjJiYmUwNTBmN2JiNjRmNjNmMzYiLCJ2YWx1ZSI6IjUwMDAwMDAwMCIsInZhbGlkQWZ0ZXIiOiIxNzY3MjI1MDAwIiwidmFsaWRCZWZvcmUiOiIxNzY3MjI1OTAwIiwibm9uY2UiOiJhMGExYTJhM2E0YTVhNmE3YThhOWFhYWJhY2FkYWVhZmIwYjFiMmIzYjRiNWI2YjdiOGI5YmFiYmJjYmRiZWJmIn19LCJyZXNvdXJjZSI6eyJ1cmwiOiJodHRwOi8vMTI3LjAuMC4xOjQ0MDIvdG9vbHMvZ2V0X3Rva2VuX3ByaWNlIiwiZGVzY3JpcHRpb24iOiJQYWlkIE1DUCB0b29sOiBnZXRfdG9rZW5fcHJpY2UiLCJtaW1lVHlwZSI6ImFwcGxpY2F0aW9uL2pzb24iLCJzZXJ2aWNlTmFtZSI6ImNhc3Blci1kZWZpLWRhdGEifSwiYWNjZXB0ZWQiOnsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoiY2FzcGVyOmNhc3Blci10ZXN0IiwiYW1vdW50IjoiNTAwMDAwMDAwIiwiYXNzZXQiOiJjYjY1YTkyOGY4ZTFiN2NlMTcyYmRkZDA3NWMxMGRkMGRlOGJjZmQ5Y2Y4MDhjNzk5ZmQ0MDk3NjZhMTczNWMzIiwicGF5VG8iOiIwMDg4MWNhZTMyMzM3Y2UyOTg2YmJkYzhkMzkxZjg4MjQyYWYwZjM2MjZhMTRjNjJiYmUwNTBmN2JiNjRmNjNmMzYiLCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJleHRyYSI6eyJuYW1lIjoiQ2FzQ2V0IFg0MDIgVG9rZW4iLCJzeW1ib2wiOiJXQ1NQUiIsInZlcnNpb24iOiIxIiwiZGVjaW1hbHMiOiI5In19fQ==",
+    "digestHex": "af86c68ecee661bdc65e9c7feac82413f60d8368fceab96146522cb2baa653f1",
+    "facilitatorVerify": {
+      "isValid": true,
+      "payer": "0025cec21df0bb85774aa718e937b441bb0e017f7daae5fe0c9457fa5a66d72c9f"
+    }
+  },
+  "headers": [
+    {
+      "name": "non-ASCII and escaped characters",
+      "object": {
+        "x402Version": 2,
+        "resource": {
+          "url": "https://example.test/tools/été",
+          "description": "Prix: 5 € — ünïcödé ✓ 🚀 \"quoted\" back\\slash\nnewline\ttab \u0001"
+        },
+        "accepts": []
+      },
+      "base64": "eyJ4NDAyVmVyc2lvbiI6MiwicmVzb3VyY2UiOnsidXJsIjoiaHR0cHM6Ly9leGFtcGxlLnRlc3QvdG9vbHMvw6l0w6kiLCJkZXNjcmlwdGlvbiI6IlByaXg6IDUg4oKsIOKAlCDDvG7Dr2PDtmTDqSDinJMg8J+agCBcInF1b3RlZFwiIGJhY2tcXHNsYXNoXG5uZXdsaW5lXHR0YWIgXHUwMDAxIn0sImFjY2VwdHMiOltdfQ=="
+    },
+    {
+      "name": "lone UTF-16 surrogates (JSON.stringify escapes them)",
+      "object": {
+        "x402Version": 2,
+        "resource": {
+          "url": "https://example.test/tools/lone",
+          "description": "high \ud800, low \udc00, reversed \ude80\ud83d, pair 🚀, last \udbff"
+        },
+        "extensions": {
+          "key\udfff": "value \udabc"
+        }
+      },
+      "base64": "eyJ4NDAyVmVyc2lvbiI6MiwicmVzb3VyY2UiOnsidXJsIjoiaHR0cHM6Ly9leGFtcGxlLnRlc3QvdG9vbHMvbG9uZSIsImRlc2NyaXB0aW9uIjoiaGlnaCBcdWQ4MDAsIGxvdyBcdWRjMDAsIHJldmVyc2VkIFx1ZGU4MFx1ZDgzZCwgcGFpciDwn5qALCBsYXN0IFx1ZGJmZiJ9LCJleHRlbnNpb25zIjp7ImtleVx1ZGZmZiI6InZhbHVlIFx1ZGFiYyJ9fQ=="
+    }
+  ]
+}

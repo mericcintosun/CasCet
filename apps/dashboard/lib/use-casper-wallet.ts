@@ -46,11 +46,13 @@ export function useCasperWallet() {
     const onState = (e: Event) => {
       try {
         const d = JSON.parse((e as CustomEvent).detail ?? "{}") as {
-          activeKey?: string;
+          activeKey?: string | null;
           isConnected?: boolean;
+          /** Casper Wallet's state carries `isLocked`; `isUnlocked` is kept for older builds. */
+          isLocked?: boolean;
           isUnlocked?: boolean;
         };
-        if (d.isConnected === false || d.isUnlocked === false) setPublicKeyHex(null);
+        if (d.isConnected === false || d.isLocked === true || d.isUnlocked === false) setPublicKeyHex(null);
         else if (d.activeKey) setPublicKeyHex(d.activeKey);
       } catch {
         /* ignore malformed event */

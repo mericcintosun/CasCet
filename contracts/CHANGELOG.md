@@ -2,6 +2,115 @@
 
 Changelog for `cascet_contracts` — CasCet's Odra smart contracts on Casper.
 
+## [Unreleased]
+
+None of this is deployed yet. Installed packages keep the code they were
+installed with. On 2026-11-01, a read-only RPC check found every mainnet
+package locked (not upgradable), and every testnet package listed in
+`resources/` except the demo upgradable ReceiptRegistry (`hash-764ed719…`).
+A locked package picks up these changes only through a fresh install, after
+which gateways and docs must point at the new hashes.
+
+### Security
+- **ReceiptRegistry: `record` can no longer be bricked (M17).** `total_volume`
+  was summed with U256 `+`, which panics on overflow. A recorder could push it
+  near `U256::MAX`, and every later `record` would then revert, with no way
+  to patch a locked package. `count` and `total_volume` now saturate.
+  `total_volume` is documented as saturating at `U256::MAX` and as an
+  activity indicator: amounts are what recorders asserted, summed across tokens.
+- **ReceiptRegistry: two-step ownership (L39).** This mirrors odra-modules
+  `Ownable2Step`. `transfer_ownership` now only proposes a new owner, and the
+  proposed account completes the transfer with `accept_ownership`. Accepting
+  revokes the previous owner's recorder right and grants it to the new owner,
+  so a rotated key can no longer write receipts. Added
+  `cancel_ownership_transfer`, `pending_owner` and the events
+  `OwnershipTransferStarted`, `OwnershipTransferred`, `RecorderAuthorized`
+  and `RecorderRevoked`.
+- **ReceiptRegistry: id checks (L46).** `record` rejects an empty `payment_id`
+  (`EmptyPaymentId`, code 5) and a receipt that is its own parent
+  (`SelfParent`, code 6). A `parent_id` that is not anchored yet is still
+  accepted on purpose: a gateway settles the purchases a tool makes before the
+  tool call itself, so children are anchored before their parent.
+- **DemoToken: CEP-18 `transfer_from` allowance (M33).** It is now built on
+  odra-modules 2.9.1. Up to 2.8.2, `transfer_from` wrote the reduced allowance
+  to `(owner, recipient)` instead of `(owner, spender)`. The spender's
+  allowance never shrank, and the recipient gained an allowance nobody had
+  granted. Our own contracts always pull with spender == recipient, so they
+  were not affected.
+- **RevenueSplit: share total cannot wrap (L40).** The u32 sum of shares uses
+  `checked_add` and reverts with `SharesOverflow` (code 7).
+- **RevenueSplit: a large balance cannot block `release`.** `releasable`
+  computed `received * shares` in full, which trapped once the received total
+  passed `U256::MAX / shares`. It now computes the same floor division without
+  the full product.
+- **CascadeController: overflow-free budget and attribution math.** `charge`
+  compares `gross` with `budget - spent`, so a `gross` beyond the budget
+  reverts with `BudgetExceeded` instead of an opaque overflow trap. The
+  attribution cut, `gross * bps / 10_000` rounded down, is computed without
+  the full product, which trapped for any `gross` above `U256::MAX / 10_000`
+  even when the hop fit the budget; every hop within the budget can now be
+  charged. Both changes give the same results as before wherever the old code
+  did not trap.
+- **Release wasm traps on integer overflow** (`overflow-checks = true`). It
+  used to wrap silently while the tests panicked.
+- **CLI: `anchor-demo` refuses to run on mainnet (L42).** It writes fixture
+  receipts, and that already happened once on the mainnet registry.
+
+### Changed
+- Odra 2.8.2 → 2.9.1 for every `odra-*` crate, from crates.io. The odra git
+  tag `2.9.0` points at the 2.8.2 commit, so do not build from git.
+- `REGISTRY_VERSION` 1.2.0 → 2.0.0, because `transfer_ownership` changed meaning.
+- `Cargo.lock` is tracked so builds are reproducible (L44). Updated in the lock:
+  h2, rustls, rustls-webpki and tokio (host-side CLI only, RUSTSEC fixes) and
+  spin 0.9.8 (yanked) → 0.9.9. Still open: RUSTSEC-2026-0387 in crypto-bigint
+  0.5.5, which comes in through casper-types and needs an upstream release, and
+  the yanked clipboard-win 5.4.1 (Windows-only, through odra-cli and
+  rustyline), whose fixed releases 5.4.2 and 5.4.3 date from 2026-10-23 and
+  are still too new to take.
+- The wasm artifacts built on 2026-07-22, minutes before the mainnet deploy
+  run last wrote `resources/casper-contracts.toml`, are reproduced byte for
+  byte from commit `4e00541` with the Odra 2.8.2 lock. The README lists their
+  hashes and explains why the bytes a node stores differ (L44).
+- PaymentChannel: `redeem` documents the signature encoding (L128). A voucher
+  signature is a 65-byte casper-types `Signature`: tag `0x01` (Ed25519) or
+  `0x02` (Secp256k1), then 64 bytes over the raw voucher message (Secp256k1:
+  ECDSA over SHA-256 of it, `r || s`, low-S). Undecodable bytes revert with
+  `CouldNotDeserializeSignature`, a wrong signature with `InvalidVoucher`.
+- ReceiptRegistry docs: parent links can form cycles (`A` names a parent `B`
+  that is not anchored yet, then `B` names `A`), so readers that walk them must
+  track visited ids.
+- CLI header: `scenario release --payee` takes an `account-hash-…` string, not
+  a public key (I02).
+- Formatted with rustfmt; `cargo fmt --check` and
+  `cargo clippy --all-targets` are clean.
+- `rust-toolchain` (plain text) → `rust-toolchain.toml`. The channel is
+  unchanged, the wasm target and rustfmt/clippy are added, and the wasm is
+  byte-identical. The plain-text file is what Dependabot's cargo job failed on
+  (L72, I03).
+
+### Tests
+- 13 → 54 unit tests. New coverage:
+  - DemoToken, which had no tests (L130).
+  - Regression tests for the July 2026 fixes: C1 voucher binding across
+    deployments and channel ids, C2 checks-effects-interactions against a
+    re-entrant token, and C4 channel durations.
+  - Budget, attribution and revenue-split invariants over deterministic
+    pseudo-random runs.
+  - Arithmetic edges: a `U256::MAX` cascade budget charged with huge child
+    hops, a `U256::MAX` revenue split, and the shared floor-division helper
+    against the plain formula.
+  - Golden vectors for the voucher byte layout and for voucher signatures
+    with fixed Ed25519 and Secp256k1 keys, cross-checked with Node's crypto.
+  - Every error code the five contracts define or re-expose, including the
+    exact error for undecodable voucher signatures.
+- The tests now pay with `DemoToken`, the token that is actually deployed,
+  instead of odra-modules' `Cep18`, and sign vouchers with the test
+  environment's own account keys. As a result `cargo odra test -b casper`
+  runs them on the Casper execution engine against the built wasm (with
+  overflow checks). 52 of the 54 run there; the two `*_mockvm_only` reentrancy
+  tests need a test-only token that has no wasm, so on that engine they return
+  early.
+
 ## [0.1.0] - 2026-07
 ### Added
 - **ReceiptRegistry** — anchors settled tool-call receipts on-chain, each carrying
@@ -15,3 +124,13 @@ Changelog for `cascet_contracts` — CasCet's Odra smart contracts on Casper.
   via Casper `verify_signature`.
 - **DemoToken** — a deployable CEP-18 (WCSPR-style) payment token for the demos.
 - 13/13 unit tests against a real CEP-18 in Odra's mock VM (`cargo odra test`).
+
+### Security (2026-07-22 internal review, before the mainnet install)
+- **PaymentChannel (C1):** vouchers are now
+  `DOMAIN || contract package hash || channel_id || cumulative`, so a voucher
+  cannot be replayed on another deployment. This breaks the earlier
+  `channel_id || cumulative` format: off-chain signers must use the new layout.
+- **CascadeController (C2):** `charge` follows checks-effects-interactions.
+- **PaymentChannel (C4):** `checked_add` expiration and a 1 s minimum duration.
+- **ReceiptRegistry (C6):** added `transfer_ownership`. `REGISTRY_VERSION` was
+  left at 1.2.0.
