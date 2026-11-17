@@ -14,8 +14,10 @@ import { ENV_UPSTREAM_FIXTURE, osBaselineEnvironment } from "./testing/env.js";
 import { startFakeFacilitator } from "./testing/fake-facilitator.js";
 import {
   callPaid,
+  challengeOf,
   eventually,
   payFor,
+  paymentHeader,
   receipts,
   rpcCall,
   startHarness,
@@ -556,6 +558,28 @@ describe("HTTP transport details", () => {
       assert.equal(unpaid.status, 402);
       const required = decodePaymentRequiredHeader(unpaid.headers.get("payment-required") ?? "");
       assert.equal(required.resource?.url, "https://mcp.example.com/mcp");
+    });
+  });
+
+  it("serves each discovery resource as a plain x402 HTTP endpoint for its tool", async () => {
+    await withHarness({}, async h => {
+      const discovery = (await (await fetch(`${h.base}/.well-known/x402.json`)).json()) as { items: Array<{ resource: string }> };
+      const url = discovery.items[0]?.resource ?? "";
+      assert.equal(url, `${h.base}/tools/paid_tool`);
+      const post = (headers: Record<string, string> = {}, body = JSON.stringify({ x: 1 })) =>
+        fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body });
+
+      const unpaid = await post();
+      assert.equal(unpaid.status, 402);
+      assert.equal(h.upstream.calls.length, 0);
+      const accepted = challengeOf({ status: unpaid.status, headers: unpaid.headers, body: {} }).accepts[0]!;
+      const paid = await post({ "payment-signature": paymentHeader(accepted).header });
+      assert.equal(paid.status, 200);
+      assert.ok(((await paid.json()) as { result?: unknown }).result);
+      assert.deepEqual(h.upstream.calls.at(-1)?.args, { x: 1 });
+
+      assert.equal((await post({}, JSON.stringify([1]))).status, 400);
+      assert.equal((await fetch(url)).status, 405);
     });
   });
 });

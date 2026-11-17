@@ -295,6 +295,10 @@ Wrapped CSPR).
   it has no `amountRaw` (its amounts are in `accepts`).
   `GET /.well-known/x402.json` (one `accepts` entry per token, with its
   `extra`).
+- `POST /tools/<name>`, the `resource` of each discovery item: for plain x402
+  HTTP clients. The JSON body (or none) is the tool's arguments, and the call
+  runs exactly like a JSON-RPC `tools/call` on `/mcp`: the same 402 challenge,
+  payment headers and JSON-RPC answer.
 - Receipts are appended to `.cascet/<name>.receipts.jsonl`; status is
   `settled`, `failed` or `unknown`, with the verified payer and the
   authorization nonce. The same log holds the write-ahead authorization

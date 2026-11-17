@@ -1196,6 +1196,28 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     res.status(405).set("allow", "POST, OPTIONS").json(rpcError(null, RPC_INVALID_REQUEST, "method not allowed: use POST"));
   });
 
+  // The `resource` of each discovery item, for plain x402 HTTP clients: a POST whose
+  // JSON body (or none) is the tool's arguments runs exactly as a JSON-RPC
+  // `tools/call` on /mcp, with the same 402 challenge, payment headers and
+  // JSON-RPC answer. A tool that is not priced here gets the usual answer for it.
+  app.post("/tools/:tool", (req, res) => {
+    const args = req.body === undefined ? {} : (req.body as unknown);
+    if (!isRecord(args)) {
+      res.status(400).json(rpcError(null, RPC_INVALID_PARAMS, "the body must be a JSON object of tool arguments"));
+      return;
+    }
+    req.body = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: req.params.tool, arguments: args } };
+    const handled = handleMcp(req, res).catch(err => {
+      log.error(`[gateway] unhandled error on /tools: ${logSafe(err)}`);
+      if (!res.headersSent) res.status(500).json(rpcError(null, RPC_INTERNAL_ERROR, "gateway error"));
+    });
+    inFlight.add(handled);
+    void handled.finally(() => inFlight.delete(handled));
+  });
+  app.all("/tools/:tool", (_req, res) => {
+    res.status(405).set("allow", "POST, OPTIONS").json(rpcError(null, RPC_INVALID_REQUEST, "method not allowed: use POST"));
+  });
+
   app.use((_req, res) => void res.status(404).json({ error: "not found" }));
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (res.headersSent) return;
