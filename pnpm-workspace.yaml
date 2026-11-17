@@ -18,7 +18,11 @@ overrides:
   brace-expansion@<1.1.21: "^1.1.21"
   fast-uri@<3.1.9: "^3.1.9"
   sharp@<0.35.5: "^0.35.5"
-  "@hono/node-server@<2.0.10": "^2.0.10"
+  "@hono/node-server@<2.1.6": "^2.1.6"
+  # zod 3 (GHSA-mrhx-c7xc-m3w5, no patched 3.x) reaches the tree only through
+  # @make-software/casper-x402 1.0.0, a test-only reference client; its
+  # @x402/core 2.15 runs on zod 4 in the tests that use it.
+  "@x402/core@2.15.0>zod": "^4.6.7"
 
 # Pin the peer-install mode this lockfile was resolved with, so
 # `pnpm install --frozen-lockfile` (CI, contributors) no longer depends on
