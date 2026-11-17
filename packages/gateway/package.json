@@ -1,6 +1,6 @@
 {
   "name": "@cascet/gateway",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "CasCet gateway — wrap any MCP server and charge x402 micropayments per tool call, settled on Casper",
   "type": "module",
   "license": "Apache-2.0",

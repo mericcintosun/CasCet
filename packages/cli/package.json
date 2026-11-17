@@ -1,6 +1,6 @@
 {
   "name": "@cascet/cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "CasCet CLI — monetize any MCP server with x402 micropayments on Casper (wrap), or connect any MCP host to paid servers (connect)",
   "type": "module",
   "license": "Apache-2.0",

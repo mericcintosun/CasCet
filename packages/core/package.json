@@ -1,6 +1,6 @@
 {
   "name": "@cascet/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shared types, config schema and constants for CasCet — the paid-MCP gateway on Casper",
   "type": "module",
   "license": "Apache-2.0",
