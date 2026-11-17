@@ -1006,7 +1006,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1657,7 +1657,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2087,9 +2087,9 @@ dependencies = [
 
 [[package]]
 name = "odra-casper-test-vm"
-version = "2.9.1"
+version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a513ee541757a75df6687ec740de3c4b6d0c66d517f1897e6f54f74254dbf55"
+checksum = "e407e9f52ed36268c268f935c4bdac5ed65b4ae3c5cd5c231b51b0f76d878d9e"
 dependencies = [
  "casper-contract",
  "casper-engine-test-support",
@@ -2138,9 +2138,9 @@ dependencies = [
 
 [[package]]
 name = "odra-core"
-version = "2.9.1"
+version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "265b34b792a366c8db44bbefe913156abf2fdcfa37ee40e80430da54e8d39546"
+checksum = "ddb0d4623369b00469e9701ac0a8193027164e3fa83aa65b473e3ee8fd28fbd1"
 dependencies = [
  "anyhow",
  "casper-event-standard",
@@ -2193,9 +2193,9 @@ dependencies = [
 
 [[package]]
 name = "odra-test"
-version = "2.9.1"
+version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a124009117a9faec92b1a3d26723f68e7f6abfae589f43576dcbdeae20313c5"
+checksum = "7c1de55901d133278835b31ab9c1066299809eb0cb528d8af859159106013eb6"
 dependencies = [
  "odra-casper-test-vm",
  "odra-core",
@@ -2204,9 +2204,9 @@ dependencies = [
 
 [[package]]
 name = "odra-vm"
-version = "2.9.1"
+version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22a4b50518ed0bf03430e25d9c71994bfacaaa77a95bf44da6392942383ba39a"
+checksum = "23ad3ffb0f4687e6ce90d63b42470f932ebb681fe7370cb09fced898de3834cf"
 dependencies = [
  "anyhow",
  "backtrace",
@@ -2742,7 +2742,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3275,7 +3275,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3846,7 +3846,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
