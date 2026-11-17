@@ -49,8 +49,8 @@ importers:
         specifier: ^1.2.12
         version: 1.4.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       casper-js-sdk:
-        specifier: ^5.0.12
-        version: 5.3.0
+        specifier: ^5.3.1
+        version: 5.3.1
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -58,8 +58,8 @@ importers:
         specifier: ^2.1.1
         version: 2.1.1
       geist:
-        specifier: ^1.7.2
-        version: 1.9.0(next@15.5.28(@types/node@22.20.5)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))
+        specifier: ^1.9.2
+        version: 1.9.2(next@15.5.28(@types/node@22.20.5)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))
       lucide-react:
         specifier: ^0.469.0
         version: 0.469.0(react@19.3.1)
@@ -143,8 +143,8 @@ importers:
         specifier: 2.29.0
         version: 2.29.0
       casper-js-sdk:
-        specifier: ^5.0.12
-        version: 5.3.0
+        specifier: ^5.3.1
+        version: 5.3.1
 
   packages/core:
     dependencies:
@@ -167,8 +167,8 @@ importers:
         specifier: 2.29.0
         version: 2.29.0
       casper-js-sdk:
-        specifier: ^5.0.12
-        version: 5.3.0
+        specifier: ^5.3.1
+        version: 5.3.1
       express:
         specifier: ^5.1.0
         version: 5.3.0
@@ -218,8 +218,8 @@ importers:
   tools/discord:
     dependencies:
       discord.js:
-        specifier: ^14.16.3
-        version: 14.28.0
+        specifier: ^14.28.1
+        version: 14.28.1
       dotenv:
         specifier: ^16.4.7
         version: 16.6.1
@@ -245,14 +245,14 @@ importers:
         specifier: 2.29.0
         version: 2.29.0
       casper-js-sdk:
-        specifier: ^5.0.12
-        version: 5.3.0
+        specifier: ^5.3.1
+        version: 5.3.1
       express:
         specifier: ^5.1.0
         version: 5.3.0
       express-rate-limit:
-        specifier: ^8.7.2
-        version: 8.7.2(express@5.3.0)
+        specifier: ^8.7.4
+        version: 8.7.4(express@5.3.0)
     devDependencies:
       '@make-software/casper-x402':
         specifier: ^1.0.0
@@ -544,89 +544,105 @@ packages:
     resolution: {integrity: sha512-Y3dgX/6lE2QhQb+Gxy0WZxfg9MEm/JBjamZpS2IklP7xIQoKN4hzAm7KcMVGtaVDt3neE9OKBC7vAfonA/Lr1A==}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@img/sharp-libvips-linux-arm@1.3.4':
     resolution: {integrity: sha512-LmRtTsOHuvM2+wlO2Db37dx5MiZhB0FvSunciw48YjdOkZz9KAiRbm8ujeMOA1INqmei5NapFxYEK1D1ZSidmw==}
     cpu: [arm]
     os: [linux]
+    libc: [glibc]
 
   '@img/sharp-libvips-linux-ppc64@1.3.4':
     resolution: {integrity: sha512-Le6boB8Tai0Nis+gIxIpKx68UDVVIqdR8Tin5Yf1z2LJJQLDJvCDRqRu+jC2qCoD+eIomonmOwB4smBRxfVpYQ==}
     cpu: [ppc64]
     os: [linux]
+    libc: [glibc]
 
   '@img/sharp-libvips-linux-riscv64@1.3.4':
     resolution: {integrity: sha512-aHkkIEHPRdQEegJN20MLmGtxYD9R2wQr3Cwpddnu5+YKMt6Uzax7S9h5gpZTo8wyrGuZSlfQ63OevL5mTyOC7Q==}
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   '@img/sharp-libvips-linux-s390x@1.3.4':
     resolution: {integrity: sha512-ra/mB6MikESDUO7Yg+Mi95bFBb9GsObURuhnOv3OqknjGe9sZrG8tCe9q0xSIGrtLgvgw0gKnFWcK4blSgQOuQ==}
     cpu: [s390x]
     os: [linux]
+    libc: [glibc]
 
   '@img/sharp-libvips-linux-x64@1.3.4':
     resolution: {integrity: sha512-GJ//SSXbnwSDes02umB3nDJLFcQzw8a18V8fyhqr6tV515tOEMdImjjxj1AoafMRz56F3PHgftnj1QEKSU1zkw==}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@img/sharp-libvips-linuxmusl-arm64@1.3.4':
     resolution: {integrity: sha512-hvulFwtjUcagsis6BBxHwGFwWoNZjgYmULGVrZcyfNbjA8hKILbRxGg15/7w5HDyXHXUos/j6baAWqnCyQ2DWA==}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@img/sharp-libvips-linuxmusl-x64@1.3.4':
     resolution: {integrity: sha512-6zXKeE/p39I1AmA3cJG35eyBGNqNddLnUXjhwBnsGjFPWqf5VKkDBEqaEkPDoTEtkxwi2vv8Tcr2mDyP4So7Fg==}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@img/sharp-linux-arm64@0.35.5':
     resolution: {integrity: sha512-LYVx5JTsOM2CBzmxreh+nl64/3H6Xb09iSLknqH47z2T2DFFxDeFLP5y4dJwe6H7uGQlHPyEEtIqyo3DYsRwdQ==}
     engines: {node: '>=20.9.0'}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@img/sharp-linux-arm@0.35.5':
     resolution: {integrity: sha512-LEaXK2WdXVK5ykcw0buWyPMsmLLL2vpHLD6yrNSW+JGEL3BZPA4tpKN6iaMc4AxTTAoaX/sU1rOL51lcIz48ZQ==}
     engines: {node: '>=20.9.0'}
     cpu: [arm]
     os: [linux]
+    libc: [glibc]
 
   '@img/sharp-linux-ppc64@0.35.5':
     resolution: {integrity: sha512-QVxAAq8evVRI9ia2vqgwrmWucn5Dfv+JdWzj75pD8omHLPSP7f8p20O8jxzjCcuCEQEOtYOZUmX1hkiZ0kdevA==}
     engines: {node: '>=20.9.0'}
     cpu: [ppc64]
     os: [linux]
+    libc: [glibc]
 
   '@img/sharp-linux-riscv64@0.35.5':
     resolution: {integrity: sha512-LtdreXguaavKODPIfzJ4kffx7UNt1omwtK0rch4EBbbSTXPnxWmYSayXdLJw0fJzQ97kHt1gL/yh4tvU+nCyRQ==}
     engines: {node: '>=20.9.0'}
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   '@img/sharp-linux-s390x@0.35.5':
     resolution: {integrity: sha512-UZasTOFiYzotTsGOCu42BfUzP6Tu6Do/947iRm1RsLKvlllxwGcn4RN27LibGWceix4Y+Pmw3jsnTcCQIgWjqA==}
     engines: {node: '>=20.9.0'}
     cpu: [s390x]
     os: [linux]
+    libc: [glibc]
 
   '@img/sharp-linux-x64@0.35.5':
     resolution: {integrity: sha512-SxFtLTeJInhAA9Q836kux2vZNeOBQEx658qvbboZScr0wIARym3IcGmW7KpVD5sbVg0Ojy+udFQdayYIZyoNog==}
     engines: {node: '>=20.9.0'}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@img/sharp-linuxmusl-arm64@0.35.5':
     resolution: {integrity: sha512-9HbMclmI1zlNkFRs3z9/eBtDjfD0sGlrX1z6b1qwmiFY5ElDLh4BC0LPBdVp7z1DXFiKlIcznf+ZlsuZzLxQqg==}
     engines: {node: '>=20.9.0'}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@img/sharp-linuxmusl-x64@0.35.5':
     resolution: {integrity: sha512-4KOphqB035HrVdqLZfCgMzzERrQkkzOwRhl4OAkRO1YCldbaFjySXMaK534Mo0V+LndnlJk+sbUyLeU0ULyD1A==}
     engines: {node: '>=20.9.0'}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@img/sharp-wasm32@0.35.5':
     resolution: {integrity: sha512-Ptsga1su4tQx+LLF1ECS9U6nz5kmrXKo6XVbtR48Ke3ZRxxgaWBu7IDtEe1quo8hiupwm6WFqxVlXaSf7IINGQ==}
@@ -701,24 +717,28 @@ packages:
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@next/swc-linux-arm64-musl@15.5.28':
     resolution: {integrity: sha512-nTB7bB6vfn4ezCJNYP43ukt2o8L3+WxKF/sTcTxepdXsJh3SM9RhlU7wrZYbH7L4HO5M87dqDTwm8587vAkCiw==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@next/swc-linux-x64-gnu@15.5.28':
     resolution: {integrity: sha512-WXCfVI32rW3xCusoUX1RpZKtyChWU2Zwe27JUDmM3KrXwcDNc9vV4zEq0GKFAURnuQ/Ouo/XqPvB0yh445XZCg==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@next/swc-linux-x64-musl@15.5.28':
     resolution: {integrity: sha512-Miq+NDb/HWsXuxseYxMM6fuEOQXgTziarkKIRpVKCn8W69cEfhQaQr+90pO+u4q2CbJR2wzXmUuCFyZaJs/Nng==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@next/swc-win32-arm64-msvc@15.5.28':
     resolution: {integrity: sha512-5LR79lemgDlgxvG7MQJ+zHCkVcrUoQuO7CiIvq3I58vNW4goSOE2b+19Z6FujRWMouvni4gvudYFuFuNxolGWA==}
@@ -1223,8 +1243,8 @@ packages:
     peerDependencies:
       postcss: ^8.5.18
 
-  axios@1.21.0:
-    resolution: {integrity: sha512-YCzXMB53Q9PZBsh7yN7wtapit4WepwcHS2fP8QhGsBxSz5YtgYobV7GGlWlAJi+RxfU77GQTQi2DSLUma42EYA==}
+  axios@1.21.1:
+    resolution: {integrity: sha512-6eI5Q/Y4u/Um9dDlsRoq5pY2rxnUTv+L4PpLitnbk/i4jb3MxLZ5CsN5Ih3IysbeRYK4pR+P7qfMsOQl9fwwFQ==}
 
   balanced-match@1.0.2:
     resolution: {integrity: sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw==}
@@ -1287,8 +1307,8 @@ packages:
     resolution: {integrity: sha512-KeKaBzvi+nK/1etL4D1nCPT8L7h+oBa3KXlB3ImifGlkDJwgBphva7Ep7e7fnhr9b2gFCWgDnJ0suTDl6ymbYQ==}
     engines: {node: '>=18'}
 
-  casper-js-sdk@5.3.0:
-    resolution: {integrity: sha512-fCGE/ZHQpx8zyq6HE0wKdw3pmqfbSc2q575XJFhQN2I4ueihz22400ZEZU4dPwbPQQV0Im5fF9BCdBfy4zjNkg==}
+  casper-js-sdk@5.3.1:
+    resolution: {integrity: sha512-g/Nio95L7BxUuOgAVNaOCe/VjyMOw4gj6mTlIatG847YluQ2SbKePFXsPpwEZeK4MCPTJjjF7+9ZBptgEyvb7A==}
     engines: {node: '>=18'}
 
   chokidar@3.6.0:
@@ -1376,11 +1396,11 @@ packages:
   didyoumean@1.2.2:
     resolution: {integrity: sha512-gxtyfqMg7GKyhQmb056K7M3xszy/myH8w+B4RT+QXBQsvAOdc3XymqDDPHx1BgPgsdAA5SIifona89YtRATDzw==}
 
-  discord-api-types@0.38.57:
-    resolution: {integrity: sha512-R1CTSSt4RshqCq23j2Xq2ZscvzB4LzG9OB1CYQdKUGdw8Ti/oF/72EEtK2mNpagG/Vj9NcBT7dw9lKLf+Dacfg==}
+  discord-api-types@0.38.58:
+    resolution: {integrity: sha512-6utghVho47hBzmx8nIp+pKEDDNIlVk6On/J5Y1Q529payNLZjBsrw+mt+G5Y3NYRE3kgta6eBx5hRYVyfHGdOA==}
 
-  discord.js@14.28.0:
-    resolution: {integrity: sha512-l/mIllvqvWQDWqa8NPw7b2AU2tM9oPWiWR6Jk54DTNlUdyArXbi+Y0m0sLIUtQ9O0x+tyVpDMCG6K6Kf0yeAWQ==}
+  discord.js@14.28.1:
+    resolution: {integrity: sha512-Je5OcqgurnIUQK4vR+gQnmzOf/lNQsD6d/UkV8ZOj+bFa5zJXPyiGXlbywp2EagwshVT18y7YNQNSRd3FjYkDw==}
     engines: {node: '>=18'}
 
   dlv@1.1.3:
@@ -1454,6 +1474,12 @@ packages:
     peerDependencies:
       express: '>= 4.11'
 
+  express-rate-limit@8.7.4:
+    resolution: {integrity: sha512-LKBXzX700wz3zAGNNmVnjRI5mEbYkLv7UbMI4+9Xa+JPcg2UZh6AgY/2CZh9RrJjFM5ttC/N1lD+KzyFoZITCw==}
+    engines: {node: '>= 16'}
+    peerDependencies:
+      express: '>= 4.11'
+
   express@5.3.0:
     resolution: {integrity: sha512-qCqy1xSoaugxOD4IVHb1ZWdkvCF2W3aE2okKouWj8VwJ+ztskSiXoBnCSJqfKT+cVPJhuJqe9YLbY425+Zh00g==}
     engines: {node: '>= 18'}
@@ -1491,8 +1517,8 @@ packages:
     resolution: {integrity: sha512-S8KoZgRZN+a5rNwqTxlZZePjT/4cnm0ROV70LedRHZ0p8u9fRID0hJUZQpkKLzro8LfmC8sx23bY6tVNxv8pQA==}
     engines: {node: '>= 18.0.0'}
 
-  follow-redirects@1.16.2:
-    resolution: {integrity: sha512-/kVP2U8z596Ia0gwFrwyIeo74ta5aVmSeU1FfAUMAmcEP5EP7zydmag3SLiN64NaRKef3lxsq7i/g7ltJQDGow==}
+  follow-redirects@1.16.3:
+    resolution: {integrity: sha512-toOSoqN6d51Wjf1aOFJYcoVv1aND9rj/CwjLU0Vz40oDuSpWDayCeKe4JpL5NL0WdFvoOOCI3BRo69HahjbR1A==}
     engines: {node: '>=4.0'}
     peerDependencies:
       debug: '*'
@@ -1526,8 +1552,8 @@ packages:
   function-bind@1.1.2:
     resolution: {integrity: sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==}
 
-  geist@1.9.0:
-    resolution: {integrity: sha512-uxiyxH5PaKDaK2//ln06NxJEz5gc6771BTwSs1YFgNnASGtp1SYD3VZShSIijvlNwDjMgHnzqye4MmIUTspEzw==}
+  geist@1.9.2:
+    resolution: {integrity: sha512-UU1x2q5Khob0+i4csFvXk1Ki4DePdu7xISuXyEcj1tzQMg64oN7Kbuy4e5z5QhcUWbbvOMJNs3ZxYQqpsEMV3w==}
     peerDependencies:
       next: '>=13.2.0'
 
@@ -1579,8 +1605,8 @@ packages:
     resolution: {integrity: sha512-dFcAjpTQFgoLMzC2VwU+C/CbS7uRL0lWmxDITmqm7C+7F0Odmj6s9l6alZc6AELXhrnggM2CeWSXHGOdX2YtwA==}
     engines: {node: '>= 6'}
 
-  humanize-duration@3.35.0:
-    resolution: {integrity: sha512-+KYh+R85n1yadHHwy/QXF0JgPq5NPPBNrvigA5aAKrlKFd0bJpMx7wE3Xd6rM0kEaBQMCFrdMihkaDSgWERNvQ==}
+  humanize-duration@3.35.1:
+    resolution: {integrity: sha512-O4HQEzneiiAiPmFzvQKKK+Gbz3vFO9Obq6lnWsbGyUbJ54m7mDN+/lHpzilFxDd8pmrMzuHLw4dsoWnLCEq7dQ==}
 
   iconv-lite@0.7.3:
     resolution: {integrity: sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ==}
@@ -1595,6 +1621,10 @@ packages:
 
   ip-address@10.7.5:
     resolution: {integrity: sha512-t2v0rkILYv9WXmSL7TpAaU3HXgaFYOPUcH3QHgwQ++gpJuH3bqyMy4Fvt/DJCTKwzH3Cf+bAp5W/mFL39KPLzA==}
+    engines: {node: '>= 12'}
+
+  ip-address@10.7.6:
+    resolution: {integrity: sha512-00LYkM6byILa9eQIx6qoaXCM40xTLd56AZ4vyaPW3YTyb49VZYPo5xsiAq4tuQ54GH4R7gVdYScJ1B7B77PuTg==}
     engines: {node: '>= 12'}
 
   ipaddr.js@1.9.1:
@@ -2132,8 +2162,8 @@ packages:
   wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
 
-  ws@8.22.1:
-    resolution: {integrity: sha512-oyL6OPYme/CmiFvNuGzeoxCJ4nOrZE2O1FwM9MWM1AsGri6nLXB2pg+lNA8aLeXMSav0J6eIVS1j6vUPzUtK9g==}
+  ws@8.22.2:
+    resolution: {integrity: sha512-/rEZ2ejown2N5gxVTHUu9bVVC7ttu0/Tgzf5hbTOixR3Fs7mbbXgn2DbdbcKgJOmpQMtrIUWivtYuVMnp/W/yA==}
     engines: {node: '>=10.0.0'}
     peerDependencies:
       bufferutil: ^4.0.1
@@ -2182,7 +2212,7 @@ snapshots:
       '@discordjs/formatters': 0.6.2
       '@discordjs/util': 1.2.0
       '@sapphire/shapeshift': 4.0.0
-      discord-api-types: 0.38.57
+      discord-api-types: 0.38.58
       fast-deep-equal: 3.1.3
       ts-mixer: 6.0.4
       tslib: 2.9.1
@@ -2193,7 +2223,7 @@ snapshots:
 
   '@discordjs/formatters@0.6.2':
     dependencies:
-      discord-api-types: 0.38.57
+      discord-api-types: 0.38.58
 
   '@discordjs/rest@2.6.3':
     dependencies:
@@ -2202,14 +2232,14 @@ snapshots:
       '@sapphire/async-queue': 1.5.5
       '@sapphire/snowflake': 3.5.5
       '@vladfrangu/async_event_emitter': 2.4.7
-      discord-api-types: 0.38.57
+      discord-api-types: 0.38.58
       magic-bytes.js: 1.13.1
       tslib: 2.9.1
       undici: 6.29.1
 
   '@discordjs/util@1.2.0':
     dependencies:
-      discord-api-types: 0.38.57
+      discord-api-types: 0.38.58
 
   '@discordjs/ws@1.2.3':
     dependencies:
@@ -2219,9 +2249,9 @@ snapshots:
       '@sapphire/async-queue': 1.5.5
       '@types/ws': 8.18.2
       '@vladfrangu/async_event_emitter': 2.4.7
-      discord-api-types: 0.38.57
+      discord-api-types: 0.38.58
       tslib: 2.9.1
-      ws: 8.22.1
+      ws: 8.22.2
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
@@ -3035,9 +3065,9 @@ snapshots:
       postcss: 8.5.32
       postcss-value-parser: 4.2.0
 
-  axios@1.21.0:
+  axios@1.21.1:
     dependencies:
-      follow-redirects: 1.16.2
+      follow-redirects: 1.16.3
       form-data: 4.0.6
       https-proxy-agent: 5.0.1
       proxy-from-env: 2.1.0
@@ -3114,11 +3144,11 @@ snapshots:
       '@scure/bip32': 1.7.0
       '@scure/bip39': 1.6.0
       asn1.js: 5.4.1
-      axios: 1.21.0
+      axios: 1.21.1
       bn.js: 5.2.5
       eventsource: 2.0.2
       glob: 7.2.3
-      humanize-duration: 3.35.0
+      humanize-duration: 3.35.1
       node-fetch: 2.6.13
       reflect-metadata: 0.1.14
       ts-results: '@casperlabs/ts-results@3.3.5'
@@ -3138,17 +3168,17 @@ snapshots:
       '@noble/hashes': 1.8.0
       '@noble/secp256k1': 1.7.2
       asn1.js: 5.4.1
-      axios: 1.21.0
+      axios: 1.21.1
       bn.js: 5.2.5
       eventsource: 2.0.2
-      humanize-duration: 3.35.0
+      humanize-duration: 3.35.1
       ts-results: '@casperlabs/ts-results@3.3.5'
       typedjson: 1.8.0
     transitivePeerDependencies:
       - debug
       - supports-color
 
-  casper-js-sdk@5.3.0:
+  casper-js-sdk@5.3.1:
     dependencies:
       '@ethersproject/bignumber': 5.8.0
       '@ethersproject/bytes': 5.8.0
@@ -3160,9 +3190,9 @@ snapshots:
       '@peculiar/asn1-ecc': 2.11.1
       '@peculiar/asn1-schema': 2.11.1
       '@peculiar/asn1-x509': 2.11.1
-      axios: 1.21.0
+      axios: 1.21.1
       eventsource: 3.0.7
-      humanize-duration: 3.35.0
+      humanize-duration: 3.35.1
       ts-results: '@casperlabs/ts-results@3.3.5'
       typedjson: 1.8.0
     transitivePeerDependencies:
@@ -3235,9 +3265,9 @@ snapshots:
 
   didyoumean@1.2.2: {}
 
-  discord-api-types@0.38.57: {}
+  discord-api-types@0.38.58: {}
 
-  discord.js@14.28.0:
+  discord.js@14.28.1:
     dependencies:
       '@discordjs/builders': 1.15.0
       '@discordjs/collection': 1.5.3
@@ -3246,7 +3276,7 @@ snapshots:
       '@discordjs/util': 1.2.0
       '@discordjs/ws': 1.2.3
       '@sapphire/snowflake': 3.5.5
-      discord-api-types: 0.38.57
+      discord-api-types: 0.38.58
       fast-deep-equal: 3.1.3
       lodash.snakecase: 4.1.1
       magic-bytes.js: 1.13.1
@@ -3338,6 +3368,14 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  express-rate-limit@8.7.4(express@5.3.0):
+    dependencies:
+      debug: 4.4.3
+      express: 5.3.0
+      ip-address: 10.7.6
+    transitivePeerDependencies:
+      - supports-color
+
   express@5.3.0:
     dependencies:
       accepts: 2.0.0
@@ -3408,7 +3446,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  follow-redirects@1.16.2: {}
+  follow-redirects@1.16.3: {}
 
   form-data@4.0.6:
     dependencies:
@@ -3431,7 +3469,7 @@ snapshots:
 
   function-bind@1.1.2: {}
 
-  geist@1.9.0(next@15.5.28(@types/node@22.20.5)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)):
+  geist@1.9.2(next@15.5.28(@types/node@22.20.5)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)):
     dependencies:
       next: 15.5.28(@types/node@22.20.5)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
 
@@ -3499,7 +3537,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  humanize-duration@3.35.0: {}
+  humanize-duration@3.35.1: {}
 
   iconv-lite@0.7.3:
     dependencies:
@@ -3513,6 +3551,8 @@ snapshots:
   inherits@2.0.4: {}
 
   ip-address@10.7.5: {}
+
+  ip-address@10.7.6: {}
 
   ipaddr.js@1.9.1: {}
 
@@ -4026,7 +4066,7 @@ snapshots:
 
   wrappy@1.0.2: {}
 
-  ws@8.22.1: {}
+  ws@8.22.2: {}
 
   zod-to-json-schema@3.25.2(zod@4.6.7):
     dependencies:
