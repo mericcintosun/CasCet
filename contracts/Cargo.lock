@@ -277,7 +277,7 @@ dependencies = [
  "base16",
  "base64 0.22.1",
  "bytes",
- "casper-types",
+ "casper-types 6.1.0",
  "flate2",
  "hex-buffer-serde 0.4.0",
  "humantime",
@@ -304,17 +304,17 @@ version = "5.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9fd15d0e835459cdcc2f5629253ffcf92824a79c3ae62a36c563d4e1ec315318"
 dependencies = [
- "casper-types",
+ "casper-types 6.1.0",
  "hex_fmt",
 ]
 
 [[package]]
 name = "casper-contract-schema"
-version = "0.6.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3895e20cb937a9bac83d8d8d6cade52d38ad1a1bb50e226e4eee9e0489586efa"
+checksum = "749ec7bcedb46c9dc9c377c6fe65c47c5d0151f3aab02541a8670a91a4ea85ea"
 dependencies = [
- "casper-types",
+ "casper-types 7.0.0",
  "schemars 0.9.0",
  "serde",
  "serde_json",
@@ -329,7 +329,7 @@ dependencies = [
  "blake2 0.9.2",
  "casper-execution-engine",
  "casper-storage",
- "casper-types",
+ "casper-types 6.1.0",
  "env_logger",
  "filesize",
  "humantime",
@@ -353,7 +353,7 @@ checksum = "9bce72275b1a5734a307929fdaf06e61c984b1daa05a350380b55737c9647aa0"
 dependencies = [
  "casper-contract",
  "casper-event-standard-macro",
- "casper-types",
+ "casper-types 6.1.0",
 ]
 
 [[package]]
@@ -379,7 +379,7 @@ dependencies = [
  "blake2 0.10.6",
  "blake3",
  "casper-storage",
- "casper-types",
+ "casper-types 6.1.0",
  "casper-wasm",
  "casper-wasm-utils",
  "casper-wasmi",
@@ -423,7 +423,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c108a6e833a8c2905c4f7c99684ddf69e54e2bdd1e56236c4e76933a5332b84"
 dependencies = [
  "bincode",
- "casper-types",
+ "casper-types 6.1.0",
  "datasize",
  "either",
  "itertools 0.10.5",
@@ -487,6 +487,36 @@ dependencies = [
  "tracing",
  "uint",
  "untrusted 0.7.1",
+]
+
+[[package]]
+name = "casper-types"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3064813bbff188f71c2c726dc1e2bcf5c9a30acd323f8d63adcbb1833af116f9"
+dependencies = [
+ "base16",
+ "base64 0.13.1",
+ "bitflags 1.3.2",
+ "blake2 0.9.2",
+ "derive_more",
+ "ed25519-dalek",
+ "hex",
+ "hex_fmt",
+ "itertools 0.10.5",
+ "k256",
+ "num",
+ "num-derive",
+ "num-integer",
+ "num-rational",
+ "num-traits",
+ "rand 0.8.6",
+ "serde",
+ "serde-map-to-array",
+ "serde_bytes",
+ "serde_json",
+ "tracing",
+ "uint",
 ]
 
 [[package]]
@@ -1006,7 +1036,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1657,7 +1687,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2024,9 +2054,9 @@ dependencies = [
 
 [[package]]
 name = "odra"
-version = "2.9.1"
+version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8d6da37c7ef47e5913e9785106568331e60e2268f0a1d619b1ebf42f82c9d52"
+checksum = "99b4203d16573a1e0d82596fba244b8e7adbe764166b75d522d5df4c8dd10a2b"
 dependencies = [
  "odra-casper-wasm-env",
  "odra-core",
@@ -2069,7 +2099,7 @@ dependencies = [
  "base16",
  "bytes",
  "casper-client",
- "casper-types",
+ "casper-types 6.1.0",
  "dotenv",
  "futures-util",
  "itertools 0.14.0",
@@ -2100,9 +2130,9 @@ dependencies = [
 
 [[package]]
 name = "odra-casper-wasm-env"
-version = "2.9.1"
+version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "295799c319c1f3f47948352f4ec1db324b8bbbcd6ef9f260e3897fc7730ac24a"
+checksum = "58d3790bfa649037118b29e86706e2c3953ee578f5b3c5418638ada0457c0422"
 dependencies = [
  "casper-contract",
  "ink_allocator",
@@ -2138,13 +2168,13 @@ dependencies = [
 
 [[package]]
 name = "odra-core"
-version = "2.9.1"
+version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "265b34b792a366c8db44bbefe913156abf2fdcfa37ee40e80430da54e8d39546"
+checksum = "ddb0d4623369b00469e9701ac0a8193027164e3fa83aa65b473e3ee8fd28fbd1"
 dependencies = [
  "anyhow",
  "casper-event-standard",
- "casper-types",
+ "casper-types 6.1.0",
  "num-traits",
  "rand 0.9.4",
  "rand_chacha 0.9.0",
@@ -2154,9 +2184,9 @@ dependencies = [
 
 [[package]]
 name = "odra-macros"
-version = "2.9.1"
+version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a1e27f2fb07fd190b135ad37f13553b39a6a670c2eeabd505ad45b3d06f2454"
+checksum = "9ca7b5d12c3a2d8e4ddba5bd20a5dc247e1fa83b4d9bfbc9c2edf817b74766c1"
 dependencies = [
  "convert_case 0.6.0",
  "derive-try-from-ref",
@@ -2180,15 +2210,19 @@ dependencies = [
 
 [[package]]
 name = "odra-schema"
-version = "2.9.1"
+version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73f2c97085ba6997dca8f4b25a7eddf85d5e71ef4e18c2444dfd5e91d2efba1e"
+checksum = "b6e74f7c766c1e6928495dd4980ffba5a8f2e9c6cac95075cd64e68025144ed5"
 dependencies = [
+ "base64 0.22.1",
+ "blake2 0.10.6",
  "casper-contract-schema",
- "casper-types",
+ "casper-types 6.1.0",
  "convert_case 0.6.0",
+ "hex",
  "num-traits",
  "odra-core",
+ "serde",
 ]
 
 [[package]]
@@ -2742,7 +2776,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3275,7 +3309,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3846,7 +3880,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
