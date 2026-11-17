@@ -10,7 +10,11 @@ path (`packages/client`, `packages/gateway`, `tools/e2e/src/real-facilitator.ts`
 
 ## Prerequisites
 
-- **Node.js** 22 or newer (Node 20 reached end of life on 2026-04-30)
+- **Node.js** 22 or newer (Node 20 reached end of life on 2026-04-30). CI and
+  the release workflow build and test on Node 24. On Node 22, `pnpm test` can
+  fail a test file with "Unable to deserialize cloned data": Node 22's test
+  runner misreads test output that starts with a multi-byte character such as
+  an emoji. Run the tests again, or use Node 24.
 - **pnpm** 10.20.0 (`corepack enable` provisions the version pinned in
   `package.json`)
 - **Rust**, only for the smart contracts under [`contracts/`](contracts/): the
@@ -51,9 +55,11 @@ pnpm test                        # unit tests of every package that has them
 
 To try the payment flow end to end with your own testnet keys, follow
 [`examples/wrap-third-party`](examples/wrap-third-party/README.md). The demo
-scripts in `tools/e2e` (`demo`, `demo-real`, `agent`, `connect-demo`,
-`fund-token`) sign with the maintainers' operator keys, which are not in the
-repository, so they only run on a maintainer's machine.
+scripts in `tools/e2e` (`demo`, `demo-real`, `demo-real-wcspr`, `agent`,
+`connect-demo`) sign with the maintainers' operator keys by default, which are
+not in the repository, so they run on a maintainer's machine. `fund-token` and
+`wrap-wcspr` default to the operator key too, but sign with your own testnet
+key when you pass `--key /absolute/path/to/key.pem`.
 [`docs/testing-playbook.md`](docs/testing-playbook.md) lists what each check
 proves.
 
@@ -88,7 +94,8 @@ cargo test          # Odra unit tests in the mock VM (or: cargo odra test)
 Every pull request to `main` runs ([`.github/workflows`](.github/workflows)):
 
 - `pnpm install --frozen-lockfile`, `pnpm build`, the dashboard's
-  `next build`, `pnpm typecheck` and `pnpm test` on Node 22;
+  `next build`, `pnpm typecheck` and `pnpm test` on Node 24 (the release
+  workflow builds and tests on Node 24 too);
 - the Python client's unit tests;
 - `pnpm audit --prod --audit-level=high`;
 - `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test` and

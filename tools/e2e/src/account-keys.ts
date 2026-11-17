@@ -1,4 +1,4 @@
-import { isValueNotFound, RpcTransportError, type CasperRpc } from "./casper-rpc.js";
+import { isValueNotFound, RpcTransportError, type CasperRpc } from "@cascet/gateway";
 import { normalizeAccountHash } from "./facilitator-roles.js";
 
 /**

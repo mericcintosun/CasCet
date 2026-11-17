@@ -1,4 +1,5 @@
 import casperSdk from "casper-js-sdk";
+import { isPackageHash, normalizePackageHash } from "@cascet/core";
 
 /**
  * The CEP-3009 transfer authorization inside an x402 "exact" Casper payment
@@ -50,6 +51,24 @@ export function normalizeAccountAddress(value: string): string {
   const hex = normalizeHex(value);
   const prefixed = /^account-hash-([0-9a-f]{64})$/.exec(hex);
   return prefixed ? `00${prefixed[1]}` : hex;
+}
+
+/**
+ * The token an x402 v2 payment payload says it pays in: its `accepted.asset`,
+ * as a bare lower-case contract package hash. Undefined when the payload names
+ * no asset or something that is not a package hash. The token is part of the
+ * EIP-712 domain the buyer signed, so the gateway prices and checks the
+ * authorization in this asset before any facilitator sees it; x402 matching
+ * then holds the payload to exactly one of the tool's `accepts` entries.
+ */
+export function paymentAssetOf(paymentPayload: unknown): string | undefined {
+  if (typeof paymentPayload !== "object" || paymentPayload === null) return undefined;
+  const accepted = (paymentPayload as { accepted?: unknown }).accepted;
+  if (typeof accepted !== "object" || accepted === null) return undefined;
+  const asset = str((accepted as { asset?: unknown }).asset);
+  if (asset === undefined) return undefined;
+  const bare = normalizePackageHash(asset);
+  return isPackageHash(bare) ? bare : undefined;
 }
 
 /** Account hash (64 lowercase hex) of a Casper public key, or undefined when it is not a valid key. */

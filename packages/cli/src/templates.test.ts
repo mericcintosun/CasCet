@@ -4,6 +4,7 @@ import {
   cascetConfigSchema,
   DEFAULT_FACILITATOR_URL,
   DEFAULT_SELF_HOSTED_FACILITATOR_URL,
+  normalizePackageHash,
 } from "@cascet/core";
 import { CASCET_TESTNET_X402_TOKEN, initNextSteps, initTemplate, PAYTO_PLACEHOLDER } from "./init-template.js";
 import { facilitatorWarnings, formatConfigIssues, payToWarnings, wrapWarnings } from "./wrap-check.js";
@@ -26,7 +27,8 @@ describe("cascet init template (M01, M41, M03)", () => {
     assert.equal(cfg.payTo, ACCOUNT_HASH);
     assert.equal(cfg.network, "casper:casper-test");
     assert.equal(cfg.facilitator.url, DEFAULT_SELF_HOSTED_FACILITATOR_URL);
-    assert.equal(cfg.asset.packageHash, CASCET_TESTNET_X402_TOKEN);
+    assert.equal(cfg.asset.packageHash, normalizePackageHash(CASCET_TESTNET_X402_TOKEN), "stored as bare hex");
+    assert.equal(cfg.asset.authorization, "legacy-amount", "CasCet's token takes `amount`");
     assert.equal(cfg.asset.name, "CasCet X402 Token", "EIP-712 domain name of CasCet's token");
     assert.deepEqual(facilitatorWarnings(cfg), []);
   });
@@ -64,6 +66,23 @@ describe("facilitatorWarnings (M03)", () => {
       [],
     );
     assert.deepEqual(facilitatorWarnings({ ...base, facilitator: { url: "http://127.0.0.1:4501" } } as never), []);
+  });
+
+  it("checks each asset against its own facilitator", () => {
+    const cfg = cascetConfigSchema.parse({
+      ...initTemplate("demo"),
+      payTo: ACCOUNT_HASH,
+      asset: undefined,
+      assets: [
+        { id: "cascet", packageHash: CASCET_TESTNET_X402_TOKEN, name: "CasCet X402 Token", symbol: "WCSPR" },
+        { packageHash: `hash-${"ab".repeat(32)}`, name: "Other", symbol: "OTH", facilitator: "cloud" },
+      ],
+      facilitators: { cloud: { url: DEFAULT_FACILITATOR_URL } },
+    });
+    const warnings = facilitatorWarnings(cfg);
+    assert.equal(warnings.length, 2, warnings.join("\n"));
+    assert.match(warnings[0] ?? "", /^WARNING: facilitators\.cloud\.url is the hosted facilitator .*asset abab/);
+    assert.equal(warnings[1], "WARNING: the hosted facilitator needs a CSPR.cloud access token in facilitators.cloud.apiKey.");
   });
 });
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { cascetConfigSchema, normalizeOrigin } from "./config.js";
+import { cascetConfigSchema, normalizeOrigin, timeoutsSchema } from "./config.js";
 
 const base = {
   name: "test",
@@ -36,6 +36,19 @@ describe("gateway config defaults", () => {
     assert.equal(cfg.anchoring?.gasMotes, 2_500_000_000);
     assert.equal(cfg.anchoring?.chainName, undefined);
     assert.equal(cfg.anchoring?.maxConsecutiveFailures, 3);
+  });
+
+  it("refuses a timeout setTimeout cannot hold: Node would fire it after 1 ms", () => {
+    const longest = 2_147_483_647;
+    for (const field of ["facilitatorMs", "settleMs", "upstreamMs"]) {
+      for (const value of [longest + 1, 2_592_000_000, 9_999_999_999]) {
+        const result = timeoutsSchema.safeParse({ [field]: value });
+        assert.equal(result.success, false, `${field} ${value}`);
+        assert.deepEqual(result.error?.issues.map(issue => issue.path), [[field]]);
+      }
+      assert.equal(timeoutsSchema.safeParse({ [field]: longest }).success, true, field);
+    }
+    assert.match(JSON.stringify(parse({ timeouts: { settleMs: 2_592_000_000 } }).error?.issues), /"path":\["timeouts","settleMs"\]/);
   });
 
   it("accepts port 0 and rejects ports outside 0-65535", () => {

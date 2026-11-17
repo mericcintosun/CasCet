@@ -1,6 +1,7 @@
-import { after, before, describe, it } from "node:test";
+import { after, before, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
+import { RequestTimeoutError } from "@cascet/client";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -9,7 +10,7 @@ import { join } from "node:path";
 import {
   clientAllowedPayTo,
   createDataBuyer,
-  paymentGuard,
+  paymentLog,
   withAbortSignal,
   type BuyerContext,
   type FetchLike,
@@ -74,25 +75,11 @@ describe("clientAllowedPayTo", () => {
   });
 });
 
-describe("paymentGuard", () => {
-  const info = { amountRaw: "500000000", payTo: `00${"a".repeat(64)}`, network: "casper:casper-test" };
-
-  it("lets an allowed payment through and logs it", () => {
+describe("paymentLog", () => {
+  it("logs each signed payment", () => {
     const lines: string[] = [];
-    paymentGuard({ networks: ["casper:casper-test"], signal: new AbortController().signal, log: l => lines.push(l) })(info);
-    assert.equal(lines.length, 1);
-  });
-
-  it("vetoes a network that is not in CASCET_NETWORK", () => {
-    const guard = paymentGuard({ networks: ["casper:casper-test"], signal: new AbortController().signal, log: () => {} });
-    assert.throws(() => guard({ ...info, network: "casper:casper" }), /network casper:casper is not in CASCET_NETWORK/);
-  });
-
-  it("refuses to sign once the analysis is aborted", () => {
-    const ac = new AbortController();
-    const guard = paymentGuard({ networks: ["casper:casper-test"], signal: ac.signal, log: () => {} });
-    ac.abort();
-    assert.throws(() => guard(info), /aborted, not paying/);
+    paymentLog(l => lines.push(l))({ amountRaw: "500000000", payTo: `00${"a".repeat(64)}`, network: "casper:casper-test" });
+    assert.deepEqual(lines, [`💸 buying data: 500000000 raw → 00aaaaaaaa… on casper:casper-test`]);
   });
 });
 
@@ -234,6 +221,23 @@ describe("createDataBuyer with the real paying fetch", { timeout: 15_000 }, () =
     assertRefused(err, gateway);
   });
 
+  it("refuses a testnet 402 when CASCET_NETWORK lists mainnet only", async () => {
+    const { err, gateway } = await refusal({}, { CASCET_NETWORK: "casper:casper" });
+    assertRefused(err, gateway, /casper:casper-test/);
+  });
+
+  it("pays on the networks CASCET_NETWORK lists, mainnet included", async () => {
+    // The fake gateway answers the paid retry with another 402, so the purchase
+    // fails after paying; what matters is that the signed payment was sent.
+    const gateway = await startFakeGateway({ challenge: challenge({ network: "casper:casper" }) });
+    try {
+      await buyOnce(gateway, configFor(gateway.url, { CASCET_NETWORK: "casper:casper" }));
+      assert.deepEqual(gateway.requests, [{ paid: false }, { paid: true }]);
+    } finally {
+      await gateway.close();
+    }
+  });
+
   it("refuses a payee that is not allowlisted", async () => {
     const { err, gateway } = await refusal({ payTo: `00${"e".repeat(64)}` });
     assertRefused(err, gateway, /payTo .* is not allowlisted/);
@@ -263,6 +267,39 @@ describe("createDataBuyer with the real paying fetch", { timeout: 15_000 }, () =
   it("applies the analysis' reserved budget when it is tighter than CASCET_MAX_SESSION (L03)", async () => {
     const { err, gateway } = await refusal({}, {}, { maxSessionRaw: "400000000" });
     assertRefused(err, gateway, /would exceed (the )?session budget/);
+  });
+
+  it("gives each purchase CASCET_TIMEOUT_MS, not the client's 30 s default", async () => {
+    // A paid purchase cut off at 30 s would still settle, and its data would be thrown away. The
+    // deadlines of the paying fetch and of the MCP client run on mocked timers here.
+    const gateway = await startFakeGateway({ hang: true });
+    try {
+      const buyer = await createDataBuyer(configFor(gateway.url, { CASCET_TIMEOUT_MS: "120000" }), {
+        signal: new AbortController().signal,
+        log: () => {},
+      });
+      mock.timers.enable({ apis: ["setTimeout"] });
+      let settled = false;
+      const purchase = buyer
+        .callTool("get_cspr_market_data", {})
+        .then(
+          (): unknown => "bought",
+          (err: unknown) => err,
+        )
+        .finally(() => (settled = true));
+      await gateway.firstRequest;
+      mock.timers.tick(31_000);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(settled, false, "the purchase ended at 31 s, before CASCET_TIMEOUT_MS");
+      mock.timers.tick(89_000);
+      const err = await purchase;
+      assert.ok(err instanceof RequestTimeoutError, String(err));
+      assert.match(err.message, /timed out after 120000 ms/);
+      assert.deepEqual(gateway.requests, [{ paid: false }]);
+    } finally {
+      mock.timers.reset();
+      await gateway.close();
+    }
   });
 
   it("aborts an in-flight purchase when the analysis is aborted, and pays nothing", async () => {

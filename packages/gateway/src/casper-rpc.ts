@@ -1,7 +1,10 @@
+import { timeoutSignal } from "./facilitator.js";
+
 /**
- * Minimal Casper JSON-RPC client for the self-hosted facilitator.
+ * Minimal Casper JSON-RPC client, shared by the token probe and the self-hosted
+ * facilitator (tools/e2e).
  *
- * The facilitator has to tell two kinds of failure apart:
+ * Callers have to tell two kinds of failure apart:
  *  - the node ANSWERED with a JSON-RPC error (definitive: the transaction was
  *    rejected, a dictionary item does not exist, the hash is unknown, ...), and
  *  - we could not get an answer at all (timeout, network error, HTTP 5xx,
@@ -10,6 +13,8 @@
  * casper-js-sdk's RpcClient folds both into thrown errors and has no timeout,
  * so this client wraps `fetch` with a hard per-call timeout and two explicit
  * error classes. Transactions are still built and signed with casper-js-sdk.
+ * The timeout's timer keeps the event loop alive until the call ends, as the
+ * facilitator client's does (AbortSignal.timeout's is unref'd).
  */
 
 /** The node answered, and the answer is a JSON-RPC error object. */
@@ -45,7 +50,7 @@ export class RpcTransportError extends Error {
 }
 
 /** The subset of `fetch` this client needs (injectable for tests). */
-export type FetchLike = (
+export type RpcFetch = (
   url: string,
   init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal },
 ) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
@@ -63,7 +68,7 @@ export interface CasperRpc {
 export interface CasperRpcOptions {
   /** Hard timeout per call, including reading the body. Default 8000 ms. */
   timeoutMs?: number;
-  fetchImpl?: FetchLike;
+  fetchImpl?: RpcFetch;
 }
 
 /** JSON-RPC error code for "Query failed" (query_global_state & co). */
@@ -75,7 +80,7 @@ const errorText = (err: unknown): string => (err instanceof Error ? err.message 
 
 export function createCasperRpc(url: string, opts: CasperRpcOptions = {}): CasperRpc {
   const timeoutMs = opts.timeoutMs ?? 8_000;
-  const doFetch: FetchLike = opts.fetchImpl ?? ((u, init) => fetch(u, init));
+  const doFetch: RpcFetch = opts.fetchImpl ?? ((u, init) => fetch(u, init));
   let nextId = 1;
 
   return {
@@ -84,30 +89,34 @@ export function createCasperRpc(url: string, opts: CasperRpcOptions = {}): Caspe
       const id = nextId++;
       const limit = callOpts?.timeoutMs;
       const effectiveTimeoutMs = limit !== undefined && limit < timeoutMs ? Math.max(1, Math.floor(limit)) : timeoutMs;
-      const signal = AbortSignal.timeout(effectiveTimeoutMs);
+      const { signal, clear } = timeoutSignal(effectiveTimeoutMs);
       const isTimeout = (err: unknown) =>
         signal.aborted || (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError"));
 
-      let response: Awaited<ReturnType<FetchLike>>;
-      try {
-        response = await doFetch(url, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-          signal,
-        });
-      } catch (err) {
-        throw new RpcTransportError(method, isTimeout(err) ? "timeout" : "network", errorText(err));
-      }
-      if (!response.ok) {
-        throw new RpcTransportError(method, "http", `HTTP ${response.status}`, response.status);
-      }
-
       let text: string;
       try {
-        text = await response.text();
-      } catch (err) {
-        throw new RpcTransportError(method, isTimeout(err) ? "timeout" : "network", errorText(err));
+        let response: Awaited<ReturnType<RpcFetch>>;
+        try {
+          response = await doFetch(url, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+            signal,
+          });
+        } catch (err) {
+          throw new RpcTransportError(method, isTimeout(err) ? "timeout" : "network", errorText(err));
+        }
+        if (!response.ok) {
+          throw new RpcTransportError(method, "http", `HTTP ${response.status}`, response.status);
+        }
+        // The same signal bounds reading the body.
+        try {
+          text = await response.text();
+        } catch (err) {
+          throw new RpcTransportError(method, isTimeout(err) ? "timeout" : "network", errorText(err));
+        }
+      } finally {
+        clear();
       }
 
       let json: unknown;

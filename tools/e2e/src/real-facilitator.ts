@@ -1,78 +1,124 @@
 import { createServer, type Server } from "node:http";
+import { resolve } from "node:path";
 import express, { type NextFunction, type Request, type Response } from "express";
 // Default import on purpose: CodeQL's js/missing-rate-limiting model recognizes
 // invocations of the "express-rate-limit" module import as rate limiters.
 import rateLimit from "express-rate-limit";
 import type { Network } from "@x402/core/types";
-import { ExactCasperScheme } from "@make-software/casper-x402/exact/facilitator";
+import { createCasperRpc, TokenProbe } from "@cascet/gateway";
 import { AuthorizationLedger } from "./authorization-ledger.js";
-import { createCasperRpc } from "./casper-rpc.js";
-import { assertUsableToken, authorizationMatches, MIN_MAINNET_TOKEN_LENGTH } from "./facilitator-auth.js";
+import { verifyPaymentSignature } from "./authorization-signature.js";
+import { assertUsableToken, authorizationMatches, MIN_TOKEN_LENGTH } from "./facilitator-auth.js";
+import {
+  checkDomainString,
+  checkPaymentMotes,
+  describeAssetPolicy,
+  MIN_EVERY_STYLE_PAYMENT_MOTES,
+  planAssets,
+  resolveAssetPolicies,
+  type AssetPlan,
+  type FacilitatorAssetOptions,
+} from "./facilitator-assets.js";
 import {
   createFacilitatorCore,
   DEFAULT_MIN_SETTLE_WINDOW_SECONDS,
+  DEFAULT_PAYMENT_MOTES_BY_STYLE,
   DEFAULT_PREFLIGHT_DEADLINE_MS,
   logText,
-  normalizeAsset,
   normalizePayTo,
   parsePaymentRequest,
   Reason,
+  type AssetPolicy,
   type FacilitatorCore,
   type FacilitatorLogger,
+  type KnownTransaction,
   type ParsedPayment,
   type SettlementStatus,
 } from "./facilitator-core.js";
 import {
   DEFAULT_DAILY_GAS_CAP_MOTES,
-  DEFAULT_SETTLE_PAYMENT_MOTES,
+  DEFAULT_MAX_REQUESTS_PER_IP_PER_MINUTE,
+  DEFAULT_MAX_REQUESTS_PER_MINUTE,
   DEFAULT_SETTLE_WAIT_MS,
-  MAX_SETTLE_PAYMENT_MOTES,
-  MIN_SETTLE_PAYMENT_MOTES,
   NETWORKS,
   ownerAccountsFor,
 } from "./facilitator-env.js";
 import { checkRoleSeparation } from "./facilitator-roles.js";
+import { FacilitatorStateFile, loadFacilitatorState } from "./facilitator-state.js";
 import { accountsSignableBy } from "./account-keys.js";
 import { DailyGasBudget } from "./gas-budget.js";
 import { loadSecretKeyFile } from "./key-file.js";
 import { createCasperSettlementChain } from "./settlement.js";
-import { TokenStateReader } from "./token-state.js";
+
+export type { FacilitatorAssetOptions } from "./facilitator-assets.js";
+
+/** How long the token probe trusts a token's contract, ABI style, name and chain_name (migration design: 5 minutes). */
+export const TOKEN_STATE_CACHE_MS = 5 * 60_000;
 
 /**
- * Self-hosted REAL x402 facilitator for Casper.
+ * Self-hosted REAL x402 facilitator for Casper, for both authorization styles.
  *
  * Why this exists: in July 2026 the Casper x402 stack renamed the settle
  * runtime arg `amount` → `value` (CEP-3009, make-software/casper-x402
  * `3ee705ec`) and the hosted CSPR.cloud facilitator
  * (`https://x402-facilitator.cspr.cloud`) followed. CasCet's token is the
- * earlier reference build whose `transfer_with_authorization` expects `amount`,
- * so a hosted settle against it reverts `User error: 64658`
- * (Odra `ExecutionError::MissingArg`). This facilitator verifies with the
- * published `@make-software/casper-x402` 1.0.0 scheme and settles with its own
- * transaction builder (same `amount` argument), fee-sponsored by a Casper key.
+ * earlier reference build whose `transfer_with_authorization` expects `amount`
+ * (`legacy-amount`), so a hosted settle against it reverts `User error: 64658`
+ * (Odra `ExecutionError::MissingArg`). This facilitator settles it and CEP-3009
+ * tokens such as the official Wrapped CSPR (`cep3009-value`) side by side:
+ * one CasCet-owned transaction builder sends `amount` or `value` according to
+ * each token's on-chain ABI, fee-sponsored by a Casper key. Signatures are
+ * checked with @x402/casper's EIP-712 digest (both styles sign the same
+ * message), ed25519 ones as strictly as the tokens check them (verify_strict).
  *
  * SECURITY: the fee payer pays real CSPR gas for every settle it submits, and
  * a reverted deploy burns its whole gas limit. The server therefore:
  *   - binds to 127.0.0.1 by default; a non-loopback host requires the token;
  *   - requires a bearer token (constant-time compare) on /verify and /settle —
- *     always on mainnet, where it must be ≥ 32 characters;
- *   - rate-limits per client IP before authentication, and globally plus per
- *     payer on /verify and /settle (express-rate-limit);
+ *     always on mainnet and beyond loopback, where it must be ≥ 32 characters;
+ *   - rate-limits per client IP the requests without the token, before
+ *     authentication (behind a TLS proxy every client has one address, and
+ *     traffic without the token must not use up the gateway's budget), and
+ *     globally plus per payer on /verify and /settle (express-rate-limit); a
+ *     settle of an authorization it already submitted a transaction for passes
+ *     the limits after authentication (it only follows that transaction or is
+ *     answered as a duplicate with its hash), so the x402 `settlement_pending`
+ *     retry never loses the hash to a 429;
  *   - only settles to allowlisted payees and assets (required on mainnet);
- *   - refuses authorizations that expire too soon to be settled in time
- *     (default 20 s; casper-x402 alone accepts 6 s, less than one block);
+ *   - reads every allowlisted token's ABI, chain_name and name at start-up and
+ *     refuses to start when the chain contradicts the configured style or name,
+ *     or when the token's EIP-712 domain cannot be checked (no chain_name, or a
+ *     name neither on-chain nor pinned); every request reads them again
+ *     (cached) and refuses payments when the token's ABI no longer matches its
+ *     pinned style or its domain can no longer be checked;
+ *   - gives every asset its own gas limit (default per style: 4 CSPR for
+ *     `legacy-amount`, 2.5 CSPR for `cep3009-value`), never below the style's
+ *     measured consumption;
+ *   - refuses authorizations that are not valid yet, or that expire too soon
+ *     to be settled in time (default 20 s; casper-x402 alone accepts 6 s, less
+ *     than one block);
  *   - keeps an in-flight ledger of (network, asset, from, nonce) until the
- *     authorization can no longer execute, answering duplicates with 409;
+ *     authorization can no longer execute, answering duplicates with
+ *     `duplicate_nonce`; a settle retry of a payment whose earlier settle
+ *     answered "pending" follows that transaction instead of submitting again,
+ *     and no answer about an authorization with a transaction (a duplicate, a
+ *     shutdown, an internal error) leaves out its hash;
+ *   - saves every authorization it holds a transaction for to a state file
+ *     before broadcasting the transaction, and restores them at start-up, so a
+ *     restart never submits a second transaction for one of them (F11; required
+ *     on mainnet unless turned off explicitly; a corrupt file refuses the start);
  *   - checks on-chain, before submitting, that the nonce is unused, that the
  *     payer's balance covers the value plus everything already in flight, and
  *     that the EIP-712 domain name is the token's (required on mainnet; a
- *     testnet facilitator without it must pin the name);
+ *     testnet facilitator without it must pin the style and the name);
  *   - re-checks the validity window right before submitting and caps the
  *     transaction's TTL so it can never execute after validBefore;
  *   - caps sponsored gas per UTC day, reserving it only right before
  *     submission and counting the real on-chain cost when known;
  *   - answers "pending"/"unknown" with the transaction hash instead of a
  *     failure when RPC errors hide the outcome;
+ *   - answers every verdict about a payment with HTTP 200 and `isValid: false`
+ *     / `success: false`, as x402 facilitator clients expect;
  *   - refuses to start on mainnet when the fee-payer key is an owner account
  *     (the deployer always counts as one) or a seller account, or when it is
  *     an associated key of one of them (read on-chain at start-up).
@@ -88,7 +134,12 @@ export interface RealFacilitatorOptions {
   keyAlgo?: "ed25519" | "secp256k1";
   /** Casper node JSON-RPC URL. Defaults to the public node of the network. */
   rpcUrl?: string;
-  /** Gas limit (motes) per settle transaction. Defaults to 4 CSPR; at least 3 CSPR. */
+  /**
+   * Gas limit (motes) of a settle of every asset without its own
+   * (`assets[].paymentMotes`). Default per style: 4 CSPR for legacy-amount,
+   * 2.5 CSPR for cep3009-value. Never below the style's minimum (3 CSPR and
+   * 1.5 CSPR); without an asset allowlist, at least 3 CSPR.
+   */
   paymentMotes?: number;
   /** Interface to bind. Defaults to 127.0.0.1 (not remotely reachable). */
   host?: string;
@@ -96,7 +147,15 @@ export interface RealFacilitatorOptions {
   authToken?: string;
   /** Payees (serialized account-hash Keys "00…") this facilitator settles to. Required on mainnet. */
   allowedPayTo?: string[];
-  /** CEP-18 package hashes this facilitator settles. Required on mainnet. */
+  /**
+   * The assets this facilitator settles, with per-asset style, domain pins and
+   * gas limit. Required on mainnet (or `allowedAssets`).
+   */
+  assets?: FacilitatorAssetOptions[];
+  /**
+   * CEP-18 package hashes this facilitator settles, each with the default
+   * settings (shorthand for `assets`; set one or the other).
+   */
   allowedAssets?: string[];
   /**
    * Owner accounts (e.g. a new ReceiptRegistry owner); the fee payer must be none
@@ -109,8 +168,26 @@ export interface RealFacilitatorOptions {
   maxRequestsPerMinute?: number;
   /** Max /verify + /settle requests per payer per minute. Default 30. */
   maxRequestsPerPayerPerMinute?: number;
-  /** Max requests per client IP per minute on any route, before authentication. Default 600. */
+  /**
+   * Max requests per client IP per minute on any route, before authentication,
+   * counting only requests without the token (`authToken`): the gateway's are
+   * limited after authentication. Default 600. Without a token every request
+   * counts, and the limit cannot tell a settle retry of a known transaction
+   * from any other request: keep it above `maxRequestsPerMinute`, and raise it
+   * when one gateway sends a lot of traffic.
+   */
   maxRequestsPerIpPerMinute?: number;
+  /**
+   * State file (F11): every authorization this facilitator holds a settlement
+   * transaction for, saved before the transaction is broadcast and restored at
+   * start-up, so a restart never submits a second transaction for one of them
+   * (it would revert, the nonce being used, and burn its whole gas limit) and a
+   * retry still learns the hash. One file per facilitator, on persistent
+   * storage, in an existing directory. A corrupt or unreadable file refuses the
+   * start-up; a missing one is an empty state. Required on mainnet; `false`
+   * runs without one (memory only), with a warning.
+   */
+  stateFile?: string | false;
   /** Cap on sponsored gas (motes) per UTC day; settles get 503 past it. Default 500 CSPR. */
   dailyGasCapMotes?: bigint;
   /**
@@ -120,8 +197,10 @@ export interface RealFacilitatorOptions {
    */
   settleWaitMs?: number;
   /**
-   * On-chain nonce / balance / token-name checks before verifying and settling.
-   * Default true. Required on mainnet; turning it off elsewhere requires `tokenName`.
+   * On-chain ABI / nonce / balance / token-name checks at start-up, before
+   * verifying and before settling. Default true. Required on mainnet; turning it
+   * off elsewhere requires every asset's style and name to be pinned (`tokenName`
+   * without an asset allowlist).
    */
   preflight?: boolean;
   /**
@@ -129,12 +208,13 @@ export interface RealFacilitatorOptions {
    * 10 s; keep it below the gateway's verify timeout (timeouts.facilitatorMs, 15 s).
    */
   preflightDeadlineMs?: number;
-  /** Pinned EIP-712 domain version (`extra.version`) of the token. Default "1". */
+  /** Pinned EIP-712 domain version (`extra.version`) of every asset without its own. Default "1". */
   tokenVersion?: string;
   /**
-   * Pinned EIP-712 domain name (`extra.name`), e.g. "CasCet X402 Token". Checked
+   * Pinned EIP-712 domain name (`extra.name`), e.g. "CasCet X402 Token", of the
+   * single allowlisted asset (or of every asset without an allowlist). Checked
    * without RPC; with the preflight on, the on-chain name is checked as well.
-   * Required when the preflight is off.
+   * With several assets, pin names per asset (`assets[].name`).
    */
   tokenName?: string;
   /** Reject authorizations that stay valid longer than this. Default 3600 s. */
@@ -160,6 +240,11 @@ export interface RealFacilitatorHandle {
   network: Network;
   /** Bound port (useful with `port: 0`). */
   port: number;
+  /**
+   * How each allowlisted asset is settled (style, pinned name and version, gas
+   * limit), as resolved at start-up; undefined without an asset allowlist.
+   */
+  assets?: readonly AssetPolicy[];
 }
 
 const consoleLogger: FacilitatorLogger = {
@@ -189,7 +274,8 @@ export interface FacilitatorAppOptions {
  * Counts /verify and /settle requests whose core work is still running. A
  * settle may already have submitted a transaction: a shutdown waits for it
  * (see {@link closeGracefully}) instead of cutting the connection, which would
- * leave the gateway with an indeterminate outcome and lose the ledger entry.
+ * leave the gateway with an indeterminate outcome and, without a state file,
+ * lose the ledger entry.
  */
 export class InFlightRequests {
   private count = 0;
@@ -274,11 +360,20 @@ type RouteKind = "verify" | "settle" | "other";
 const routeKind = (req: Request): RouteKind =>
   req.path === "/verify" ? "verify" : req.path === "/settle" ? "settle" : "other";
 
-/**
- * Send a rejection in the shape the caller's x402 client parses for this route.
- * `settlementStatus` (settle only) defaults to not_submitted: everything that is
- * rejected before the core runs has submitted nothing.
- */
+/** What a /settle rejection says about the authorization's transaction. */
+interface SettleRejectionDetails {
+  /**
+   * `extra.settlementStatus`. Default not_submitted: a request rejected before
+   * the core runs submitted nothing, and its authorization has no transaction
+   * here (otherwise `transaction` is set).
+   */
+  settlementStatus?: SettlementStatus;
+  /** Hash of the transaction this facilitator already submitted for the authorization. */
+  transaction?: string;
+  payer?: string;
+}
+
+/** Send a rejection in the shape the caller's x402 client parses for this route. */
 function sendRejection(
   req: Request,
   res: Response,
@@ -286,7 +381,7 @@ function sendRejection(
   status: number,
   reason: string,
   message: string,
-  settlementStatus: SettlementStatus = "not_submitted",
+  settle: SettleRejectionDetails = {},
 ): void {
   const kind = routeKind(req);
   if (kind === "verify") {
@@ -296,9 +391,10 @@ function sendRejection(
       success: false,
       errorReason: reason,
       errorMessage: message,
-      transaction: "",
+      transaction: settle.transaction ?? "",
       network,
-      extra: { settlementStatus },
+      ...(settle.payer ? { payer: settle.payer } : {}),
+      extra: { settlementStatus: settle.settlementStatus ?? ("not_submitted" satisfies SettlementStatus) },
     });
   } else {
     res.status(status).json({ error: reason, message });
@@ -321,11 +417,23 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     sendRejection(req, res, network, 429, Reason.rateLimited, "too many requests; retry after the window resets");
   };
 
-  // 1) Per client IP, before anything else (also shields the token check).
+  // 1) Per client IP, before anything else, for requests without the token only.
+  // Behind a TLS proxy every client has the proxy's address: counting the
+  // gateway's requests there would let anyone without the token use up its
+  // budget. Its requests are limited after authentication instead. The price:
+  // the token is compared before this limit, so the limit does not slow down
+  // guesses, and the token's length is the defence against them (at least 32
+  // characters beyond loopback). Without a token configured every request counts, and
+  // this limit cannot tell a settle retry of a known transaction from any other
+  // request: keep it well above the limits after authentication (default 600
+  // against 300 a minute).
+  const carriesToken = (req: Request): boolean =>
+    opts.authToken !== undefined && authorizationMatches(req.get("authorization"), opts.authToken);
   app.use(
     rateLimit({
       windowMs: 60_000,
       limit: opts.maxRequestsPerIpPerMinute,
+      skip: carriesToken,
       standardHeaders: "draft-8",
       legacyHeaders: false,
       handler: onLimit,
@@ -350,11 +458,33 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     sendRejection(req, res, network, parsed.status, parsed.reason, parsed.message);
   };
 
+  /** The transaction the core already holds for this request's authorization (after parsePayment). */
+  const knownTransactionOf = (res: Response): KnownTransaction | undefined => {
+    const payment = res.locals["payment"] as ParsedPayment | undefined;
+    if (!payment) return undefined;
+    try {
+      return core.knownTransaction(payment);
+    } catch (err) {
+      logger.error(`known-transaction lookup failed: ${logText(err)}`);
+      return undefined;
+    }
+  };
+  /**
+   * A settle of an authorization that already has a transaction here can only
+   * follow that transaction or be answered as a duplicate with its hash: it
+   * never builds or submits anything. No limit may answer it "rate_limited,
+   * not submitted" instead, which would lose the hash: x402 resource servers
+   * retry `settlement_pending` once, at once, and keep only that answer.
+   */
+  const settlesKnownTransaction = (req: Request, res: Response): boolean =>
+    routeKind(req) === "settle" && knownTransactionOf(res) !== undefined;
+
   // 2) After authentication: all callers together, and per payer.
   const allCallersLimiter = rateLimit({
     windowMs: 60_000,
     limit: opts.maxRequestsPerMinute,
     keyGenerator: () => "all-callers",
+    skip: settlesKnownTransaction,
     standardHeaders: "draft-8",
     legacyHeaders: false,
     handler: onLimit,
@@ -363,6 +493,7 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     windowMs: 60_000,
     limit: opts.maxRequestsPerPayerPerMinute,
     keyGenerator: (_req, res) => `payer:${(res.locals["payment"] as ParsedPayment).authorization.from.toLowerCase()}`,
+    skip: settlesKnownTransaction,
     standardHeaders: "draft-8",
     legacyHeaders: false,
     handler: onLimit,
@@ -371,6 +502,7 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     windowMs: 60_000,
     limit: opts.maxSettlesPerMinute,
     keyGenerator: () => "settles",
+    skip: settlesKnownTransaction,
     standardHeaders: "draft-8",
     legacyHeaders: false,
     handler: onLimit,
@@ -387,6 +519,22 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
   const refuseWhenClosing = (req: Request, res: Response, next: NextFunction): void => {
     if (!inFlight.isClosing) return next();
     res.set("connection", "close");
+    const known = routeKind(req) === "settle" ? knownTransactionOf(res) : undefined;
+    if (known) {
+      // Not followed while shutting down, but never "not submitted": the hash lets the caller reconcile it.
+      const payer = (res.locals["payment"] as ParsedPayment).authorization.from.toLowerCase();
+      logger.warn(`settle while shutting down: answered with the known tx=${logText(known.txHash)} (${known.state})`);
+      sendRejection(
+        req,
+        res,
+        network,
+        503,
+        Reason.shuttingDown,
+        `the facilitator is shutting down; transaction ${known.txHash} was already submitted for this authorization: reconcile it by hash`,
+        { settlementStatus: "pending", transaction: known.txHash, payer },
+      );
+      return;
+    }
     sendRejection(req, res, network, 503, Reason.shuttingDown, "the facilitator is shutting down; retry later");
   };
 
@@ -400,7 +548,9 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     }
   });
 
-  app.post("/settle", refuseWhenClosing, requireToken, parsePayment, allCallersLimiter, perPayerLimiter, settleLimiter, async (_req, res) => {
+  // The shutdown check runs after authentication and parsing here, so a settle of
+  // an authorization that already has a transaction still learns its hash.
+  app.post("/settle", requireToken, parsePayment, refuseWhenClosing, allCallersLimiter, perPayerLimiter, settleLimiter, async (_req, res) => {
     inFlight.enter();
     try {
       const result = await core.settle(res.locals["payment"] as ParsedPayment);
@@ -427,15 +577,19 @@ export function createFacilitatorApp(core: FacilitatorCore, opts: FacilitatorApp
     }
     logger.error(`internal error on ${routeKind(req)}: ${logText(err)}`);
     if (routeKind(req) === "settle") {
-      // The core may already have submitted a transaction: never claim "not submitted".
+      // The core may already have submitted a transaction: never claim "not submitted",
+      // and hand back the hash when this facilitator holds one for the authorization.
+      const known = knownTransactionOf(res);
       sendRejection(
         req,
         res,
         network,
         500,
         Reason.unknown,
-        "internal facilitator error; the settlement outcome is unknown: reconcile by the authorization nonce",
-        "unknown",
+        known
+          ? `internal facilitator error; the settlement outcome is unknown: reconcile transaction ${known.txHash} by hash`
+          : "internal facilitator error; the settlement outcome is unknown: reconcile by the authorization nonce",
+        { settlementStatus: "unknown", ...(known ? { transaction: known.txHash } : {}) },
       );
       return;
     }
@@ -457,6 +611,39 @@ function listen(app: express.Express, port: number, host: string): Promise<Serve
   });
 }
 
+/**
+ * Start-up with a state file (F11): put the authorizations an earlier run
+ * holds transactions for back into the ledger, then save at once, which drops
+ * the expired ones and proves the file can be written before anything is
+ * settled. A corrupt, unreadable or unwritable file refuses the start-up: it
+ * may hold transactions that can still execute.
+ */
+async function openStateFile(stateFile: FacilitatorStateFile, ledger: AuthorizationLedger, network: Network, logger: FacilitatorLogger): Promise<void> {
+  let loaded: Awaited<ReturnType<typeof loadFacilitatorState>>;
+  try {
+    loaded = await loadFacilitatorState(stateFile.path, network);
+  } catch (err) {
+    throw new Error(`refusing to start: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!loaded.found) {
+    logger.warn(
+      `state file ${stateFile.path} does not exist yet: starting with an empty state ` +
+        "(expected on the first start; otherwise check CASCET_FACILITATOR_STATE_FILE)",
+    );
+  }
+  const restored = ledger.restore(loaded.records);
+  try {
+    await stateFile.save();
+  } catch (err) {
+    throw new Error(`refusing to start: cannot write the state file ${stateFile.path} (${logText(err)}); its directory must exist and be writable`);
+  }
+  const pending = ledger.persistedAuthorizations().filter(r => r.state === "submitted").length;
+  logger.info(
+    `state file ${stateFile.path}: ${restored} authorization(s) with a transaction restored` +
+      (pending > 0 ? `, ${pending} pending (a settle retry of the same payment follows its transaction)` : ""),
+  );
+}
+
 export async function startRealFacilitator(opts: RealFacilitatorOptions): Promise<RealFacilitatorHandle> {
   const network = (opts.network ?? "casper:casper-test") as Network;
   if (network !== "casper:casper" && network !== "casper:casper-test") {
@@ -470,23 +657,24 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
   // --- refuse unsafe configurations before touching the key ---
   assertUsableToken(opts.authToken, {
     required: mainnet || !isLoopbackHost(host),
-    minLength: mainnet ? MIN_MAINNET_TOKEN_LENGTH : 1,
+    minLength: mainnet || !isLoopbackHost(host) ? MIN_TOKEN_LENGTH : 1,
     label: mainnet ? "authToken (CASCET_FACILITATOR_TOKEN) on mainnet" : "authToken for a non-loopback host",
   });
   const allowedPayTo = opts.allowedPayTo?.map(normalizePayTo);
-  const allowedAssets = opts.allowedAssets?.map(normalizeAsset);
-  if (mainnet && (!allowedPayTo?.length || !allowedAssets?.length)) {
+  if (opts.assets && opts.allowedAssets) throw new Error("set either assets or allowedAssets, not both");
+  const assetSpecs: FacilitatorAssetOptions[] | undefined = opts.assets ?? opts.allowedAssets?.map(packageHash => ({ packageHash }));
+  if (mainnet && (!allowedPayTo?.length || !assetSpecs?.length)) {
     throw new Error("mainnet requires allowedPayTo and allowedAssets (CASCET_SELLER_ACCOUNT_HASH, CASCET_ALLOWED_ASSETS)");
   }
-  if (!allowedPayTo || !allowedAssets) {
+  if (!allowedPayTo || !assetSpecs) {
     logger.warn("no payTo/asset allowlist: any payee and token can be settled at the fee payer's expense (testnet only)");
   }
-  const paymentMotes = opts.paymentMotes ?? DEFAULT_SETTLE_PAYMENT_MOTES;
-  if (!Number.isSafeInteger(paymentMotes) || paymentMotes < MIN_SETTLE_PAYMENT_MOTES || paymentMotes > MAX_SETTLE_PAYMENT_MOTES) {
-    throw new Error(
-      `paymentMotes must be between ${MIN_SETTLE_PAYMENT_MOTES} and ${MAX_SETTLE_PAYMENT_MOTES}: ` +
-        "a settle consumes ~2.7 CSPR and a revert burns the whole limit",
-    );
+  if (opts.paymentMotes !== undefined) {
+    checkPaymentMotes(opts.paymentMotes, undefined, "paymentMotes");
+    if (!assetSpecs && opts.paymentMotes < MIN_EVERY_STYLE_PAYMENT_MOTES) {
+      // Without an asset allowlist, tokens of either style may come: the limit must suit both.
+      throw new Error(`paymentMotes must be at least ${MIN_EVERY_STYLE_PAYMENT_MOTES} without an asset allowlist`);
+    }
   }
   const maxValiditySeconds = opts.maxAuthorizationValiditySeconds ?? 3_600;
   const minSettleWindowSeconds = opts.minSettleWindowSeconds ?? DEFAULT_MIN_SETTLE_WINDOW_SECONDS;
@@ -494,9 +682,10 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     throw new Error(`minSettleWindowSeconds must be a whole number from 6 to ${maxValiditySeconds - 1}`);
   }
   const preflight = opts.preflight ?? true;
-  const tokenName = opts.tokenName?.trim();
-  if (tokenName !== undefined && (tokenName === "" || tokenName.length > 100 || /[\u0000-\u001f\u007f]/.test(tokenName))) {
-    throw new Error("tokenName must be 1 to 100 printable characters");
+  const tokenName = opts.tokenName !== undefined ? checkDomainString(opts.tokenName, "tokenName", 100) : undefined;
+  const tokenVersion = checkDomainString(opts.tokenVersion ?? "1", "tokenVersion", 20);
+  if (tokenName !== undefined && assetSpecs && assetSpecs.length > 1) {
+    throw new Error("tokenName pins the name of a single asset; with several assets, pin each one's name (assets[].name)");
   }
   if (!preflight && mainnet) {
     throw new Error(
@@ -504,14 +693,82 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
         "wrongly signed authorizations are submitted and burn the fee payer's gas",
     );
   }
-  if (!preflight && tokenName === undefined) {
+  if (!preflight && !assetSpecs && tokenName === undefined) {
     throw new Error("with the preflight off, set tokenName (CASCET_TOKEN_NAME) so the EIP-712 domain name is still checked");
+  }
+  // A restart must not forget the transactions this facilitator submitted
+  // (F11): a retried settle would submit a second one, which reverts (the
+  // nonce is used) and burns its whole gas limit.
+  if (opts.stateFile === undefined && mainnet) {
+    throw new Error(
+      "mainnet requires a state file (stateFile, CASCET_FACILITATOR_STATE_FILE): without one a restart forgets pending " +
+        "settlements, and a retried settle submits a second transaction that reverts and burns its gas. Set it to a file " +
+        "on persistent storage, or to none (stateFile: false) to run without one anyway",
+    );
+  }
+  if (typeof opts.stateFile === "string" && opts.stateFile.trim() === "") throw new Error("stateFile must be a path, or false");
+  const statePath = typeof opts.stateFile === "string" ? resolve(opts.stateFile) : undefined;
+  if (statePath === undefined) {
+    logger.warn(
+      mainnet
+        ? "RUNNING ON MAINNET WITHOUT A STATE FILE (CASCET_FACILITATOR_STATE_FILE=none): the transactions this facilitator " +
+            "submits are remembered in memory only. If it restarts while a settle is pending, a retried settle submits a " +
+            "second transaction, which reverts and burns its full gas limit, and the gateway never learns the first one's " +
+            "hash. Set CASCET_FACILITATOR_STATE_FILE to a file on persistent storage"
+        : "no state file (CASCET_FACILITATOR_STATE_FILE): submitted transactions are remembered in memory only; a restart " +
+            "while a settle is pending can submit a second transaction for it, which reverts and burns its gas " +
+            "(testnet only: mainnet requires a state file)",
+    );
+  }
+  const maxRequestsPerMinute = opts.maxRequestsPerMinute ?? DEFAULT_MAX_REQUESTS_PER_MINUTE;
+  const maxRequestsPerIpPerMinute = opts.maxRequestsPerIpPerMinute ?? DEFAULT_MAX_REQUESTS_PER_IP_PER_MINUTE;
+  if (!Number.isSafeInteger(maxRequestsPerIpPerMinute) || maxRequestsPerIpPerMinute < 1) {
+    throw new Error("maxRequestsPerIpPerMinute (CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE) must be a positive whole number");
+  }
+  // With a token, the gateway's requests skip the per-IP limit (createFacilitatorApp).
+  if (!opts.authToken && maxRequestsPerIpPerMinute <= maxRequestsPerMinute) {
+    logger.warn(
+      `the per-IP limit (${maxRequestsPerIpPerMinute} a minute, CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE) is not above ` +
+        `the ${maxRequestsPerMinute} /verify and /settle requests a minute allowed after authentication: it is checked first, ` +
+        "so a gateway's settle retry of a known transaction can be refused and lose its hash",
+    );
+  }
+  // Every allowlisted asset, checked before the key is loaded or the chain is read.
+  let plans: AssetPlan[] | undefined;
+  if (assetSpecs) {
+    const fromShorthand = !opts.assets;
+    plans = planAssets(
+      assetSpecs.map(spec => (tokenName !== undefined && spec.name === undefined ? { ...spec, name: tokenName } : spec)),
+      {
+        network,
+        preflight,
+        defaultVersion: tokenVersion,
+        ...(opts.paymentMotes !== undefined ? { defaultPaymentMotes: opts.paymentMotes } : {}),
+        label: (i, field) =>
+          fromShorthand
+            ? field === "packageHash"
+              ? `allowedAssets[${i}]`
+              : field === "name"
+                ? "tokenName"
+                : field === "paymentMotes"
+                  ? "paymentMotes"
+                  : `${field} of allowedAssets[${i}]`
+            : `assets[${i}].${field}`,
+      },
+    );
   }
   const preflightDeadlineMs = opts.preflightDeadlineMs ?? DEFAULT_PREFLIGHT_DEADLINE_MS;
   if (!Number.isSafeInteger(preflightDeadlineMs) || preflightDeadlineMs < 1_000 || preflightDeadlineMs > 60_000) {
     throw new Error("preflightDeadlineMs must be a whole number of milliseconds from 1000 to 60000");
   }
   const owners = ownerAccountsFor(network, opts.ownerAccountHashes ?? []);
+
+  // --- the ledger, with the transactions an earlier run left in the state file (F11) ---
+  const stateFile: FacilitatorStateFile | undefined = statePath
+    ? new FacilitatorStateFile({ path: statePath, network, snapshot: () => ledger.persistedAuthorizations(), log: logger })
+    : undefined;
+  const ledger: AuthorizationLedger = new AuthorizationLedger(stateFile ? { onChange: () => stateFile.schedule() } : {});
+  if (stateFile) await openStateFile(stateFile, ledger, network, logger);
 
   // --- fee payer and key-role separation (M07) ---
   const privateKey = loadSecretKeyFile(opts.keyPath, opts.keyAlgo ?? "ed25519", "fee-payer", m => logger.warn(m));
@@ -548,6 +805,34 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     }
   }
 
+  // --- assets: read each token's ABI, chain_name and name, pin how it is settled ---
+  // Both CasCet tokens are upgradable: a token's ABI, name and chain_name are
+  // re-read at least every TOKEN_STATE_CACHE_MS, so an upgrade that changes its
+  // style is refused within that time instead of reverting settles.
+  const probe = preflight ? new TokenProbe(rpc, { cacheTtlMs: TOKEN_STATE_CACHE_MS }) : undefined;
+  let assets: AssetPolicy[] | undefined;
+  if (plans) {
+    try {
+      assets = await resolveAssetPolicies(plans, { network, ...(probe ? { probe } : {}), warn: m => logger.warn(m) });
+    } catch (err) {
+      throw new Error(`refusing to start: ${logText(err)}`);
+    }
+    for (const policy of assets) logger.info(describeAssetPolicy(policy));
+  }
+  // Without an asset allowlist (testnet only), any token in the style its ABI shows.
+  const paymentMotesByStyle =
+    opts.paymentMotes !== undefined
+      ? { "legacy-amount": BigInt(opts.paymentMotes), "cep3009-value": BigInt(opts.paymentMotes) }
+      : DEFAULT_PAYMENT_MOTES_BY_STYLE;
+  const largestLimit = [...(assets ? assets.map(a => a.paymentMotes ?? 0n) : Object.values(paymentMotesByStyle))].reduce(
+    (max, motes) => (motes > max ? motes : max),
+    0n,
+  );
+  const dailyGasCapMotes = opts.dailyGasCapMotes ?? DEFAULT_DAILY_GAS_CAP_MOTES;
+  if (dailyGasCapMotes < largestLimit) {
+    throw new Error(`dailyGasCapMotes must be at least one settle (${largestLimit} motes, the largest gas limit)`);
+  }
+
   // --- wiring ---
   const chain = createCasperSettlementChain({
     rpc,
@@ -555,45 +840,29 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     chainName: NETWORKS[network].chainName,
     log: m => logger.warn(m),
   });
-  // casper-x402's scheme does the cryptographic verification; it never signs
-  // or submits here (settlement goes through `chain`).
-  const notUsed = async (): Promise<never> => {
-    throw new Error("settlement is handled by the CasCet settlement chain");
-  };
-  const scheme = new ExactCasperScheme(
-    {
-      getNetworkConfig: async n => ({ chainName: n.split(":").slice(1).join(":"), rpcUrl }),
-      getAddresses: () => [feePayer],
-      getPublicKeyHex: () => privateKey.publicKey.toHex(),
-      signTransaction: notUsed,
-      putTransaction: notUsed,
-      waitForTransaction: notUsed,
-    },
-    { limitedPaymentMotes: paymentMotes },
-  );
-  const ledger = new AuthorizationLedger();
-  const gas = new DailyGasBudget({ capMotes: opts.dailyGasCapMotes ?? DEFAULT_DAILY_GAS_CAP_MOTES });
-  if (!preflight) logger.warn("on-chain preflight disabled: replayed or unfunded authorizations are only caught by the in-memory ledger");
+  const gas = new DailyGasBudget({ capMotes: dailyGasCapMotes });
+  if (!preflight) logger.warn("on-chain preflight disabled: replayed or unfunded authorizations are only caught by this facilitator's ledger");
 
   const core = createFacilitatorCore(
     {
       network,
       ...(allowedPayTo ? { allowedPayTo } : {}),
-      ...(allowedAssets ? { allowedAssets } : {}),
-      tokenVersion: opts.tokenVersion ?? "1",
-      ...(tokenName !== undefined ? { tokenName } : {}),
-      paymentMotes: BigInt(paymentMotes),
+      ...(assets ? { assets } : { anyAsset: { ...(tokenName !== undefined ? { name: tokenName } : {}), version: tokenVersion } }),
+      paymentMotesByStyle,
       settleWaitMs,
       maxValiditySeconds,
       minSettleWindowSeconds,
       preflightDeadlineMs,
     },
     {
-      verifySignature: (payload, requirements) => scheme.verify(payload, requirements),
-      ...(preflight ? { tokenState: new TokenStateReader(rpc) } : {}),
+      // Both styles sign the same EIP-712 message: one check, no RPC.
+      verifySignature: async (payload, requirements) => verifyPaymentSignature(payload, requirements),
+      ...(probe ? { tokenState: probe } : {}),
       chain,
       ledger,
       gas,
+      // Each settlement is on disk before it is broadcast.
+      ...(stateFile ? { persist: () => stateFile.save() } : {}),
       log: logger,
       now: Date.now,
     },
@@ -604,15 +873,18 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
     network,
     ...(opts.authToken ? { authToken: opts.authToken } : {}),
     maxSettlesPerMinute: opts.maxSettlesPerMinute ?? 60,
-    maxRequestsPerMinute: opts.maxRequestsPerMinute ?? 300,
+    maxRequestsPerMinute,
     maxRequestsPerPayerPerMinute: opts.maxRequestsPerPayerPerMinute ?? 30,
-    maxRequestsPerIpPerMinute: opts.maxRequestsPerIpPerMinute ?? 600,
+    maxRequestsPerIpPerMinute,
     logger,
     inFlight,
   });
 
   const server = await listen(app, opts.port, host);
-  const sweeper = setInterval(() => ledger.sweep(), 60_000);
+  const sweeper = setInterval(() => {
+    ledger.sweep(); // a state file drops what expired at its next save
+    if (stateFile?.stale) stateFile.schedule(); // a failed save is retried at least every minute
+  }, 60_000);
   sweeper.unref();
 
   const address = server.address();
@@ -621,23 +893,34 @@ export async function startRealFacilitator(opts: RealFacilitatorOptions): Promis
 
   logger.info(
     `listening on http://${urlHost}:${port} (feePayer=${feePayer.slice(0, 12)}…, net=${network}, ` +
-      `auth=${opts.authToken ? "on" : "off"}, allowlist=${allowedPayTo && allowedAssets ? "on" : "off"}, ` +
-      `preflight=${preflight ? "on" : "off"}, gasLimit=${paymentMotes} motes)`,
+      `auth=${opts.authToken ? "on" : "off"}, allowlist=${allowedPayTo && assets ? "on" : "off"}, ` +
+      `preflight=${preflight ? "on" : "off"}, assets=${assets ? assets.length : "any"}, state=${stateFile ? "file" : "memory"})`,
   );
 
   // Longest a settle can run: its preflight, submission and polling (until
   // settleWaitMs after it started) plus one last RPC call.
   const drainTimeoutMs = settleWaitMs + preflightDeadlineMs + 2 * rpcTimeoutMs;
+  /** After the last request has answered: every outcome it observed goes to the state file. */
+  const saveFinalState = async (): Promise<void> => {
+    if (!stateFile) return;
+    try {
+      await stateFile.save();
+    } catch (err) {
+      logger.error(`could not save the state file ${stateFile.path} at shutdown: ${logText(err)}`);
+      throw err;
+    }
+  };
   let closing: Promise<void> | undefined;
   return {
     close: () => {
       clearInterval(sweeper);
-      closing ??= closeGracefully(server, inFlight, drainTimeoutMs, logger);
+      closing ??= closeGracefully(server, inFlight, drainTimeoutMs, logger).then(saveFinalState);
       return closing;
     },
     url: `http://${urlHost}:${port}`,
     feePayer,
     network,
     port,
+    ...(assets ? { assets } : {}),
   };
 }

@@ -3,9 +3,12 @@ import assert from "node:assert/strict";
 import {
   CONTRACT_PAYEE_REASON,
   DEFAULT_MAX_AUTHORIZATION_SECONDS,
+  MAX_TOKEN_NAME_LENGTH,
+  MAX_TOKEN_VERSION_LENGTH,
   normalizeAllowedPayTo,
   normalizeAssetHash,
   normalizeNetworks,
+  normalizePreferStyles,
   parseRawAmount,
   SpendPolicy,
   type SpendDecision,
@@ -97,6 +100,22 @@ describe("normalizeAllowedPayTo", () => {
 
   it("still rejects a public key with the account-hash hint", () => {
     assert.throws(() => normalizeAllowedPayTo(`01${CONTRACT}`), /public key.*account-hash/);
+  });
+});
+
+describe("normalizePreferStyles", () => {
+  it("keeps known styles in order, trimmed and de-duplicated", () => {
+    assert.equal(normalizePreferStyles(undefined), undefined);
+    assert.deepEqual(normalizePreferStyles([" cep3009-value", "legacy-amount", "cep3009-value"]), ["cep3009-value", "legacy-amount"]);
+    assert.deepEqual(normalizePreferStyles(["legacy-amount"]), ["legacy-amount"]);
+  });
+
+  it("rejects unknown styles and empty lists, naming the setting", () => {
+    assert.throws(() => normalizePreferStyles([]), /preferStyles must list at least one authorization style/);
+    for (const bad of ["permit2", "", "AMOUNT", "Cep3009-Value", 1, null]) {
+      assert.throws(() => normalizePreferStyles([bad]), /preferStyles: unknown authorization style/, JSON.stringify(bad));
+    }
+    assert.throws(() => normalizePreferStyles(["value"], "CASCET_PREFER_STYLES"), /^Error: CASCET_PREFER_STYLES: unknown authorization style "value"/);
   });
 });
 
@@ -225,5 +244,102 @@ describe("SpendPolicy.authorize", () => {
     refused(policy.authorize(requirements({ scheme: "upto" })), /unsupported payment scheme/);
     refused(policy.authorize(requirements({ payTo: "01" + "ab".repeat(33) })), /malformed payTo/);
     refused(policy.authorize(requirements({ asset: `hash-${ASSET_A}` })), /malformed asset/);
+  });
+
+  it("reports a known authorization style and refuses one it does not know", () => {
+    const policy = new SpendPolicy();
+    const extra = (authorizationStyle: unknown) => ({ extra: { name: "Wrapped CSPR", version: "1", authorizationStyle } });
+    for (const style of ["legacy-amount", "cep3009-value"]) {
+      const decision = policy.authorize(requirements(extra(style)));
+      assert.equal(decision.ok && decision.authorizationStyle, style);
+    }
+    const plain = policy.authorize(requirements());
+    assert.equal(plain.ok, true);
+    assert.equal("authorizationStyle" in plain, false, "no style advertised, none reported");
+    for (const style of ["permit2", "", "AMOUNT", 1, null]) {
+      refused(policy.authorize(requirements(extra(style))), /unknown authorization style/);
+    }
+    assert.deepEqual(policy.spentByAsset(), { [ASSET_A]: "300" }, "refusals reserve nothing");
+  });
+
+  it("refuses an option without a usable EIP-712 domain, naming the field and the problem", () => {
+    const policy = new SpendPolicy();
+    const NAME = "Wrapped CSPR";
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ version: "1" }, "extra.name is missing"],
+      [{ name: 42, version: "1" }, "extra.name must be a string; got 42"],
+      [{ name: null, version: "1" }, "extra.name must be a string; got null"],
+      [{ name: ["Wrapped CSPR"], version: "1" }, 'extra.name must be a string; got ["Wrapped CSPR"]'],
+      [{ name: "", version: "1" }, "extra.name is empty"],
+      [{ name: "Wrapped \ud800CSPR", version: "1" }, "extra.name contains lone UTF-16 surrogates, which have no UTF-8 form to sign over"],
+      [{ name: "x".repeat(101), version: "1" }, "extra.name is 101 characters long, above this client's 100-character limit"],
+      // UTF-16 code units, as the Python client counts them too: a character outside the BMP counts twice.
+      [{ name: "\u{1FA99}".repeat(51), version: "1" }, "extra.name is 102 characters long, above this client's 100-character limit"],
+      [{ name: NAME }, "extra.version is missing"],
+      [{ name: NAME, version: 1 }, "extra.version must be a string; got 1"],
+      [{ name: NAME, version: "" }, "extra.version is empty"],
+      [{ name: NAME, version: "\udc00" }, "extra.version contains lone UTF-16 surrogates, which have no UTF-8 form to sign over"],
+      [{ name: NAME, version: "1".repeat(21) }, "extra.version is 21 characters long, above this client's 20-character limit"],
+    ];
+    for (const [extra, reason] of cases) {
+      const decision = policy.authorize(requirements({ extra: { authorizationStyle: "cep3009-value", ...extra } }));
+      assert.deepEqual(decision, { ok: false, reason: `malformed EIP-712 domain: ${reason}` }, reason);
+    }
+    // No extra at all, or one that is not an object, names no domain either.
+    for (const extra of [undefined, null, NAME, [NAME, "1"]]) {
+      refused(policy.authorize(requirements({ extra })), /^malformed EIP-712 domain: extra\.name is missing$/);
+    }
+    assert.deepEqual(policy.spentByAsset(), {}, "refusals reserve nothing");
+  });
+
+  it("quotes what the gateway sent with control, separator and bidi characters escaped", () => {
+    const policy = new SpendPolicy();
+    const esc = (code: number): string => "\\" + "u" + code.toString(16).padStart(4, "0");
+    // A line separator, a right-to-left override, C1 NEL and CSI, and DEL: JSON.stringify leaves each raw.
+    const codes = [0x2028, 0x202e, 0x0085, 0x009b, 0x007f];
+    const hostile = `x${codes.map(code => String.fromCharCode(code)).join("")}[cascet] authorized 1 raw units`;
+    const expected = `x${codes.map(esc).join("")}[cascet] authorized 1 raw units`;
+    for (const [overrides, field] of [
+      [{ network: `casper:casper${hostile}` }, "network"],
+      [{ scheme: hostile }, "scheme"],
+      [{ payTo: hostile }, "payTo"],
+      [{ asset: hostile }, "asset"],
+      [{ extra: { name: "Wrapped CSPR", version: "1", authorizationStyle: hostile } }, "authorization style"],
+      [{ extra: { name: [hostile], version: "1" } }, "extra.name"],
+      [{ amount: hostile }, "price"],
+    ] as const) {
+      const decision = policy.check(requirements(overrides));
+      assert.equal(decision.ok, false, field);
+      if (decision.ok) continue;
+      assert.ok(decision.reason.includes(expected), `${field}: ${decision.reason}`);
+      for (const code of codes) assert.ok(!decision.reason.includes(String.fromCharCode(code)), `${field}: U+${code.toString(16)} is escaped`);
+    }
+  });
+
+  it("accepts any EIP-712 domain name and version within the bounds", () => {
+    assert.equal(MAX_TOKEN_NAME_LENGTH, 100);
+    assert.equal(MAX_TOKEN_VERSION_LENGTH, 20);
+    const policy = new SpendPolicy();
+    for (const extra of [
+      { name: "x".repeat(MAX_TOKEN_NAME_LENGTH), version: "1".repeat(MAX_TOKEN_VERSION_LENGTH) },
+      { name: "C", version: "1.0.0" },
+      // Non-ASCII, and a surrogate pair (one code point, two UTF-16 code units).
+      { name: "Jeton été \u{1FA99}", version: "2" },
+      { name: "\u{1FA99}".repeat(50), version: "1" },
+    ]) {
+      assert.equal(policy.check(requirements({ extra })).ok, true, JSON.stringify(extra));
+    }
+  });
+});
+
+describe("SpendPolicy.check", () => {
+  it("applies every rule, the session budget included, without reserving", () => {
+    const policy = new SpendPolicy({ allowedAssets: [ASSET_A], maxSessionRaw: "150" });
+    assert.equal(policy.check(requirements()).ok, true);
+    assert.equal(policy.check(requirements()).ok, true, "checking twice reserves nothing");
+    assert.deepEqual(policy.spentByAsset(), {});
+    refused(policy.check(requirements({ asset: ASSET_B })), /not allowlisted/);
+    assert.equal(policy.authorize(requirements()).ok, true);
+    refused(policy.check(requirements()), /would exceed the session budget 150/);
   });
 });

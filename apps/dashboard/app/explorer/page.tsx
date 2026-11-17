@@ -218,7 +218,7 @@ export default function ExplorerPage() {
                         <TableRow key={r.id}>
                           <TableCell className="font-medium">{r.tool}</TableCell>
                           <TableCell className="text-muted-foreground">{r.server}</TableCell>
-                          <TableCell className="whitespace-nowrap tabular-nums">{formatTokens(r.amountRaw, 9, r.assetSymbol)}</TableCell>
+                          <TableCell className="whitespace-nowrap tabular-nums">{formatTokens(r.amountRaw, 9, r.assetSymbol || "?")}</TableCell>
                           <TableCell className="font-mono text-xs text-muted-foreground" title={r.payer}>
                             {shortHex(r.payer, 8, 4)}
                           </TableCell>

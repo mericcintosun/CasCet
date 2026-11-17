@@ -50,10 +50,10 @@ describe("resolveConnectConfig", () => {
     assert.match(cfg.notices.join("\n"), /MAINNET payments enabled/);
   });
 
-  it("defaults to testnet, a 180 s deadline (paid calls settle on-chain) and ~/.cascet/tool-pins.json", () => {
+  it("defaults to testnet, a 200 s deadline (above a gateway's 185 s longest paid call) and ~/.cascet/tool-pins.json", () => {
     const cfg = resolveConnectConfig(inputs());
     assert.deepEqual(cfg.paying.networks, ["casper:casper-test"]);
-    assert.equal(DEFAULT_CONNECT_TIMEOUT_MS, 180_000);
+    assert.equal(DEFAULT_CONNECT_TIMEOUT_MS, 200_000);
     assert.equal(cfg.paying.timeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
     assert.equal(cfg.bridge.timeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
     assert.equal(cfg.bridge.toolPins.path, "/home/agent/.cascet/tool-pins.json");
@@ -91,6 +91,17 @@ describe("resolveConnectConfig", () => {
     assert.deepEqual(viaEnv.paying.budget, {});
   });
 
+  it("passes CASCET_PREFER_STYLES as an ordered, de-duplicated preference, and nothing when it is unset", () => {
+    const cfg = resolveConnectConfig(inputs({ CASCET_PREFER_STYLES: " cep3009-value, legacy-amount,cep3009-value " }));
+    assert.deepEqual(cfg.paying.preferStyles, ["cep3009-value", "legacy-amount"]);
+    assert.match(cfg.summary, /\| prefer cep3009-value > legacy-amount \|/);
+    for (const unset of [undefined, "", " , "]) {
+      const plain = resolveConnectConfig(inputs({ CASCET_PREFER_STYLES: unset }));
+      assert.equal("preferStyles" in plain.paying, false, JSON.stringify(unset));
+      assert.doesNotMatch(plain.summary, /prefer/);
+    }
+  });
+
   it("rejects malformed values and names the env var", () => {
     const cases: Array<[Record<string, string>, RegExp]> = [
       [{ CASCET_MAX_PER_CALL: "-1" }, /CASCET_MAX_PER_CALL must be a whole number/],
@@ -99,13 +110,18 @@ describe("resolveConnectConfig", () => {
       [{ CASCET_ALLOWED_PAYTO: "01" + "ab".repeat(32) }, /CASCET_ALLOWED_PAYTO: .*public key.*account-hash/],
       [
         { CASCET_ALLOWED_PAYTO: `${SELLER},hash-${"c3".repeat(32)}` },
-        /CASCET_ALLOWED_PAYTO: .*contract-package payee: contract-package payees cannot be settled by @make-software\/casper-x402 1\.0\.0 facilitators/,
+        /CASCET_ALLOWED_PAYTO: .*contract-package payee: contract-package payees are not paid: @make-software\/casper-x402 1\.0\.0 facilitators credit the payment to an account nobody controls/,
       ],
       [{ CASCET_ALLOWED_ASSETS: "hash-123" }, /CASCET_ALLOWED_ASSETS: invalid asset/],
       [{ CASCET_NETWORK: "casper:*" }, /CASCET_NETWORK: invalid network/],
       [{ CASCET_KEY_ALGO: "rsa" }, /CASCET_KEY_ALGO must be/],
       [{ CASCET_TIMEOUT_MS: "30s" }, /CASCET_TIMEOUT_MS must be a whole number/],
       [{ CASCET_KEY_PATH: "" }, /CASCET_KEY_PATH .* is required/],
+      [
+        { CASCET_PREFER_STYLES: "cep3009-value,permit2" },
+        /CliError: CASCET_PREFER_STYLES: unknown authorization style "permit2"; known styles: legacy-amount, cep3009-value$/,
+      ],
+      [{ CASCET_PREFER_STYLES: "CEP3009-VALUE" }, /CASCET_PREFER_STYLES: unknown authorization style "CEP3009-VALUE"/],
     ];
     for (const [env, pattern] of cases) assert.throws(() => resolveConnectConfig(inputs(env)), pattern, JSON.stringify(env));
   });

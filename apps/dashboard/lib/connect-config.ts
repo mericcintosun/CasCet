@@ -276,6 +276,25 @@ export function connectWarnings(s: ConnectSettings, gatewayIsLocal = false): Con
       message: "The per-call cap is larger than the session cap; the session cap binds first.",
     });
   }
+  // The CLI keeps one session budget per token, and once a token's budget is spent it pays in the next
+  // token the gateway offers: the cap bounds the total only when a single token is allowlisted.
+  if (s.maxSessionRaw && s.allowedAssets.length > 1) {
+    const n = s.allowedAssets.length;
+    out.push({
+      level: "warning",
+      field: "budget",
+      message:
+        `The session cap applies to each token on its own, as ${s.maxSessionRaw} raw units: with ${n} tokens allowlisted, one running ` +
+        "bridge can pay up to that in every one of them in a session, and for a token with fewer decimals it is more whole tokens. " +
+        "Allowlist one token to keep the total within the cap.",
+    });
+  } else if (s.maxSessionRaw && s.allowedAssets.length === 0 && s.allowAnySeller) {
+    out.push({
+      level: "warning",
+      field: "budget",
+      message: "The session cap applies to each token on its own, and without a token allowlist the bridge pays in any token: the cap bounds no total.",
+    });
+  }
   if (s.network === "mainnet") {
     out.push({
       level: "warning",

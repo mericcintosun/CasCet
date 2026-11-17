@@ -149,7 +149,7 @@ This is not a portable pattern dressed in Casper branding — it leans on things
 | `servers/casper-defi-data` | Flagship paid MCP: CSPR market data, RWA prices, DeFi yields (live + labeled fallback) |
 | `servers/portfolio-analyst` | Paid MCP that **buys** from the data server — the cascade in action |
 | `apps/dashboard` | Next.js + shadcn/ui live dashboard + x402 economy explorer (dark/light/system) |
-| `contracts` | Odra 2.8.2 (5): `ReceiptRegistry`, `RevenueSplit`, `CascadeController`, `PaymentChannel`, `DemoToken` (CEP-18), with tests |
+| `contracts` | Odra 2.9.1 (5): `ReceiptRegistry`, `RevenueSplit`, `CascadeController`, `PaymentChannel`, `DemoToken` (CEP-18), with tests |
 | `examples/wrap-third-party` | Wrapping the official `server-everything` MCP server as paid, on testnet, with your own keys |
 | `tools/e2e` | The self-hosted x402 facilitator, plus the end-to-end demos (real settlement on Casper testnet and mainnet) |
 | `registry` | MCP Registry listing for the `casper-defi-data` server (testnet) |
@@ -186,8 +186,10 @@ This is not a portable pattern dressed in Casper branding — it leans on things
 > [`docs/buidl-page.md`](docs/buidl-page.md) lists every contract package hash and
 > sample transaction with descriptions.
 
-Requirements: Node.js 22 or newer, pnpm 10 (`corepack enable` provisions the
-pinned version), and Rust + [`cargo-odra`](https://odra.dev) only for the contracts.
+Requirements: Node.js 22 or newer (CI uses 24; see
+[`CONTRIBUTING.md`](CONTRIBUTING.md#prerequisites) for a Node 22 caveat), pnpm 10
+(`corepack enable` provisions the pinned version), and Rust +
+[`cargo-odra`](https://odra.dev) only for the contracts.
 
 ### 1. Build and test (no keys, no chain)
 
@@ -220,16 +222,31 @@ it they stay empty.
 
 ### Maintainer demos
 
-The scripts in `tools/e2e` that move tokens (`fund-token`, `demo`, `demo-real`,
-`demo-real-mainnet`, `agent`, `connect-demo`) sign with the CasCet operator's
-keys in `contracts/keys/`, which are not part of the repository, so they only run
-on a maintainer's machine. They produced the transactions linked in this README.
+The demos in `tools/e2e` (`demo`, `demo-real`, `demo-real-wcspr`, `agent`,
+`connect-demo`) sign with the CasCet operator's keys in `contracts/keys/` by
+default, which are not part of the repository, so they run on a maintainer's
+machine. `demo-real-mainnet` does not read `contracts/keys/`: it takes the
+fee-payer and recorder keys from `CASCET_FACILITATOR_KEY` and
+`CASCET_RECORDER_KEY`, pays from `tools/e2e/keys/agent.pem`, and settles a real
+payment on mainnet (see [`docs/mainnet-readiness.md`](docs/mainnet-readiness.md)). These
+demos produced the transactions linked in this README. `fund-token` and
+`wrap-wcspr` also default to the operator key, but sign with your own testnet
+key when you pass `--key /absolute/path/to/key.pem`: that is how a buyer wraps
+testnet CSPR in the
+[Wrapped CSPR example](examples/wrap-third-party/README.md#variant-wrapped-cspr-through-the-hosted-facilitator).
 
 ```bash
 pnpm --filter @cascet/e2e gen-keys                                # throwaway testnet keys in tools/e2e/keys/
-pnpm --filter @cascet/e2e fund-token <analyst-account-hash> 300   # pays the analyst from the token treasury
+pnpm --filter @cascet/e2e fund-token cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3 \
+  <analyst-account-hash> 300 --send                               # pays the analyst from the token treasury
 pnpm --filter @cascet/e2e demo                                    # full cascade, real settlement on testnet, both hops
 ```
+
+`fund-token`, and `wrap-wcspr` (testnet CSPR into Wrapped CSPR), are dry runs
+unless you add `--send`, and refuse mainnet. The demos have no dry run:
+`demo-real-wcspr` signs and pays in Wrapped CSPR on testnet after its read-only
+checks, and `settle-report <tx-hash>…` (read-only) prints the measured gas of
+settles; see [Two token styles](#two-token-styles-legacy-amount-and-cep3009-value).
 
 You'll see an agent pay `$0.10` for `analyze_portfolio`, which autonomously spends `$0.07` buying four data tools underneath — every downstream payment linked to the root, asserted at the end. With `pnpm --filter @cascet/dashboard dev` running, the demo's gateways push their receipts to the dashboard live.
 
@@ -252,13 +269,24 @@ Then edit `cascet.config.json`:
 - `payTo`: the `00…` value printed by `account-hash`. It must be an account
   hash, never a public key: a public key (`01…` or `02…`) is rejected, because a
   payment to it would land in an account nobody controls. Do not point `payTo`
-  at a contract package (such as a `RevenueSplit`) yet: the settlement library,
-  `@make-software/casper-x402` 1.0.0, always settles to an account hash, so such
-  a payment would be lost.
+  at a contract package (such as a `RevenueSplit`) yet: CasCet's self-hosted
+  facilitator builds its own settlement in the token's style (`amount` or
+  `value`) and still settles to account hashes only, so it refuses such a
+  payment, and `@make-software/casper-x402` 1.0.0 facilitators settle it to an
+  account hash nobody controls, so it would be lost.
 - `asset`: a token your facilitator can settle (see the table below). On testnet
   that is CasCet's x402 token, `hash-cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3`
-  (name `CasCet X402 Token`, version `1`, 9 decimals).
-- `facilitator.url`: the facilitator that verifies and settles payments.
+  (name `CasCet X402 Token`, version `1`, 9 decimals), with the self-hosted
+  facilitator; or Wrapped CSPR, `hash-3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e`
+  (name `Wrapped CSPR`, version `1`, 9 decimals), with the hosted one.
+- `facilitator.url`: the facilitator that verifies and settles payments, and
+  `facilitator.apiKey` the credential it expects (for the hosted facilitator,
+  your CSPR.cloud access key, sent raw).
+- `settlement.nodeUrl`: a Casper node, which you need with the hosted
+  facilitator. The gateway reads it before each payment, because the hosted
+  facilitator's own nonce check does not work and it does not count a payer's
+  payments in flight. Without a node those payments pass its verify, the
+  run-then-settle tools run, and the settles revert unpaid.
 - `pricing.tools`: a price per tool. Add `"settleBeforeExecute": true` to tools
   that are expensive, have side effects, or buy from other paid tools
   (cascades): they then run only after the payment has settled on-chain. The
@@ -274,8 +302,8 @@ npx "@cascet/cli@^0.1.1" wrap   # your server is now paid; the gateway listens o
 
 | Facilitator | Settles | Use it with |
 | --- | --- | --- |
-| Self-hosted (`pnpm --filter @cascet/e2e facilitator`, in this repository) | tokens whose `transfer_with_authorization` takes `amount` (it is built on `@make-software/casper-x402` 1.0.0) | CasCet's x402 tokens: testnet `hash-cb65a928…`, mainnet `hash-8dd4f1aa…` |
-| Hosted CSPR.cloud (`x402-facilitator.cspr.cloud`) | only CEP-3009 tokens whose `transfer_with_authorization` takes `value`, such as the official Wrapped CSPR | not CasCet's x402 tokens; using it needs the planned move to the CEP-3009 `value` stack ([why](docs/onchain.md#why-cascet-runs-its-own-x402-facilitator)) |
+| Self-hosted (`pnpm --filter @cascet/e2e facilitator`, in this repository) | both styles, per token from its on-chain ABI: `amount` (`legacy-amount`) and CEP-3009 `value` (`cep3009-value`) | CasCet's x402 tokens (testnet `hash-cb65a928…`, mainnet `hash-8dd4f1aa…`) and CEP-3009 tokens such as testnet Wrapped CSPR (`hash-3d80df21…`), listed in `CASCET_ALLOWED_ASSETS` |
+| Hosted CSPR.cloud (`x402-facilitator.cspr.cloud`) | only `cep3009-value` tokens, whose `transfer_with_authorization` takes `value`, such as the official Wrapped CSPR | Wrapped CSPR: testnet `hash-3d80df21…` (see [`examples/wrap-third-party/cascet.wcspr.config.json`](examples/wrap-third-party/cascet.wcspr.config.json)); never CasCet's x402 tokens ([why](docs/onchain.md#why-cascet-runs-its-own-x402-facilitator)) |
 
 Start the self-hosted facilitator from a clone of this repository:
 
@@ -287,15 +315,80 @@ pnpm --filter @cascet/e2e facilitator   # testnet, http://127.0.0.1:4501
 
 The fee payer pays the gas of every settlement, so fund it with testnet CSPR from
 the [faucet](https://testnet.cspr.live/tools/faucet); buyers need no CSPR. The
-facilitator settles only payments to `CASCET_SELLER_ACCOUNT_HASH` in CasCet's x402
-token. `CASCET_SETTLE_PAYMENT_MOTES` sets the gas limit per settlement (default
-4 CSPR). For mainnet (`CASCET_NET=mainnet`) it also requires a bearer token in
+facilitator settles only payments to `CASCET_SELLER_ACCOUNT_HASH` in the tokens of
+`CASCET_ALLOWED_ASSETS` (default: CasCet's x402 token); at start-up it reads each
+token's ABI and pins the style it settles it with. `CASCET_SETTLE_PAYMENT_MOTES`
+sets the gas limit per settlement (default per style: 4 CSPR for `amount`
+tokens, 2.5 CSPR for `value` tokens). For mainnet (`CASCET_NET=mainnet`) it also
+requires a bearer token in
 `CASCET_FACILITATOR_TOKEN` of at least 32 characters (`openssl rand -hex 32`;
-put the same value into `facilitator.apiKey`), and it refuses to start when its
+put the same value into `facilitator.apiKey`) and a state file in
+`CASCET_FACILITATOR_STATE_FILE`, and it refuses to start when its
 fee-payer account is the owner account (`CASCET_OWNER_ACCOUNT_HASH`) or the
 seller account. Read [`SECURITY.md`](SECURITY.md) and
 [`docs/mainnet-readiness.md`](docs/mainnet-readiness.md) before you run anything
 with real funds.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CASCET_NETWORK` | `casper:casper-test` | `casper:casper` for mainnet (or the legacy `CASCET_NET=mainnet`) |
+| `CASCET_FACILITATOR_KEY` | testnet: the deployer key | PEM of the fee payer, which pays the gas of every settlement; required on mainnet |
+| `CASCET_FACILITATOR_TOKEN` | none | token the gateway sends as `facilitator.apiKey`; required, with at least 32 characters, on mainnet and on any non-loopback host |
+| `CASCET_SELLER_ACCOUNT_HASH` | testnet: the demo seller; mainnet: the deployer account | comma-separated `payTo` accounts it settles to |
+| `CASCET_OWNER_ACCOUNT_HASH` | none (mainnet: the deployer is always added) | owner accounts the fee payer must not be |
+| `CASCET_ALLOWED_ASSETS` | CasCet's x402 token | comma-separated token package hashes it settles |
+| `CASCET_SETTLE_PAYMENT_MOTES` | 4 CSPR (`amount` tokens), 2.5 CSPR (`value` tokens) | gas limit per settlement |
+| `CASCET_FACILITATOR_STATE_FILE` | none (testnet warns) | file that keeps every settlement the facilitator submitted across restarts, so a retried settle never submits a second transaction; required on mainnet (`none` runs without one, with a loud warning); one file per facilitator, on persistent storage, never shared |
+| `CASCET_FACILITATOR_MAX_REQUESTS_PER_IP_PER_MINUTE` | `600` | requests without the token one client IP may send a minute before authentication; with no token set every request counts, so raise it when one gateway sends a lot of traffic |
+| `CASCET_FACILITATOR_HOST` / `PORT` | `127.0.0.1` / `4501` | bind address and port |
+
+Every variable, with the mainnet rules and how to back up the state file, is in
+[`docs/mainnet-readiness.md`](docs/mainnet-readiness.md#3-facilitator-operations-mainnet).
+
+#### Two token styles: legacy-amount and cep3009-value
+
+Buyers sign the same EIP-712 `TransferWithAuthorization` message for both
+styles; only the name of the amount argument the facilitator passes to the
+token differs (`amount` or `value`). A facilitator that sends the wrong one
+makes the settlement revert with `User error: 64658`, which burns its whole gas
+limit. So:
+
+- Each `asset` has an authorization style. It is resolved from the package
+  hash (CasCet's x402 tokens are `legacy-amount`, every other token
+  `cep3009-value`) or set with `"authorization"`. The gateway advertises it in
+  every `accepts` entry as `extra.authorizationStyle`; no facilitator trusts
+  that field. The hosted facilitator always sends `value`; the self-hosted
+  facilitator reads each allowlisted token's ABI and sends `amount` or `value`
+  to match, and refuses at start-up a declared style the token's ABI
+  contradicts.
+- The config schema refuses a `legacy-amount` asset settled by the hosted
+  facilitator.
+- The hosted facilitator takes your CSPR.cloud access key **raw** in the
+  `Authorization` header, with no `Bearer ` prefix. Put it in
+  `facilitator.apiKey`; `facilitator.authScheme` is `"raw"` by default, and
+  `"bearer"` is refused for the hosted facilitator. Its `/supported` needs no key.
+- Give a gateway that uses the hosted facilitator a `settlement.nodeUrl`. Without
+  a node it only warns at start-up and skips its own checks (unused nonce, token
+  style and name, the payer's balance once payments in flight are counted), so
+  an unfunded payment runs its tool and its settle reverts.
+- **The hosted facilitator's testnet fee payer is underfunded.** On 2026-11-01
+  it held 2.145 CSPR, less than the 2.5 CSPR one settle needs (Casper's minimum
+  balance for the account that submits a transaction, and the hosted
+  facilitator's gas limit per settle), so every hosted settle on testnet fails
+  until MAKE refills it. Its mainnet fee payer is funded.
+- Testnet Wrapped CSPR (`hash-3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e`,
+  name `Wrapped CSPR`, version `1`, 9 decimals) is minted 1:1 for testnet CSPR
+  by its payable `deposit` entry point:
+  `pnpm --filter @cascet/e2e wrap-wcspr <cspr> --key /absolute/path/to/key.pem`
+  prints the plan and the expected gas, and wraps with `--send`.
+- `pnpm --filter @cascet/e2e settle-report <tx-hash>…` reads settle
+  transactions back (read-only) and prints consumed gas, refund and net cost,
+  with a gas limit suggested from the measurements (ceil(1.3 × max consumed)).
+  The self-hosted facilitator's limit for `legacy-amount` settles is 4 CSPR
+  (they consume about 2.7 CSPR, more than `@x402/casper`'s 2.5 CSPR default).
+
+[`docs/testing-playbook.md`](docs/testing-playbook.md#two-token-styles-on-testnet-cascet-x402-token-and-wrapped-cspr)
+walks through a Wrapped CSPR payment on testnet.
 
 ### Point an agent at it
 
@@ -322,8 +415,9 @@ to start without the allowlists and both budgets.
 | `CASCET_ALLOWED_ASSETS` | yes¹ | comma-separated token package hashes |
 | `CASCET_MAX_PER_CALL` | yes² | most raw token units one call may cost |
 | `CASCET_MAX_SESSION` | yes² | most raw token units the whole session may spend (tracked per token) |
-| `CASCET_TIMEOUT_MS` | no | deadline per paid call in milliseconds, settlement included (default `30000`) |
-| `CASCET_TOOL_PINS` | no | file where the bridge records each gateway's tools (default `~/.cascet/tool-pins.json`); `--accept-tool-changes` accepts a changed tool list after you have reviewed it |
+| `CASCET_PREFER_STYLES` | no | comma-separated authorization styles in order of preference (`cep3009-value`, `legacy-amount`) when a gateway offers several tokens; it only orders the options the allowlists and budgets accept |
+| `CASCET_TIMEOUT_MS` | no | deadline per paid call in milliseconds, settlement included (default `200000`) |
+| `CASCET_TOOL_PINS` | no | file where the bridge records each gateway's tools (default `~/.cascet/tool-pins.json`); a changed or new tool is quarantined until you review it and pass `--accept-tool-changes=<sha256>[,<sha256>…]` with the digests the warning prints, which pins only those definitions; a bare `--accept-tool-changes` is refused ([details](packages/cli/README.md)) |
 
 ¹ Unless `CASCET_ALLOW_ANY_SELLER=1` or `--allow-any-seller`, which lets any
 gateway name any payee and token. Not recommended.
@@ -359,7 +453,7 @@ and pick up whatever is published next.
 
 ## How it works
 
-**The x402 flow, per tool call.** MCP speaks JSON-RPC over one HTTP endpoint, so the gateway maps each priced tool to a synthetic x402 route. On `tools/call`, the gateway returns `402 Payment Required` with the price; the agent's wallet signs a CEP-18 `transfer_with_authorization` (EIP-712) and retries; the gateway verifies the authorization, runs the tool, and **only settles payment if the tool succeeds** (a failed call is never charged). Tools marked `settleBeforeExecute` settle first and run only once the payment is on-chain. Tools that are neither priced nor listed as free are hidden and rejected. Settlement uses a self-hosted x402 facilitator built on the official `@make-software/casper-x402` package — CasCet builds *on* the official rails, it does not reimplement verification.
+**The x402 flow, per tool call.** MCP speaks JSON-RPC over one HTTP endpoint, so the gateway maps each priced tool to a synthetic x402 route. On `tools/call`, the gateway returns `402 Payment Required` with the price; the agent's wallet signs a CEP-18 `transfer_with_authorization` (EIP-712) and retries; the gateway verifies the authorization, runs the tool, and **only settles payment if the tool succeeds** (a failed call is never charged). Tools marked `settleBeforeExecute` settle first and run only once the payment is on-chain. Tools that are neither priced nor listed as free are hidden and rejected. Settlement uses a self-hosted x402 facilitator: it checks each signature with the official `@x402/casper` EIP-712 digest and builds the `transfer_with_authorization` transaction itself, with the `amount` or `value` argument that the token's on-chain ABI takes.
 
 > **Real settlement, verified.** `pnpm --filter @cascet/e2e demo-real` (a maintainer
 > demo) settles a real `transfer_with_authorization` on-chain: the agent pays from
@@ -379,7 +473,7 @@ and pick up whatever is published next.
 Five Odra contracts (Rust), unit-tested against a real CEP-18 in Odra's mock VM (`cargo test` or `cargo odra test`):
 
 - **`ReceiptRegistry`** — anchors settled tool-call receipts on-chain, each carrying its cascade `parent_id`. Makes two things verifiable without trusting the gateway: that a call was paid, and how payments compose. Permissioned recorders, duplicate protection, events.
-- **`RevenueSplit`** — an OpenZeppelin-style PaymentSplitter for CEP-18: tokens sent to it are split between payees by fixed weights, pull-based, enforced on-chain. A seller forwards earnings to it with a CEP-18 transfer; pointing an x402 `payTo` straight at it needs a settlement stack that can pay contract packages, which `@make-software/casper-x402` 1.0.0 cannot.
+- **`RevenueSplit`** — an OpenZeppelin-style PaymentSplitter for CEP-18: tokens sent to it are split between payees by fixed weights, pull-based, enforced on-chain. A seller forwards earnings to it with a CEP-18 transfer; pointing an x402 `payTo` straight at it needs a settlement stack that can pay contract packages, which neither `@make-software/casper-x402` 1.0.0 nor CasCet's self-hosted facilitator offers yet.
 - **`CascadeController`** — the budget-bounded cascade primitive: one deposit caps a whole call tree (enforced on-chain), with recursive revenue attribution up the tree. A standalone primitive for now: proven on mainnet, not yet called by the gateway.
 - **`PaymentChannel`** — prepaid channels for high-frequency traffic: deposit once, authorize usage off-chain with signed vouchers, redeem/reclaim on-chain. Vouchers verified in-contract via Casper `verify_signature`.
 - **`DemoToken`** — CasCet's own CEP-18 token (WCSPR-style), used by the cascade and revenue-split demos. **`Cep18X402`**, the token x402 payments settle in, is *not* CasCet code: it is the reference `transfer_with_authorization` (EIP-3009) token from [make-software/casper-x402](https://github.com/make-software/casper-x402), which CasCet installed on testnet and on mainnet (as "CasCet X402 Token") so its facilitator can settle real x402 payments (see [`contracts/external/`](contracts/external/) and [`NOTICE`](NOTICE)).
@@ -491,7 +585,7 @@ This is a real project, not a hackathon throwaway — there's a live [roadmap se
 
 ## Tech
 
-TypeScript (Node 22+, pnpm workspaces), Next.js 15 + shadcn/ui, `@make-software/casper-x402` + `@x402/*`, `@modelcontextprotocol/sdk`, Python (paying client), Rust + Odra 2.8.2, Casper mainnet and testnet.
+TypeScript (Node 22+, pnpm workspaces), Next.js 15 + shadcn/ui, `@x402/core` + `@x402/casper` 2.29, `@modelcontextprotocol/sdk`, Python (paying client), Rust + Odra 2.9.1, Casper mainnet and testnet.
 
 ## License
 

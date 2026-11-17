@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { createCasperRpc, isNoSuchTransaction, isValueNotFound, RpcNodeError, RpcTransportError, type FetchLike } from "./casper-rpc.js";
-import * as fx from "./rpc-fixtures.js";
+import { createCasperRpc, isNoSuchTransaction, isValueNotFound, RpcNodeError, RpcTransportError, type RpcFetch } from "./casper-rpc.js";
+import * as fx from "./testing/rpc-fixtures.js";
+import { hangingFetch } from "./testing/rpc-replay.js";
 
-const respond = (status: number, body: string): FetchLike => async () => ({ ok: status >= 200 && status < 300, status, text: async () => body });
+const respond = (status: number, body: string): RpcFetch => async () => ({ ok: status >= 200 && status < 300, status, text: async () => body });
 
 describe("casper-rpc error classification", () => {
   test("returns the result of a successful call", async () => {
@@ -35,19 +36,13 @@ describe("casper-rpc error classification", () => {
   });
 
   test("HTTP errors, bad bodies, network failures and timeouts are RpcTransportErrors", async () => {
-    const cases: Array<[FetchLike, string]> = [
+    const cases: Array<[RpcFetch, string]> = [
       [respond(503, "busy"), "http"],
       [respond(200, "<html>"), "invalid-response"],
       [respond(200, "42"), "invalid-response"],
       [respond(200, JSON.stringify({ jsonrpc: "2.0", id: 1 })), "invalid-response"],
       [async () => Promise.reject(new TypeError("fetch failed")), "network"],
-      [
-        (_url, init) =>
-          new Promise((_resolve, reject) => {
-            init.signal.addEventListener("abort", () => reject(init.signal.reason));
-          }),
-        "timeout",
-      ],
+      [hangingFetch(), "timeout"],
     ];
     for (const [fetchImpl, kind] of cases) {
       const rpc = createCasperRpc("http://rpc.invalid", { fetchImpl, timeoutMs: 20 });
@@ -57,11 +52,27 @@ describe("casper-rpc error classification", () => {
     }
   });
 
+  test("its timeout keeps the event loop alive until the call ends, and not after", async () => {
+    // AbortSignal.timeout() is unref'd: with a node that never answers and nothing else pending (no socket, as with
+    // an injected fetch), a short-lived process or the test runner could end before the call fails.
+    const timers = () => process.getActiveResourcesInfo().filter(type => type === "Timeout").length;
+    const never: RpcFetch = (_url, init) =>
+      new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason as Error), { once: true }));
+    const before = timers();
+    const pending = createCasperRpc("http://rpc.invalid", { fetchImpl: never, timeoutMs: 30 }).call("query_global_state", {});
+    assert.equal(timers(), before + 1, "a call in flight holds a timer that keeps the event loop alive");
+    const err = await pending.catch(e => e);
+    assert.ok(err instanceof RpcTransportError && err.kind === "timeout", String(err));
+    assert.equal(timers(), before);
+    const answered = createCasperRpc("http://rpc.invalid", { fetchImpl: respond(200, JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} })) });
+    assert.deepEqual(await answered.call("query_global_state", {}), {});
+    const failed = createCasperRpc("http://rpc.invalid", { fetchImpl: respond(503, "down") });
+    await assert.rejects(failed.call("query_global_state", {}), RpcTransportError);
+    assert.equal(timers(), before, "an answered call leaves no timer behind");
+  });
+
   test("a per-call timeout can only shorten the client's timeout", async () => {
-    const hang: FetchLike = (_url, init) =>
-      new Promise((_resolve, reject) => {
-        init.signal.addEventListener("abort", () => reject(init.signal.reason));
-      });
+    const hang = hangingFetch();
     const rpc = createCasperRpc("http://rpc.invalid", { fetchImpl: hang, timeoutMs: 5_000 });
     const started = Date.now();
     const err = await rpc.call("query_global_state", {}, { timeoutMs: 30 }).catch(e => e);

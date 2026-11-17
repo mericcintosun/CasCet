@@ -28,6 +28,8 @@ export interface FacilitatorCall {
 export interface FakeFacilitator {
   url: string;
   calls: FacilitatorCall[];
+  /** Override to change what /supported answers. */
+  onSupported: (call: FacilitatorCall) => Reply | Promise<Reply>;
   /** Override to change what /verify answers. */
   onVerify: (call: FacilitatorCall) => Reply | Promise<Reply>;
   /** Override to change what /settle answers. */
@@ -40,21 +42,26 @@ export const SETTLE_TX = "ab".repeat(32);
 
 /**
  * A local x402 facilitator stand-in: GET /supported, POST /verify, POST /settle.
- * Records every call (and appends "verify"/"settle" to `events` for ordering checks).
+ * Records every call (and appends "verify"/"settle", prefixed with "<label>:"
+ * when a label is given, to `events` for ordering checks).
  */
-export async function startFakeFacilitator(opts: { network?: string; events?: string[] } = {}): Promise<FakeFacilitator> {
+export async function startFakeFacilitator(
+  opts: { network?: string; events?: string[]; label?: string; settleTx?: string } = {},
+): Promise<FakeFacilitator> {
   const network = opts.network ?? "casper:casper-test";
+  const settleTx = opts.settleTx ?? SETTLE_TX;
   const calls: FacilitatorCall[] = [];
   const sockets = new Set<Socket>();
 
   const fake: FakeFacilitator = {
     url: "",
     calls,
+    onSupported: () => ({ json: { kinds: [{ x402Version: 2, scheme: "exact", network }], extensions: [], signers: {} } }),
     onVerify: call => ({ json: { isValid: true, payer: call.body?.paymentPayload?.payload?.authorization?.from } }),
     onSettle: call => ({
       json: {
         success: true,
-        transaction: SETTLE_TX,
+        transaction: settleTx,
         network,
         payer: call.body?.paymentPayload?.payload?.authorization?.from,
       },
@@ -85,13 +92,9 @@ export async function startFakeFacilitator(opts: { network?: string; events?: st
         }
         const call: FacilitatorCall = { op, at: Date.now(), body, authorization: req.headers.authorization };
         calls.push(call);
-        if (op !== "supported") opts.events?.push(op);
+        if (op !== "supported") opts.events?.push(opts.label ? `${opts.label}:${op}` : op);
         const reply: Reply =
-          op === "supported"
-            ? { json: { kinds: [{ x402Version: 2, scheme: "exact", network }], extensions: [], signers: {} } }
-            : op === "verify"
-              ? await fake.onVerify(call)
-              : await fake.onSettle(call);
+          op === "supported" ? await fake.onSupported(call) : op === "verify" ? await fake.onVerify(call) : await fake.onSettle(call);
         if (reply.hang) return;
         if (reply.delayMs) await new Promise(resolve => setTimeout(resolve, reply.delayMs));
         if (res.destroyed) return;

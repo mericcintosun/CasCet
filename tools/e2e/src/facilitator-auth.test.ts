@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, mock, test } from "node:test";
 import crypto from "node:crypto";
-import { assertUsableToken, authorizationMatches, MIN_MAINNET_TOKEN_LENGTH } from "./facilitator-auth.js";
+import { assertUsableToken, authorizationMatches, MIN_TOKEN_LENGTH } from "./facilitator-auth.js";
 
 const TOKEN = "3f1c9a7e5b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d2f4a";
 
@@ -41,7 +41,7 @@ describe("facilitator bearer token (CodeQL js/user-controlled-bypass)", () => {
   });
 
   test("token rules: required on mainnet, minimum length, no whitespace", () => {
-    const mainnet = { required: true, minLength: MIN_MAINNET_TOKEN_LENGTH, label: "token" };
+    const mainnet = { required: true, minLength: MIN_TOKEN_LENGTH, label: "token" };
     assert.throws(() => assertUsableToken(undefined, mainnet), /required/);
     assert.throws(() => assertUsableToken("short", mainnet), /at least 32/);
     assert.throws(() => assertUsableToken(`${TOKEN} x`, mainnet), /whitespace/);

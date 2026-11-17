@@ -1,11 +1,27 @@
 export {
+  buildSpendControls,
+  CASCET_SPEND_CONTROLS,
   createPayingFetch,
+  createPaymentClient,
+  optionAuthorizationStyle,
   PaymentRefusedError,
+  preferStylesPolicy,
+  refusalReason,
+  spendPolicyFilter,
   type FetchLike,
   type PayingFetch,
   type PayingFetchOptions,
+  type PaymentClientOptions,
   type PaymentInfo,
 } from "./paying-fetch.js";
+export {
+  clientSignerFromPem,
+  createCasperClientScheme,
+  loadClientSigner,
+  SIGNING_REFUSED_PREFIX,
+  type CasperClientSchemeOptions,
+  type CasperKeyAlgorithm,
+} from "./casper-scheme.js";
 export {
   PaidMcpHttpClient,
   type McpCallOptions,
@@ -17,9 +33,12 @@ export { runBridge, type BridgeOptions } from "./bridge.js";
 export {
   CONTRACT_PAYEE_REASON,
   DEFAULT_MAX_AUTHORIZATION_SECONDS,
+  MAX_TOKEN_NAME_LENGTH,
+  MAX_TOKEN_VERSION_LENGTH,
   normalizeAllowedPayTo,
   normalizeAssetHash,
   normalizeNetworks,
+  normalizePreferStyles,
   parseRawAmount,
   RAW_AMOUNT_PATTERN,
   SpendPolicy,

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { SettleError, VerifyError, type PaymentPayload, type PaymentRequirements } from "@x402/core/types";
-import { classifySettleFailure, SettlementIndeterminateError, TimeoutFacilitatorClient } from "./facilitator.js";
+import { classifySettleFailure, SettlementIndeterminateError, TimeoutFacilitatorClient, withoutTrailingSlashes } from "./facilitator.js";
 
 const requirements: PaymentRequirements = {
   scheme: "exact",
@@ -118,6 +118,21 @@ describe("TimeoutFacilitatorClient.getSupported", () => {
     assert.deepEqual(supported.extensions, []);
     await assert.rejects(client(respond(200, JSON.stringify({}))).getSupported(), /invalid answer/);
     await assert.rejects(client(hanging).getSupported(), /timed out/);
+  });
+});
+
+describe("withoutTrailingSlashes", () => {
+  it("drops only the trailing slashes, in linear time", () => {
+    assert.equal(withoutTrailingSlashes("https://x402-facilitator.cspr.cloud///"), "https://x402-facilitator.cspr.cloud");
+    assert.equal(withoutTrailingSlashes("http://127.0.0.1:4501/v1/"), "http://127.0.0.1:4501/v1");
+    assert.equal(withoutTrailingSlashes("http://127.0.0.1:4501"), "http://127.0.0.1:4501");
+    assert.equal(withoutTrailingSlashes("///"), "");
+    // A long run of slashes that does not end the string made /\/+$/ backtrack quadratically.
+    const slashes = "/".repeat(200_000);
+    const started = performance.now();
+    assert.equal(withoutTrailingSlashes(`${slashes}x`), `${slashes}x`);
+    assert.equal(withoutTrailingSlashes(`x${slashes}`), "x");
+    assert.ok(performance.now() - started < 200);
   });
 });
 

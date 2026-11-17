@@ -7,6 +7,7 @@ import {
   normalizeAllowedPayTo,
   normalizeAssetHash,
   normalizeNetworks,
+  normalizePreferStyles,
   parseRawAmount,
   type BridgeOptions,
   type PayingFetchOptions,
@@ -41,12 +42,14 @@ export const CONNECT_USAGE =
 /**
  * Default deadline of `cascet connect` per forwarded call (CASCET_TIMEOUT_MS).
  * Longer than the library's 30 s on purpose: a paid tools/call includes the
- * on-chain settlement (the facilitator may wait up to 60 s for the transfer,
- * and a gateway may spend 60 s on the tool plus 90 s on settling), and a
- * deadline that fires after the payment was sent leaves the call paid but
- * unanswered.
+ * on-chain settlement, and a deadline that fires after the payment was sent
+ * leaves the call paid but unanswered. With its default timeouts a gateway
+ * answers a paid call within 185 s (longestPaidCallMs: 5 s hosted preflight,
+ * 15 s verify, 60 s tool, 90 s settle, 15 s on-chain check), or 190 s when one
+ * of its tools settles before it runs (plus the upstream ping before that
+ * settlement, at most 5 s); this leaves at least 10 s for the network.
  */
-export const DEFAULT_CONNECT_TIMEOUT_MS = 180_000;
+export const DEFAULT_CONNECT_TIMEOUT_MS = 200_000;
 
 /**
  * Resolve `cascet connect` settings. Spending controls are mandatory: the payee
@@ -109,6 +112,10 @@ export function resolveConnectConfig(input: ConnectInputs): ConnectConfig {
   if (maxPerCallRaw !== undefined) parseRawAmount(maxPerCallRaw, "CASCET_MAX_PER_CALL");
   if (maxSessionRaw !== undefined) parseRawAmount(maxSessionRaw, "CASCET_MAX_SESSION");
 
+  // Optional order of preference between authorization styles when a gateway offers several
+  // tokens; it only orders the options the allowlists and budgets accept.
+  const preferStyles = asCliError(() => normalizePreferStyles(list(env.CASCET_PREFER_STYLES), "CASCET_PREFER_STYLES"));
+
   const timeoutMs = parseTimeout(env.CASCET_TIMEOUT_MS);
   const acceptDigests = parseAcceptDigests(flags);
   const pinsSetting = value(env.CASCET_TOOL_PINS);
@@ -143,6 +150,7 @@ export function resolveConnectConfig(input: ConnectInputs): ConnectConfig {
     networks,
     ...(allowedPayTo ? { allowedPayTo } : {}),
     ...(allowedAssets ? { allowedAssets } : {}),
+    ...(preferStyles ? { preferStyles } : {}),
     budget: {
       ...(maxPerCallRaw !== undefined ? { maxPerCallRaw } : {}),
       ...(maxSessionRaw !== undefined ? { maxSessionRaw } : {}),
@@ -152,6 +160,7 @@ export function resolveConnectConfig(input: ConnectInputs): ConnectConfig {
   const summary =
     `[cascet] bridge up → ${url} | key ${keyPath} | networks ${networks.join(", ")} | ` +
     `payTo ${allowedPayTo ? `${allowedPayTo.length} allowlisted` : "ANY"} | assets ${allowedAssets ? `${allowedAssets.length} allowlisted` : "ANY"} | ` +
+    (preferStyles ? `prefer ${preferStyles.join(" > ")} | ` : "") +
     `budget per-call=${maxPerCallRaw ?? "unlimited"}, session=${maxSessionRaw ?? "unlimited"} (per asset) | ` +
     `timeout ${timeoutMs} ms | tool pins ${pinsPath}` +
     (acceptDigests.length > 0 ? ` (accepting ${acceptDigests.length} reviewed definition(s))` : "");
@@ -204,10 +213,14 @@ export function checkGatewayUrl(raw: string): string {
 }
 
 function attribute<T>(name: string, run: () => T): T {
+  return asCliError(run, `${name}: `);
+}
+
+function asCliError<T>(run: () => T, prefix = ""): T {
   try {
     return run();
   } catch (err) {
-    throw new CliError(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+    throw new CliError(`${prefix}${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -216,7 +229,7 @@ function parseTimeout(raw: string | undefined): number {
   if (text === undefined) return DEFAULT_CONNECT_TIMEOUT_MS;
   const ms = /^[0-9]{1,10}$/.test(text) ? Number(text) : Number.NaN;
   if (!Number.isSafeInteger(ms) || ms <= 0 || ms > 2_147_483_647) {
-    throw new CliError(`CASCET_TIMEOUT_MS must be a whole number of milliseconds (e.g. 180000); got "${text}"`);
+    throw new CliError(`CASCET_TIMEOUT_MS must be a whole number of milliseconds (e.g. 200000); got "${text}"`);
   }
   return ms;
 }

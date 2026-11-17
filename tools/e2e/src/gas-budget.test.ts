@@ -60,4 +60,36 @@ describe("daily sponsored-gas cap (M08)", () => {
     assert.throws(() => new DailyGasBudget({ capMotes: 0n }));
     assert.throws(() => new DailyGasBudget({ capMotes: CSPR }).tryReserve(0n));
   });
+
+  test("assets reserve their own limits: legacy-amount 4 CSPR and cep3009-value 3.5 CSPR share one cap", () => {
+    const gas = new DailyGasBudget({ capMotes: 7_500_000_000n, now: () => noonUtc });
+    assert.ok(gas.tryReserve(4n * CSPR));
+    assert.ok(gas.tryReserve(3_500_000_000n));
+    assert.equal(gas.tryReserve(1n), undefined);
+  });
+
+  test("a pending settle counted at its full limit is corrected to its real cost once known (same day, once)", () => {
+    const clock = new FakeClock(noonUtc);
+    const gas = new DailyGasBudget({ capMotes: 100n * CSPR, now: clock.now });
+    const charge = gas.commit(gas.tryReserve(4n * CSPR)!)!;
+    assert.deepEqual(charge, { id: 1, day: "2026-11-01", motes: 4n * CSPR });
+    assert.equal(gas.commit({ id: 1, motes: 4n * CSPR }), undefined, "already committed");
+    gas.correct(charge, undefined); // still unknown: nothing to correct
+    assert.equal(gas.snapshot().spentMotes, 4n * CSPR);
+    gas.correct(charge, 3_010_000_000n);
+    assert.equal(gas.snapshot().spentMotes, 3_010_000_000n);
+    gas.correct(charge, 1n); // at most once
+    assert.equal(gas.snapshot().spentMotes, 3_010_000_000n);
+
+    // A revert costs the whole limit: correcting to it changes nothing.
+    const reverted = gas.commit(gas.tryReserve(3_500_000_000n)!)!;
+    gas.correct(reverted, 3_500_000_000n);
+    assert.equal(gas.snapshot().spentMotes, 6_510_000_000n);
+
+    // After midnight yesterday's charges no longer count, so they are not corrected.
+    const late = gas.commit(gas.tryReserve(4n * CSPR)!)!;
+    clock.ms = Date.UTC(2026, 10, 2, 0, 0, 1);
+    gas.correct(late, 1n);
+    assert.equal(gas.snapshot().spentMotes, 0n);
+  });
 });

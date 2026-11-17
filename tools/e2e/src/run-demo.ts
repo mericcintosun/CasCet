@@ -13,8 +13,8 @@ import { startRealFacilitator } from "./real-facilitator.js";
  * Every hop settles a real transfer_with_authorization on-chain through a
  * self-hosted facilitator (fee-sponsored by the CasCet deployer key), and each
  * settled receipt anchors into the on-chain ReceiptRegistry. The analyst wallet
- * must hold the payment token — fund it once with:
- *   pnpm --filter @cascet/e2e fund-token <analyst-account-hash> 300
+ * must hold the payment token — fund it once with (a dry run without --send):
+ *   pnpm --filter @cascet/e2e fund-token cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3 <analyst-account-hash> 300 --send
  *
  * Run: pnpm --filter @cascet/e2e demo   (after gen-keys)
  */

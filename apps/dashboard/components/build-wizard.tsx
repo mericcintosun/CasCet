@@ -200,11 +200,7 @@ export function BuildWizard() {
     (price: string): bigint | null => {
       try {
         return usdPriceToTokenUnits(price.trim(), {
-          packageHash: "",
-          name: "",
-          symbol: "",
           decimals: Number(s.assetDecimals),
-          version: "1",
           tokensPerUsd: Number(s.tokensPerUsd),
         });
       } catch {

@@ -17,7 +17,8 @@ export function StatTiles({ state, loading = false }: { state: DashboardState; l
   const settled = state.receipts.filter((r) => r.status === "settled");
   const revenueRaw = settled.reduce((sum, r) => sum + toBigIntSafe(r.amountRaw), 0n);
   const cascaded = settled.filter((r) => r.parentId).length;
-  const symbol = settled[0]?.assetSymbol ?? "WCSPR";
+  // A receipt whose token could not be told has no symbol.
+  const symbol = settled.find((r) => r.assetSymbol)?.assetSymbol ?? "WCSPR";
 
   const values: Record<(typeof TILES)[number]["key"], string> = {
     revenue: formatTokens(revenueRaw, 9, symbol),

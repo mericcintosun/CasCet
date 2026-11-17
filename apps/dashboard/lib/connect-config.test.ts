@@ -211,6 +211,27 @@ test("other warnings: per-call above session, mainnet, local gateway, relative k
   );
 });
 
+test("the session cap is per token: several allowlisted tokens, or any token, multiply what one bridge can pay", () => {
+  const OTHER = "ef".repeat(32);
+  const two = connectWarnings({ ...base, allowedAssets: [ASSET, OTHER] });
+  assert.deepEqual(
+    two.map((w) => `${w.level}:${w.field}`),
+    ["warning:budget"],
+  );
+  assert.match(two[0]!.message, /applies to each token on its own/);
+  assert.match(two[0]!.message, /as 5000000000 raw units: with 2 tokens allowlisted, one running bridge can pay up to that in every one of them/);
+  assert.match(two[0]!.message, /fewer decimals it is more whole tokens/);
+  // Any token (explicit opt-out): the cap bounds no total at all.
+  const any = connectWarnings({ ...base, allowedAssets: [], allowAnySeller: true });
+  assert.ok(any.some((w) => w.field === "budget" && /bounds no total/.test(w.message)));
+  // One token, or no session cap: nothing to add.
+  assert.deepEqual(connectWarnings(base), []);
+  assert.equal(
+    connectWarnings({ ...base, allowedAssets: [ASSET, OTHER], maxSessionRaw: null, allowUnlimitedBudget: true }).some((w) => /each token/.test(w.message)),
+    false,
+  );
+});
+
 test("shell quoting keeps injection out of the copied command", () => {
   assert.equal(shellQuote("./agent.pem"), "./agent.pem");
   assert.equal(shellQuote("~/keys/agent.pem"), "~/keys/agent.pem");

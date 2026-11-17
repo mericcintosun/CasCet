@@ -38,6 +38,10 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
+      # The release workflow (publish.yml) builds and tests on the same Node;
+      # keep the two in step. Node 22's test runner misreads test output that
+      # starts with a multi-byte character ("Unable to deserialize cloned data"),
+      # which made Node 22 runs fail intermittently.
       - name: Install Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -119,8 +123,9 @@ jobs:
           node-version: 24
 
       # Reads pnpm-lock.yaml; no install needed. High and critical advisories
-      # fail the build. Advisories accepted on purpose are listed, each with its
-      # reason and exit condition, under auditConfig in pnpm-workspace.yaml.
+      # fail the build. To accept one on purpose, list it under
+      # auditConfig.ignoreGhsas in pnpm-workspace.yaml with its reason and the
+      # change that removes it; none is accepted today.
       - name: pnpm audit --prod --audit-level=high
         run: pnpm audit --prod --audit-level=high
 

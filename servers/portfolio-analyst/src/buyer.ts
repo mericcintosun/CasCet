@@ -37,30 +37,18 @@ export function withAbortSignal(fetchImpl: FetchLike, signal: AbortSignal): Fetc
   };
 }
 
-/** Marks a payment the analyst vetoed itself (see paymentGuard). */
-export const POLICY_PREFIX = "analyst payment policy:";
-
 /**
- * Last check before the paying fetch signs a payment.
+ * Logs each payment the paying fetch signed.
  *
- * @cascet/client calls `onPayment` from its before-payment hook, after its own
- * payTo/asset allowlist and budget checks and BEFORE the scheme signs; an
- * exception thrown there aborts the payment. The analyst uses it to enforce
- * CASCET_NETWORK (the client takes no network list yet and would pay on any
- * casper:* network a 402 names) and to refuse to sign once the analysis has
- * been aborted.
- *
- * The stricter client of the buyer-side fixes calls `onPayment` only after
- * signing and ignores what it throws. With that client the network list goes
- * to createPayingFetch's `networks` option and this hook only logs.
+ * @cascet/client calls `onPayment` after signing and only logs what it
+ * throws, so this hook cannot refuse a payment. What the analyst may pay goes
+ * to createPayingFetch instead: CASCET_NETWORK as `networks`, the allowlists
+ * and the budget. An aborted analysis sends no signed payment: withAbortSignal
+ * makes fetch reject the paid retry before it reaches the network.
  */
-export function paymentGuard(opts: { networks: readonly string[]; signal: AbortSignal; log: (line: string) => void }) {
+export function paymentLog(log: (line: string) => void) {
   return (info: { amountRaw: string; payTo: string; network: string }): void => {
-    if (opts.signal.aborted) throw new Error(`${POLICY_PREFIX} the analysis was aborted, not paying`);
-    if (!opts.networks.includes(info.network)) {
-      throw new Error(`${POLICY_PREFIX} network ${info.network} is not in CASCET_NETWORK`);
-    }
-    opts.log(`💸 buying data: ${info.amountRaw} raw → ${info.payTo.slice(0, 10)}… on ${info.network}`);
+    log(`💸 buying data: ${info.amountRaw} raw → ${info.payTo.slice(0, 10)}… on ${info.network}`);
   };
 }
 
@@ -70,19 +58,29 @@ export function paymentGuard(opts: { networks: readonly string[]; signal: AbortS
  * because the cascade parent id is per call; CASCET_MAX_SESSION therefore caps
  * what ONE analysis may spend, and the server's spend ledger enforces
  * CASCET_MAX_TOTAL across analyses.
+ *
+ * Each purchase may take as long as CASCET_TIMEOUT_MS: the paying fetch and
+ * the MCP client get it as their own deadline, which is otherwise the
+ * client's 30 s. A paid purchase cut off earlier would still settle, and its
+ * data would be lost. The analysis signal still ends every purchase at the
+ * analysis deadline.
  */
 export async function createDataBuyer(cfg: AnalystConfig, ctx: BuyerContext): Promise<DataBuyer> {
   const sessionCap = minRaw(optionalRaw(cfg.maxSessionRaw), optionalRaw(ctx.maxSessionRaw));
   const paying = await createPayingFetch({
     privateKeyPath: cfg.keyPath,
     keyAlgorithm: cfg.keyAlgorithm,
+    networks: [...cfg.networks],
     allowedPayTo: clientAllowedPayTo(cfg.allowedPayTo),
     allowedAssets: cfg.allowedAssets,
     budget: { maxPerCallRaw: cfg.maxPerCallRaw, maxSessionRaw: sessionCap?.toString() },
     parentId: ctx.parentId,
-    onPayment: paymentGuard({ networks: cfg.networks, signal: ctx.signal, log: ctx.log }),
+    onPayment: paymentLog(ctx.log),
+    timeoutMs: cfg.timeoutMs,
   });
-  const client = new PaidMcpHttpClient(cfg.dataGatewayUrl, withAbortSignal(paying.fetch, ctx.signal));
+  const client = new PaidMcpHttpClient(cfg.dataGatewayUrl, withAbortSignal(paying.fetch, ctx.signal), {
+    timeoutMs: cfg.timeoutMs,
+  });
   return {
     callTool: (name, args) => client.callTool(name, args),
     spentRaw: () => paying.spentRaw(),

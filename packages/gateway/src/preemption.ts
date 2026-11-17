@@ -12,13 +12,19 @@
  * reads the token's CES events and only reports `paid` when it finds
  * `AuthorizationUsed(from, nonce)` immediately followed by `Transfer(from →
  * payTo, value)`. Both events are written by one `transfer_with_authorization`
- * execution, in that order, with nothing in between (verified on the CasCet
- * x402 token on testnet and mainnet), so the pair identifies exactly this
- * authorization's transfer.
+ * execution, in that order, with nothing in between, so the pair identifies
+ * exactly this authorization's transfer. Verified for both authorization
+ * styles: the CasCet x402 token (legacy-amount) on testnet and mainnet, and
+ * the official Wrapped CSPR (cep3009-value) on testnet, whose event schema
+ * declares the same fields and whose settle 4b2ab2c2… wrote events #11003
+ * (AuthorizationUsed) and #11004 (Transfer).
  *
  * Read-only: chain_get_state_root_hash, query_global_state and
  * state_get_dictionary_item against one state root.
  */
+
+import { normalizePackageHash } from "@cascet/core";
+import { latestContractHash, type ContractPackageJson } from "./token-probe.js";
 
 export interface PreemptionQuery {
   /** Payer address, "00" + account hash. */
@@ -29,6 +35,12 @@ export interface PreemptionQuery {
   payTo: string;
   /** Expected raw amount, decimal string. */
   amount: string;
+  /**
+   * Token contract package hash whose events to read. A checker bound to one
+   * token refuses a query for another; {@link routePreemptionChecks} picks the
+   * checker of this token.
+   */
+  asset?: string;
 }
 
 export type PreemptionOutcome =
@@ -204,15 +216,37 @@ function isNotFound(err: unknown): boolean {
   return typeof data === "string" && /not found/i.test(data);
 }
 
+/**
+ * One checker per token, picked by the query's `asset`. A query without an
+ * asset, or for a token without a checker, is refused (the check reports an
+ * error, never a verdict about another token's events).
+ */
+export function routePreemptionChecks(byAsset: ReadonlyMap<string, SettlementPreemptionChecker>): SettlementPreemptionChecker {
+  const checkers = new Map([...byAsset].map(([asset, checker]) => [normalizePackageHash(asset), checker]));
+  return {
+    check(query: PreemptionQuery): Promise<PreemptionOutcome> {
+      const checker = query.asset === undefined ? undefined : checkers.get(normalizePackageHash(query.asset));
+      if (!checker) return Promise.reject(new Error(`preemption check: no checker for asset ${query.asset ?? "(none given)"}`));
+      return checker.check(query);
+    },
+  };
+}
+
+/** Default budget of one whole preemption check (every RPC call of it). */
+export const PREEMPTION_CHECK_TIMEOUT_MS = 15_000;
+
 /** Preemption checker backed by a Casper node's JSON-RPC and the token's CES events. */
 export function createCesPreemptionChecker(opts: CesCheckerOptions): SettlementPreemptionChecker {
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const packageHex = opts.tokenPackageHash.toLowerCase().replace(/^hash-/, "");
+  const packageHex = normalizePackageHash(opts.tokenPackageHash);
   const batchSize = Math.max(1, opts.batchSize ?? 8);
-  const timeoutMs = opts.timeoutMs ?? 15_000;
+  const timeoutMs = opts.timeoutMs ?? PREEMPTION_CHECK_TIMEOUT_MS;
 
   return {
     async check(query: PreemptionQuery): Promise<PreemptionOutcome> {
+      if (query.asset !== undefined && normalizePackageHash(query.asset) !== packageHex) {
+        throw new Error(`preemption check: asset ${query.asset} is not this checker's token ${packageHex}`);
+      }
       const payer = addressToKey(query.payer);
       const payTo = addressToKey(query.payTo);
       const nonce = query.nonce.toLowerCase().replace(/^0x/, "");
@@ -225,18 +259,14 @@ export function createCesPreemptionChecker(opts: CesCheckerOptions): SettlementP
       const { state_root_hash: stateRoot } = await rpc.call<{ state_root_hash: string }>("chain_get_state_root_hash", {});
       const stateIdentifier = { StateRootHash: stateRoot };
 
-      const pkg = await rpc.call<{ stored_value: { ContractPackage?: { versions: Array<{ contract_hash: string; contract_version: number }>; disabled_versions?: Array<{ contract_version: number }> } } }>(
+      const pkg = await rpc.call<{ stored_value: { ContractPackage?: ContractPackageJson } }>(
         "query_global_state",
         { state_identifier: stateIdentifier, key: `hash-${packageHex}`, path: [] },
       );
       const contractPackage = pkg.stored_value.ContractPackage;
       if (!contractPackage) throw new Error("preemption check: token package is not a ContractPackage");
-      const disabled = new Set((contractPackage.disabled_versions ?? []).map(v => v.contract_version));
-      const latest = [...contractPackage.versions]
-        .filter(v => !disabled.has(v.contract_version))
-        .sort((a, b) => b.contract_version - a.contract_version)[0];
-      if (!latest) throw new Error("preemption check: token has no enabled contract version");
-      const contractKey = `hash-${latest.contract_hash.replace(/^contract-/, "")}`;
+      // The newest enabled version; nodes list disabled versions as [major, version] pairs.
+      const contractKey = `hash-${latestContractHash(contractPackage)}`;
 
       const lengthValue = await rpc.call<{ stored_value: { CLValue?: { parsed?: unknown } } }>("query_global_state", {
         state_identifier: stateIdentifier,

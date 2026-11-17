@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import type { FetchLike } from "./casper-rpc.js";
+import type { RpcFetch as FetchLike } from "@cascet/gateway";
 
 /**
  * Test helpers (no network): a `fetch` stand-in that replays recorded JSON-RPC

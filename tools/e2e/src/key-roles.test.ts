@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -19,8 +19,16 @@ describe("key-roles planner (M07)", () => {
     assert.equal(statSync(dir).mode & 0o777, 0o700);
     const accounts = new Set<string>();
     for (const k of keys) {
-      assert.equal(statSync(k.pemPath).mode & 0o777, 0o600);
-      const reloaded = PrivateKey.fromPem(readFileSync(k.pemPath, "utf8"), KeyAlgorithm.ED25519);
+      // One open file for the mode check and the read, so both look at the same file.
+      const fd = openSync(k.pemPath, "r");
+      let pem: string;
+      try {
+        assert.equal(fstatSync(fd).mode & 0o777, 0o600);
+        pem = readFileSync(fd, "utf8");
+      } finally {
+        closeSync(fd);
+      }
+      const reloaded = PrivateKey.fromPem(pem, KeyAlgorithm.ED25519);
       assert.equal(reloaded.publicKey.toHex(), k.publicKeyHex);
       assert.equal(k.accountKey, `00${reloaded.publicKey.accountHash().toHex()}`);
       accounts.add(k.accountKey);
@@ -66,6 +74,7 @@ describe("key-roles planner (M07)", () => {
       "set_action_threshold",
       "hash-f86bef35062e92d06b8171cf4131fdf557463589aca9112a348e5eb24159eb93",
       "CASCET_OWNER_ACCOUNT_HASH=00b9a38c827771d6bc510dd5f1e24fee61acdd4f97f758f4d68fe1dea13a7a140d",
+      "CASCET_FACILITATOR_STATE_FILE=",
     ]) {
       assert.ok(plan.includes(step), `plan mentions ${step}`);
     }

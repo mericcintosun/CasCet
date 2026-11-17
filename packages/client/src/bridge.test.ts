@@ -135,6 +135,48 @@ describe("bridge", () => {
     assert.match(reply.result.content[0].text, /did not accept payment.*invalid_exact_casper_payload_signature/);
   });
 
+  it("answers at its deadline when the gateway stalls in a body, even if the fetch lost the abort", { timeout: 10_000 }, async () => {
+    // A 200 whose body sends its start and then nothing, and ignores every signal. Like an open
+    // connection, it holds the event loop open (for at most 5 s) until it is cancelled.
+    const cancelled: string[] = [];
+    const stalled = (what: string): Response => {
+      let open: NodeJS.Timeout | undefined;
+      const body = new ReadableStream<Uint8Array>({
+        start: controller => {
+          controller.enqueue(new TextEncoder().encode('{"jsonrpc":"2.0",'));
+          open = setTimeout(() => undefined, 5_000);
+        },
+        cancel: () => {
+          cancelled.push(what);
+          clearTimeout(open);
+        },
+      });
+      return new Response(body, { status: 200 });
+    };
+    const { paying } = fakeGateway({
+      unpaid: method => (method === "tools/list" ? stalled("tools/list") : undefined),
+      paidCall: () => stalled("tools/call"),
+    });
+    const options = { log: quiet, timeoutMs: 100 };
+    const cases: Array<[ReturnType<typeof createBridge>, string, RegExp]> = [
+      [createBridge(GATEWAY, paying, options), listTools(1), /tools\/list failed: .*timed out after 100 ms/],
+      [createBridge(GATEWAY, paying, options), callTool(2), /did not complete: .*timed out after 100 ms\. If a payment .* may still settle/],
+      // The pin check before a first tools/call: every later call waits on it.
+      [
+        createBridge(GATEWAY, paying, { ...options, toolPins: { path: pinPath() } }),
+        callTool(3),
+        /could not verify the gateway's tool definitions \(.*timed out after 100 ms\)/,
+      ],
+    ];
+    for (const [bridge, request, expected] of cases) {
+      const started = Date.now();
+      const reply = parse(await bridge.handleLine(request));
+      assert.ok(Date.now() - started < 2_000, `answered after ${Date.now() - started} ms`);
+      assert.match(reply.error?.message ?? reply.result.content[0].text, expected);
+    }
+    assert.deepEqual(cancelled, ["tools/list", "tools/call", "tools/list"], "each stalled body is cancelled");
+  });
+
   it("restores the request id when the gateway answers with another one", async () => {
     const { paying } = fakeGateway({ paidCall: () => json({ jsonrpc: "2.0", id: null, result: { content: [] } }) });
     const bridge = createBridge(GATEWAY, paying, { log: quiet });

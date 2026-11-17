@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives import serialization
 from helpers import (
     DELETE, MAINNET, NOW, OTHER_SELLER, OTHER_TOKEN, SELLER, TEST_KEY, TESTNET, TOKEN,
     CaseInsensitive, FakeResponse, FakeSession, LocalServer, challenge, direct_session, drip, make_payment_required,
-    make_requirements, quiet_client, reset_warnings, send, send_challenge, x402,
+    make_requirements, proxy_environment, quiet_client, reset_warnings, send, send_challenge, x402,
 )
 
 OK = FakeResponse(200, {}, body={"jsonrpc": "2.0", "id": 1, "result": {}})
@@ -112,13 +112,26 @@ class TestAllowlists(unittest.TestCase):
                     quiet_client(allowed_assets=[entry])
 
     def test_contract_package_payee(self):
+        # Refused everywhere, as in the TS client: no facilitator in use credits a "01" payee correctly.
         payee = "01" + "cd" * 32
         open_client = quiet_client(allowed_pay_to=None)
         with self.assertRaises(x402.PaymentAborted) as ctx:
             pay(open_client, make_requirements(payTo=payee))
         self.assertIn("01 tag", str(ctx.exception))
-        pinned = quiet_client(allowed_pay_to=["hash-" + "cd" * 32])
-        pay(pinned, make_requirements(payTo=payee))
+        self.assertIn(x402.CONTRACT_PAYEE_REASON, str(ctx.exception))
+        # Pinning it is a configuration error, not a way to pay it ...
+        # (A bare "01" + 64 hex entry is refused as a public key: test_public_key_in_allowlist_is_refused...)
+        for entry in ("hash-" + "cd" * 32, "package-hash-" + "cd" * 32, " HASH-" + "CD" * 32):
+            with self.subTest(entry=entry):
+                with self.assertRaises(ValueError) as ctx:
+                    quiet_client(allowed_pay_to=[entry])
+                self.assertIn("contract-package payee", str(ctx.exception))
+        # ... and an account hash with the same 32 bytes does not let the 01 key through either.
+        pinned = quiet_client(allowed_pay_to=["00" + "cd" * 32])
+        with self.assertRaises(x402.PaymentAborted) as ctx:
+            pay(pinned, make_requirements(payTo=payee))
+        self.assertIn("01 tag", str(ctx.exception))
+        self.assertEqual(pinned.spending(), {})
 
     def test_empty_allowlist_pays_nobody(self):
         with self.assertRaises(x402.PaymentAborted):
@@ -148,6 +161,38 @@ class TestAllowlists(unittest.TestCase):
             with self.subTest(payment_required=pr):
                 with self.assertRaises(x402.PaymentAborted):
                     client.create_payment_payload(pr)
+
+
+class TestEip712Domain(unittest.TestCase):
+    """An entry without a usable extra.name or extra.version is skipped, as by the TS client, and nothing is reserved for it."""
+
+    UNUSABLE = (
+        {"version": "1"},
+        {"name": "CasCet X402 Token"},
+        {"name": "", "version": "1"},
+        {"name": "CasCet X402 Token", "version": 1},
+        {"name": "x" * 101, "version": "1"},
+        {"name": "CasCet X402 Token", "version": "1" * 21},
+    )
+
+    def test_the_next_entry_is_paid(self):
+        for extra in self.UNUSABLE:
+            with self.subTest(extra=extra):
+                client = quiet_client()
+                payload = pay(client, make_requirements(extra=extra), make_requirements(amount="7"))
+                self.assertEqual(payload["accepted"]["amount"], "7")
+                self.assertEqual(client.spending(), {TOKEN: 7})
+
+    def test_every_unusable_domain_is_reported(self):
+        client = quiet_client()
+        with self.assertRaises(x402.PaymentAborted) as ctx:
+            pay(client, *(make_requirements(extra=extra) for extra in self.UNUSABLE))
+        message = str(ctx.exception)
+        self.assertIn("accepts[0]: malformed EIP-712 domain: extra.name is missing", message)
+        self.assertIn("accepts[1]: malformed EIP-712 domain: extra.version is missing", message)
+        self.assertIn("accepts[4]: malformed EIP-712 domain: extra.name is 101 characters long", message)
+        self.assertIn("accepts[5]: malformed EIP-712 domain: extra.version is 21 characters long", message)
+        self.assertEqual(client.spending(), {})
 
 
 class TestValidityWindow(unittest.TestCase):
@@ -312,7 +357,9 @@ class TestAmountsAndBudgets(unittest.TestCase):
         seen = []
         client = quiet_client(on_payment=seen.append)
         pay(client)
-        self.assertEqual(seen, [{"amount_raw": "500000000", "pay_to": SELLER, "asset": TOKEN, "network": TESTNET}])
+        # TOKEN is CasCet's testnet x402 token: reported with the style the client knows for it.
+        self.assertEqual(seen, [{"amount_raw": "500000000", "pay_to": SELLER, "asset": TOKEN, "network": TESTNET,
+                                 "authorization_style": "legacy-amount"}])
 
 
 class TestWarnings(unittest.TestCase):
@@ -724,6 +771,45 @@ class TestRealHttp(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             response.close()
 
+    def test_only_plain_http_to_this_machine_skips_the_proxies(self):
+        for url in ("https://gateway.test/mcp", "https://127.0.0.1:4402/mcp", "http://gateway.test/mcp", "not a url"):
+            with self.subTest(url=url):
+                self.assertIsNone(x402._direct_proxies(url))
+        direct = x402._direct_proxies("http://127.0.0.1:4402/mcp")
+        self.assertIsNone(direct["http"])
+        # A proxy a session names for exactly this host loses too: requests looks up the host's own keys first.
+        session = requests.Session()
+        session.proxies = {"http://127.0.0.1": "http://proxy.test:1", "all://127.0.0.1": "http://proxy.test:1"}
+        settings = session.merge_environment_settings("http://127.0.0.1:4402/mcp", direct, False, None, None)
+        self.assertIsNone(requests.utils.select_proxy("http://127.0.0.1:4402/mcp", settings["proxies"]))
+
+    def test_a_gateway_on_this_machine_is_reached_directly_whatever_the_proxy_settings(self):
+        # Plain http:// is paid over only to this machine; through HTTP_PROXY or ALL_PROXY the request and its
+        # PAYMENT-SIGNATURE would reach another machine in cleartext.
+        def app(handler, srv):
+            if handler.headers.get(x402.HEADER_PAYMENT_SIGNATURE) is None:
+                send_challenge(handler)
+            else:
+                send(handler, 200, {"Content-Type": "application/json"}, b'{"result": 1}')
+
+        for variable in ("HTTP_PROXY", "ALL_PROXY"):
+            with self.subTest(variable=variable), \
+                    LocalServer(lambda handler, srv: send(handler, 502, body=b"proxy")) as proxy, \
+                    LocalServer(app) as gateway, \
+                    proxy_environment(proxy.url, variable):
+                with quiet_client() as client:  # its own requests.Session, which reads the environment
+                    response = client.post(gateway.url + "/mcp", json={"jsonrpc": "2.0", "id": 1})
+                self.assertEqual(proxy.requests, [], "nothing reaches the proxy")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(len(gateway.requests), 2)
+                self.assertIsNotNone(gateway.requests[1]["headers"].get(x402.HEADER_PAYMENT_SIGNATURE))
+        # A proxy the caller names for a call is still used.
+        with LocalServer(lambda handler, srv: send(handler, 502, body=b"proxy")) as proxy:
+            with quiet_client(session=direct_session()) as client:
+                response = client.get("http://127.0.0.1:9/mcp", proxies={"http": proxy.url})
+            self.assertEqual(response.status_code, 502)
+            self.assertEqual(len(proxy.requests), 1)
+
 
 class TestFromEnv(unittest.TestCase):
     def setUp(self):
@@ -836,7 +922,9 @@ class TestFromEnv(unittest.TestCase):
         self.assertTrue(1.4 < session.calls[0]["timeout"][0] <= 1.5)
         session = FakeSession(OK)
         self.from_env(self.env, session=session).get("https://gw.test/health")
-        self.assertTrue(29 < session.calls[0]["timeout"][0] <= 30)  # the default
+        # The default is cascet connect's, long enough for a paid call's settlement, not the constructor's 30 s.
+        self.assertTrue(199 < session.calls[0]["timeout"][0] <= 200)
+        self.assertEqual(x402.DEFAULT_ENV_TIMEOUT_SECONDS, 200.0)
         session = FakeSession(OK)
         self.from_env({**self.env, "CASCET_TIMEOUT_MS": "1500"}, session=session, timeout=5).get("https://gw.test/x")
         self.assertTrue(4.5 < session.calls[0]["timeout"][0] <= 5)  # an explicit argument wins

@@ -10,8 +10,8 @@ import crypto from "node:crypto";
  * token's content nor its length leaks through response timing.
  */
 
-/** Minimum token length enforced on mainnet (e.g. `openssl rand -hex 32` gives 64). */
-export const MIN_MAINNET_TOKEN_LENGTH = 32;
+/** Minimum token length on mainnet and on a non-loopback host (e.g. `openssl rand -hex 32` gives 64). */
+export const MIN_TOKEN_LENGTH = 32;
 
 const digest = (s: string): Buffer => crypto.createHash("sha256").update(s, "utf8").digest();
 

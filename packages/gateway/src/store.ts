@@ -17,6 +17,18 @@ export interface AuthorizationRecord {
   nonce: string;
   /** Unix seconds; after this the token refuses the authorization anyway. */
   validBefore: number;
+  /**
+   * Token the authorization pays in (bare package hash). Absent in records of
+   * gateways that sold one token only. Informational: replays are refused per
+   * (payer, nonce) across every token, whatever this says.
+   */
+  asset?: string;
+  /**
+   * Amount the authorization pays, in raw token units. Absent in older records.
+   * A restarted gateway keeps counting it in flight if the process died before
+   * the call's receipt was written.
+   */
+  amountRaw?: string;
   /** Payment id of the call (its receipt carries the same id). */
   paymentId: string;
   tool: string;

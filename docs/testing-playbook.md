@@ -23,7 +23,9 @@ without a chain, except where it says mainnet.
 
 ### Prerequisites
 
-- Node.js 22 or newer
+- Node.js 22 or newer (CI uses Node 24; on Node 22 a test file can fail with
+  "Unable to deserialize cloned data", a Node 22 test-runner bug: run the tests
+  again, or use Node 24)
 - pnpm 10.20.0 (`corepack enable`)
 - (Contracts only) Rust; rustup installs the toolchain pinned by the
   toolchain file in `contracts/`
@@ -110,15 +112,19 @@ Expected:
 
 ## Option D — Maintainer demos (need the CasCet operator keys)
 
-These scripts sign with the operator keys in `contracts/keys/`, which are not in
-the repository, so they only run on a maintainer's machine. They produced the
-transactions linked in the README and in [`buidl-page.md`](buidl-page.md).
+These demos sign with the operator keys in `contracts/keys/` by default, which
+are not in the repository, so they run on a maintainer's machine. Two exceptions:
+`demo-real-mainnet` reads its fee-payer and recorder keys from the environment
+instead, and `wrap-wcspr` and `fund-token` sign with your own testnet key when you
+pass `--key`. They produced the transactions linked in the README and in
+[`buidl-page.md`](buidl-page.md).
 
 ### Full cascade, real settlement on testnet
 
 ```bash
 pnpm --filter @cascet/e2e gen-keys
-pnpm --filter @cascet/e2e fund-token <analyst-account-hash> 300   # fund the analyst wallet once
+# fund the analyst wallet once with 300 CasCet X402 Token (a dry run without --send)
+pnpm --filter @cascet/e2e fund-token cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3 <analyst-account-hash> 300 --send
 pnpm --filter @cascet/e2e demo
 ```
 
@@ -173,12 +179,128 @@ pnpm --filter @cascet/e2e demo-real-mainnet    # MAINNET, real funds
 writes to. On mainnet that file must be a dedicated payer key, created and
 stored separately (never a `gen-keys` output) and funded with a small float
 only. Read [`mainnet-readiness.md`](mainnet-readiness.md) for the facilitator's
-keys and limits before the mainnet run.
+keys, limits and state file (`CASCET_FACILITATOR_STATE_FILE`, required on
+mainnet) before the mainnet run.
 
 Expected: the agent pays from its on-chain balance of the x402 token; the
 self-hosted facilitator verifies and settles; the receipt is anchored on-chain.
 The script prints the transaction link (e.g. testnet `0218ff4c…`, mainnet
-`2c66141c…`).
+`2c66141c…`). Both demos then wait for the anchor (up to 150 s) and print its hash,
+and print the settlement transaction even when the paid call fails. The testnet
+demo also reads both transactions back with read-only RPC: it prints the gas limit,
+consumed gas, refund and net cost of the settle and of the anchor, and a limit
+suggested from the measurement (ceil(1.3 × consumed)) next to the configured one.
+
+### Two token styles on testnet: CasCet X402 Token and Wrapped CSPR
+
+Casper x402 tokens come in two styles. Buyers sign the same EIP-712
+`TransferWithAuthorization` for both; only the argument the facilitator passes
+to the token's `transfer_with_authorization` entry point differs:
+
+| Style | Settle argument | Testnet token | Settled by |
+| --- | --- | --- | --- |
+| `legacy-amount` | `amount` | CasCet X402 Token, `hash-cb65a928…` | the self-hosted facilitator |
+| `cep3009-value` | `value` | official Wrapped CSPR (WCSPR), `hash-3d80df21…`, 9 decimals, version `1` | the self-hosted facilitator, or the hosted CSPR.cloud facilitator |
+
+A facilitator that sends the wrong argument makes the settle revert with
+`User error: 64658` and burns its gas limit, so the demos refuse those
+pairings before anyone signs. The gateway advertises the style in each
+`accepts` entry (`extra.authorizationStyle`); no facilitator trusts that field.
+The hosted facilitator sends `value`; the self-hosted one reads each
+allowlisted token's ABI and sends `amount` or `value` to match.
+
+`wrap-wcspr` and `fund-token` are dry runs unless you add `--send`: a dry run
+reads the chain (read-only), checks the token, the accounts and the balances,
+prints what it would sign and what it costs, and exits non-zero when something
+would fail; with `--send` they refuse to sign while a check fails. They run on
+testnet only: they refuse `CASCET_NETWORK=casper:casper`, `CASCET_NET=mainnet`,
+and any node (`CASCET_RPC_URL`) that does not serve `casper-test`. They sign
+with `contracts/keys/deployer_secret_key.pem` unless you pass
+`--key /absolute/path.pem`.
+
+1. Wrap testnet CSPR into WCSPR (the signer receives it):
+
+   ```bash
+   pnpm --filter @cascet/e2e wrap-wcspr 10           # dry run: plan and expected cost
+   pnpm --filter @cascet/e2e wrap-wcspr 10 --send    # sign and submit
+   ```
+
+   It calls WCSPR's payable `deposit` through Odra's proxy session
+   (`proxy_caller_with_return.wasm` of `odra-casper-rpc-client` 2.9.1, pinned by
+   SHA-256; `cargo fetch` in `contracts/` downloads it). The default gas limit
+   is 10 CSPR, charged up front, with 75% of the unused part refunded on
+   success: an account's first wrap also creates its cargo purse (2.5 CSPR of
+   `create_purse`), so expect about 5.6 CSPR of gas for the first wrap and less
+   afterwards. `--gas-cspr` sets the limit; it refuses a limit below 1.3 × the
+   estimated consumption (5.45 CSPR for a first wrap) and below 2.5 CSPR, since
+   a wrap that runs out of gas burns its whole limit. After `--send` it prints
+   the measured gas and the new WCSPR balance.
+
+2. Give the buyer (`tools/e2e/keys/agent.pem`) some WCSPR:
+
+   ```bash
+   pnpm --filter @cascet/e2e fund-token 3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e <agent-account-hash> 5 --send
+   ```
+
+   `fund-token <token> <recipient account hash> <amount>` works for any CEP-18
+   token with `transfer(recipient, amount)`; the amount is in whole tokens at
+   the token's on-chain decimals (`--raw` for raw units). It refuses to send
+   when the signer's token balance is short or cannot be read (a short balance
+   reverts the transfer and burns its gas limit); for a token without an Odra
+   `balances` dictionary, `--skip-balance-check` sends without that check.
+
+3. Pay in WCSPR:
+
+   ```bash
+   CASCET_FACILITATOR=hosted CSPR_CLOUD_TOKEN=<CSPR.cloud access key> \
+   pnpm --filter @cascet/e2e demo-real-wcspr
+   ```
+
+   `demo-real` has no dry run: after its read-only checks (the token's ABI,
+   name and chain, the buyer's balance, and for the hosted facilitator its fee
+   payer) it signs the buyer's authorization and pays, always on testnet.
+   It takes `CASCET_ASSET=legacy|wcspr` and `CASCET_FACILITATOR=self|hosted`
+   (`demo-real-wcspr` is `demo-real --asset wcspr`):
+
+   | | `self` (default) | `hosted` |
+   | --- | --- | --- |
+   | `legacy` (default) | the original demo | refused: the hosted facilitator sends `value` |
+   | `wcspr` | settles through the self-hosted facilitator, which sends `value` | needs `CSPR_CLOUD_TOKEN` |
+
+   The gateway sends `CSPR_CLOUD_TOKEN` to the hosted facilitator raw in the
+   `Authorization` header (`facilitator.authScheme: "raw"`, never `Bearer`).
+
+   **Known blocker:** the hosted facilitator's TESTNET fee payer
+   (`account-hash-81d557c9…`) held 2.145 CSPR on 2026-11-01, less than the 2.5
+   CSPR a settle needs (Casper's minimum initiator balance, and the hosted
+   facilitator's gas limit per settle), so every hosted testnet settle fails
+   until MAKE refills it. `demo-real` reads the fee payer from the hosted
+   facilitator's `/supported` and its balance (read-only) before anyone signs,
+   and stops when the balance is short or when either cannot be read. The
+   mainnet fee payer is funded.
+
+4. Measure the settle gas. `demo-real` prints the measured gas of every run.
+   The `cep3009-value` limit (`DEFAULT_SETTLE_PAYMENT_MOTES_BY_STYLE`) is
+   2.5 CSPR, set from three testnet settles of 2026-11-02 (`fd667f19…`,
+   `660784c8…`, `43bba5ed…`, which consumed 1.117–1.118 CSPR each). To re-check
+   it, collect 3 to 5 settle hashes and run:
+
+   ```bash
+   pnpm --filter @cascet/e2e settle-report <tx-hash> <tx-hash> <tx-hash>
+   ```
+
+   It reads the transactions (read-only, `--network casper:casper` for mainnet
+   ones; it refuses a `CASCET_RPC_URL` node that serves another chain), prints limit, consumed, refund and net cost per transaction, and per
+   kind (settle per style, anchor, wrap, transfer) suggests ceil(1.3 × max
+   consumed). A suggestion below 2.5 CSPR is a valid limit: Casper's 2.5 CSPR
+   (`baseline_motes_amount`) is the minimum balance of the account that submits
+   a transaction, not a minimum gas limit, and the report says so next to such
+   a suggestion. For the three settles above it suggests 1.46 CSPR; the
+   default stays at 2.5 CSPR, the limit the hosted facilitator sets for the
+   same call: a settle that runs out of gas reverts and burns its whole limit,
+   and the lower limit would save only about 0.25 CSPR per settle. Never
+   use `@x402/casper`'s 2.5 CSPR default for the legacy token: its settles
+   consume about 2.7 CSPR.
 
 ### Python client
 
@@ -205,6 +327,7 @@ npx "@cascet/cli@^0.1.1" init                                 # writes cascet.co
 npx "@cascet/cli@^0.1.1" account-hash <your-public-key-hex>   # your payTo ("00" + account hash)
 # edit cascet.config.json: upstream, payTo, asset, facilitator.url, prices,
 # pricing.freeTools and settleBeforeExecute where needed
+# (with the hosted facilitator, also settlement.nodeUrl: see the README)
 npx "@cascet/cli@^0.1.1" wrap                                 # your MCP server is now paid
 ```
 

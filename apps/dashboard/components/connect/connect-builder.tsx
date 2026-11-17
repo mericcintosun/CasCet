@@ -375,7 +375,9 @@ export function ConnectBuilder() {
             <CardTitle className="text-base">Spending caps</CardTitle>
             <CardDescription>
               Enter whole tokens; the CLI takes raw units, converted here exactly. The per-call cap rejects any single price above
-              it; the session cap bounds everything one running bridge pays.
+              it; the session cap bounds what one running bridge pays in each token, since the CLI keeps a separate session budget
+              per token. With several tokens allowlisted it can pay up to the cap in every one of them, in raw units: for a token
+              with fewer decimals than the ones entered here, the same cap is more whole tokens.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -392,7 +394,7 @@ export function ConnectBuilder() {
             </Field>
             <Field
               id="session"
-              label="Session cap (tokens)"
+              label="Session cap per token (tokens)"
               hint={session?.ok ? `= ${session.raw} raw units` : "e.g. 5"}
               error={session && !session.ok ? session.error : null}
             >

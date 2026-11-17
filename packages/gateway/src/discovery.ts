@@ -1,5 +1,5 @@
 import type { CascetConfig } from "@cascet/core";
-import type { PaymentRail, ToolTable } from "./paywall.js";
+import { requirementExtra, type PaymentRail, type ToolTable } from "./paywall.js";
 
 /**
  * x402 Bazaar-compatible discovery resource.
@@ -10,6 +10,7 @@ export interface DiscoveryResource {
   resource: string;
   type: "http";
   x402Version: 2;
+  /** One entry per token the tool accepts, in the order of its 402 `accepts`. */
   accepts: Array<{
     scheme: "exact";
     network: string;
@@ -17,6 +18,8 @@ export interface DiscoveryResource {
     asset: string;
     payTo: string;
     maxTimeoutSeconds: number;
+    /** EIP-712 domain (name, version), symbol, decimals and authorization style, as in the 402. */
+    extra: Record<string, string>;
   }>;
   lastUpdated: string;
   metadata: {
@@ -36,7 +39,7 @@ export interface DiscoveryDocument {
 /** Build a Bazaar discovery catalog for every paid tool this gateway currently exposes. */
 export function buildDiscovery(
   cfg: CascetConfig,
-  rail: Pick<PaymentRail, "asset" | "payTo" | "maxTimeoutSeconds">,
+  rail: Pick<PaymentRail, "network" | "payTo" | "maxTimeoutSeconds">,
   table: Pick<ToolTable, "pricedToolNames" | "policyOf">,
   baseUrl: string,
   nowIso: string,
@@ -49,16 +52,15 @@ export function buildDiscovery(
       resource: `${baseUrl}/tools/${encodeURIComponent(tool)}`,
       type: "http",
       x402Version: 2,
-      accepts: [
-        {
-          scheme: "exact",
-          network: cfg.network,
-          amount: policy.amount,
-          asset: rail.asset,
-          payTo: rail.payTo,
-          maxTimeoutSeconds: rail.maxTimeoutSeconds,
-        },
-      ],
+      accepts: policy.accepts.map(({ asset, amount }) => ({
+        scheme: "exact",
+        network: rail.network,
+        amount,
+        asset: asset.packageHash,
+        payTo: rail.payTo,
+        maxTimeoutSeconds: rail.maxTimeoutSeconds,
+        extra: requirementExtra(asset),
+      })),
       lastUpdated: nowIso,
       metadata: {
         description:

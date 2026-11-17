@@ -4,7 +4,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { AnchorChain } from "./anchor.js";
 import { LATEST_PROTOCOL_VERSION } from "./protocol.js";
@@ -80,6 +80,32 @@ describe("network exposure (M36)", () => {
       const other = await h.rpc("tools/list", undefined, { origin: "https://app.example.evil" });
       assert.equal(other.status, 403);
     });
+  });
+});
+
+describe("start-up log", () => {
+  it("begins every line it prints on stdout with plain ASCII", async () => {
+    // The Node 22 test runner reads bytes 2-5 of output that directly follows one of its own messages as the next
+    // message's length; a byte above 0x7f there makes it negative and fails the whole test file ("Unable to
+    // deserialize cloned data"). Gateways start inside test files, here and in tools/e2e.
+    const lines: string[] = [];
+    const spy = mock.method(console, "log", (format: unknown, ...rest: unknown[]) => {
+      lines.push(format === "%s" ? String(rest[0]) : [format, ...rest].map(String).join(" "));
+    });
+    const chain: AnchorChain = { submit: async () => "ab".repeat(32), status: async () => ({ state: "executed" }) };
+    const anchoring = { contractPackageHash: `hash-${"99".repeat(32)}`, keyPath: "/nonexistent/recorder.pem", nodeUrl: "http://127.0.0.1:9/rpc" };
+    let h: Harness | undefined;
+    try {
+      h = await startHarness({ config: { anchoring }, gateway: { anchorChain: chain } });
+    } finally {
+      spy.mock.restore();
+    }
+    try {
+      assert.ok(lines.some(line => line.includes("listening on")), "the start-up lines were captured");
+      for (const line of lines) assert.match(line, /^[\x20-\x7e]{6}/, `a line that starts with plain ASCII: ${line}`);
+    } finally {
+      await h.close();
+    }
   });
 });
 

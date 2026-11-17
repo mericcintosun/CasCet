@@ -1,4 +1,11 @@
-import { NETWORK_CASPER_TESTNET, normalizePayTo } from "@cascet/core";
+import {
+  AUTHORIZATION_STYLE_EXTRA_KEY,
+  AUTHORIZATION_STYLES,
+  isAuthorizationStyle,
+  NETWORK_CASPER_TESTNET,
+  normalizePayTo,
+  type AuthorizationStyle,
+} from "@cascet/core";
 
 /** Raw CEP-18 amounts: 1-40 decimal digits. No sign, spaces, decimals, hex or exponent. */
 export const RAW_AMOUNT_PATTERN = /^[0-9]{1,40}$/;
@@ -10,21 +17,38 @@ export const RAW_AMOUNT_PATTERN = /^[0-9]{1,40}$/;
  */
 export const DEFAULT_MAX_AUTHORIZATION_SECONDS = 900;
 
+/**
+ * Longest EIP-712 domain name (`extra.name`) a payment option may carry, in
+ * UTF-16 code units (String.length): the bound CasCet's self-hosted facilitator
+ * puts on a token name it pins. Real tokens use a few characters ("Wrapped CSPR").
+ */
+export const MAX_TOKEN_NAME_LENGTH = 100;
+
+/**
+ * Longest EIP-712 domain version (`extra.version`) a payment option may carry,
+ * counted as {@link MAX_TOKEN_NAME_LENGTH} is: the self-hosted facilitator's
+ * bound for a pinned version. Tokens use "1".
+ */
+export const MAX_TOKEN_VERSION_LENGTH = 20;
+
 /** CAIP-2 id in the casper namespace; the reference charset is [-_a-zA-Z0-9]{1,32}. No wildcards. */
 const CASPER_NETWORK = /^casper:[-_a-zA-Z0-9]{1,32}$/;
 /** Serialized Casper Key as the exact scheme uses it: "00" account hash or "01" contract package. */
 const SERIALIZED_KEY = /^(00|01)[0-9a-f]{64}$/;
 const PACKAGE_HASH = /^[0-9a-f]{64}$/;
+/** A UTF-16 surrogate that is not half of a pair: with the u flag, a pair reads as one code point. */
+const LONE_SURROGATE = /\p{Surrogate}/u;
 
 /**
  * Why a "01" payee (a contract package such as a RevenueSplit, or a public key
- * passed off as one) is never paid: @make-software/casper-x402 1.0.0, which
- * every facilitator that exists today runs, settles any payTo as
- * `Key.newKey("account-hash-" + payTo.slice(2))`.
+ * passed off as one) is never paid: facilitators built on
+ * @make-software/casper-x402 1.0.0 settle any payTo as
+ * `Key.newKey("account-hash-" + payTo.slice(2))`, and CasCet's self-hosted
+ * facilitator refuses contract payees.
  */
 export const CONTRACT_PAYEE_REASON =
-  "contract-package payees cannot be settled by @make-software/casper-x402 1.0.0 facilitators; " +
-  "the payment would be credited to an account nobody controls";
+  "contract-package payees are not paid: @make-software/casper-x402 1.0.0 facilitators credit the payment " +
+  "to an account nobody controls, and CasCet's self-hosted facilitator refuses them";
 
 /**
  * Parse a raw token amount strictly: a string of 1-40 decimal digits, greater
@@ -74,6 +98,29 @@ export function normalizeAllowedPayTo(value: string): string {
   return payTo;
 }
 
+/**
+ * Validate an authorization-style preference (most preferred first): known
+ * styles only, duplicates dropped. Undefined means no preference, so the
+ * gateway's order of the acceptable options decides. `label` names the setting in errors.
+ */
+export function normalizePreferStyles(styles: readonly unknown[] | undefined, label = "preferStyles"): AuthorizationStyle[] | undefined {
+  if (styles === undefined) return undefined;
+  if (!Array.isArray(styles) || styles.length === 0) {
+    throw new Error(
+      `${label} must list at least one authorization style (${AUTHORIZATION_STYLES.join(", ")}); omit it to keep the gateway's order`,
+    );
+  }
+  const out: AuthorizationStyle[] = [];
+  for (const entry of styles) {
+    const style = typeof entry === "string" ? entry.trim() : entry;
+    if (!isAuthorizationStyle(style)) {
+      throw new Error(`${label}: unknown authorization style ${show(entry)}; known styles: ${AUTHORIZATION_STYLES.join(", ")}`);
+    }
+    if (!out.includes(style)) out.push(style);
+  }
+  return out;
+}
+
 /** Normalize a CEP-18 contract package hash to bare lower-case hex (accepts "hash-", "contract-package-" or "0x"). */
 export function normalizeAssetHash(value: string): string {
   const bare = value.trim().toLowerCase().replace(/^(?:hash-|contract-package-|0x)/, "");
@@ -103,7 +150,15 @@ export interface SpendPolicyOptions {
 
 /** Outcome of checking one 402 payment option against the policy. */
 export type SpendDecision =
-  | { ok: true; network: string; payTo: string; asset: string; amount: bigint }
+  | {
+      ok: true;
+      network: string;
+      payTo: string;
+      asset: string;
+      amount: bigint;
+      /** The option's `extra.authorizationStyle`, when the gateway advertised one. */
+      authorizationStyle?: AuthorizationStyle;
+    }
   | { ok: false; reason: string };
 
 /**
@@ -154,6 +209,16 @@ export class SpendPolicy {
 
   /** Check one payment option from a 402 and reserve its amount if it is acceptable. */
   authorize(requirements: unknown): SpendDecision {
+    const decision = this.check(requirements);
+    if (decision.ok) this.spent.set(decision.asset, (this.spent.get(decision.asset) ?? 0n) + decision.amount);
+    return decision;
+  }
+
+  /**
+   * Check one payment option from a 402 against every rule, the session budget
+   * included, without reserving anything (to choose among several options).
+   */
+  check(requirements: unknown): SpendDecision {
     if (typeof requirements !== "object" || requirements === null) return refuse("malformed payment requirements");
     const req = requirements as Record<string, unknown>;
 
@@ -175,6 +240,21 @@ export class SpendPolicy {
     const asset = typeof req.asset === "string" ? req.asset.toLowerCase() : undefined;
     if (asset === undefined || !PACKAGE_HASH.test(asset)) return refuse(`malformed asset ${show(req.asset)}`);
     if (this.allowedAssets && !this.allowedAssets.has(asset)) return refuse(`asset ${asset} is not allowlisted`);
+
+    // Informational, but a value this client does not know means terms it cannot judge.
+    const extra = typeof req.extra === "object" && req.extra !== null ? (req.extra as Record<string, unknown>) : {};
+    const authorizationStyle = extra[AUTHORIZATION_STYLE_EXTRA_KEY];
+    if (authorizationStyle !== undefined && !isAuthorizationStyle(authorizationStyle)) {
+      return refuse(`unknown authorization style ${show(authorizationStyle)}; this client knows ${AUTHORIZATION_STYLES.join(", ")}`);
+    }
+
+    // The token's EIP-712 domain, which the authorization is signed over. An option without a
+    // usable name or version is refused here, so that selection moves on to the next option,
+    // instead of failing at signing after its budget was reserved.
+    const domainRefusal =
+      domainFieldRefusal(extra.name, "extra.name", MAX_TOKEN_NAME_LENGTH) ??
+      domainFieldRefusal(extra.version, "extra.version", MAX_TOKEN_VERSION_LENGTH);
+    if (domainRefusal !== undefined) return refuse(`malformed EIP-712 domain: ${domainRefusal}`);
 
     let amount: bigint;
     try {
@@ -202,8 +282,7 @@ export class SpendPolicy {
         `price ${amount} would exceed the session budget ${this.maxSession} for asset ${asset} (already authorized ${spent})`,
       );
     }
-    this.spent.set(asset, spent + amount);
-    return { ok: true, network, payTo, asset, amount };
+    return { ok: true, network, payTo, asset, amount, ...(authorizationStyle !== undefined ? { authorizationStyle } : {}) };
   }
 
   /** Give back a reservation whose authorization was never created (e.g. signing failed). */
@@ -246,16 +325,57 @@ function normalizeList(
   return out;
 }
 
+/**
+ * Why `value` cannot be signed over as `field` of a token's EIP-712 domain, or
+ * undefined when it can. @x402/casper throws when the name or the version is
+ * not a non-empty string, and encodes a lone surrogate as U+FFFD, a domain the
+ * token does not have.
+ */
+function domainFieldRefusal(value: unknown, field: string, maxLength: number): string | undefined {
+  if (value === undefined) return `${field} is missing`;
+  if (typeof value !== "string") return `${field} must be a string; got ${show(value)}`;
+  if (value === "") return `${field} is empty`;
+  if (LONE_SURROGATE.test(value)) return `${field} contains lone UTF-16 surrogates, which have no UTF-8 form to sign over`;
+  if (value.length > maxLength) return `${field} is ${value.length} characters long, above this client's ${maxLength}-character limit`;
+  return undefined;
+}
+
 function refuse(reason: string): SpendDecision {
   return { ok: false, reason };
 }
 
+/**
+ * Escape the control characters (C0, DEL, C1), line and paragraph separators
+ * and bidirectional-text controls of gateway-supplied text as `\uXXXX`, so that
+ * it cannot fake lines or reorder text in logs and messages.
+ */
+export function escapeControlCharacters(text: string): string {
+  let escaped = "";
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    const control =
+      code <= 0x1f ||
+      (code >= 0x7f && code <= 0x9f) ||
+      code === 0x200e ||
+      code === 0x200f ||
+      (code >= 0x2028 && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069);
+    escaped += control ? `\\u${code.toString(16).padStart(4, "0")}` : char;
+  }
+  return escaped;
+}
+
+/**
+ * A value quoted for a message, as JSON: a gateway supplies many of them, so
+ * strings are shortened and what JSON leaves raw (DEL, C1, separators,
+ * bidirectional-text controls) is escaped too.
+ */
 function show(value: unknown): string {
-  if (typeof value === "string") return JSON.stringify(value.length > 80 ? `${value.slice(0, 77)}...` : value);
+  if (typeof value === "string") return escapeControlCharacters(JSON.stringify(value.length > 80 ? `${value.slice(0, 77)}...` : value));
   if (typeof value === "bigint") return `${value}n`;
   try {
-    return JSON.stringify(value) ?? String(value);
+    return escapeControlCharacters(JSON.stringify(value) ?? String(value));
   } catch {
-    return String(value);
+    return escapeControlCharacters(String(value));
   }
 }

@@ -7,18 +7,31 @@ payment payload that a CasCet gateway (in the `PAYMENT-SIGNATURE` request
 header) or a facilitator (`/verify`, `/settle`) expects.
 
 The digest, signature and payload match the TypeScript client
-(`@casper-ecosystem/casper-eip-712` + `@make-software/casper-x402` +
-`@x402/core`) byte for byte, and so does the header for the same input JSON
-(numbers written with a fraction or an exponent excepted: Python writes 300.0
-where JavaScript writes 300, which decodes to the same value).
-`tests/eip712_vectors.json` holds vectors produced by those packages and
-`tests/test_vectors.py` checks this module against them.
+(`@casper-ecosystem/casper-eip-712` with `@x402/casper` 2.29 and `@x402/core`
+2.29, and before them `@make-software/casper-x402` 1.0.0 and `@x402/core`
+2.17) byte for byte for the same validity window, and so does the header for
+the same input JSON (numbers written with a fraction or an exponent excepted:
+Python writes 300.0 where JavaScript writes 300, which decodes to the same
+value). `tests/eip712_vectors.json` and `tests/x402_casper_2_29_vectors.json`
+hold vectors produced by those packages and `tests/test_vectors.py` checks
+this module against them.
+
+Both token authorization styles are paid the same way. A "legacy-amount"
+token (CasCet's own x402 token) and a "cep3009-value" token (the official
+Wrapped CSPR and other CEP-3009 tokens) verify the same EIP-712
+`TransferWithAuthorization` message; only the argument name the facilitator
+passes to the token's `transfer_with_authorization` differs. A CasCet gateway
+names the style in each `accepts` entry's `extra.authorizationStyle`; this
+client echoes it in `accepted`, refuses values it does not know, and can
+prefer one style over the other.
 
 Two layers:
 
-* Protocol helpers with no policy: `parse_payment_required` (reads the 402's
-  `PAYMENT-REQUIRED` header), `build_payment_payload` (signs one `accepts`
-  entry and echoes it as `accepted`), `payment_signature_header`.
+* Protocol helpers with no budget: `parse_payment_required` (reads the 402's
+  `PAYMENT-REQUIRED` header), `select_requirement` (picks the `accepts` entry
+  to pay by network, payee and asset allowlists and style preference),
+  `build_payment_payload` (signs one `accepts` entry and echoes it as
+  `accepted`), `payment_signature_header`.
 * `PayingClient`: the same guard rails as the TypeScript `createPayingFetch`
   around a 402 -> sign -> retry flow: network, payTo and asset allowlists,
   strict amount parsing, per-call and per-asset session budgets, a cap on how
@@ -47,7 +60,8 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 from urllib.parse import urlsplit
 
 from Crypto.Hash import keccak as _keccak
@@ -65,12 +79,19 @@ __all__ = [
     "NETWORK_CASPER_TESTNET",
     "DEFAULT_NETWORKS",
     "DEFAULT_TIMEOUT_SECONDS",
+    "DEFAULT_ENV_TIMEOUT_SECONDS",
     "MAX_VALIDITY_SECONDS",
     "HEADER_PAYMENT_SIGNATURE",
     "HEADER_PAYMENT_REQUIRED",
     "HEADER_PAYMENT_RESPONSE",
     "HEADER_CASCET_PARENT_ID",
     "HEADER_CASCET_PAYMENT_ID",
+    "AUTHORIZATION_STYLES",
+    "AUTHORIZATION_STYLE_EXTRA_KEY",
+    "LEGACY_AMOUNT_TOKENS",
+    "KNOWN_CEP3009_ASSETS",
+    "CONTRACT_PAYEE_REASON",
+    "HOSTED_FACILITATOR_HOST",
     "X402Error",
     "ProtocolError",
     "PaymentAborted",
@@ -82,8 +103,12 @@ __all__ = [
     "pay_to_from_public_key",
     "normalize_pay_to",
     "normalize_asset",
+    "default_authorization_style",
+    "authorization_style",
+    "is_hosted_facilitator_url",
     "parse_amount",
     "validate_requirements",
+    "select_requirement",
     "build_payment_payload",
     "payment_signature_header",
     "decode_payment_signature_header",
@@ -109,12 +134,63 @@ DEFAULT_NETWORKS: Tuple[str, ...] = (NETWORK_CASPER_TESTNET,)
 #: Deadline for one PayingClient call (first request, 402, signing, paid retry
 #: and reading the response), the TypeScript client's `timeoutMs: 30000`.
 DEFAULT_TIMEOUT_SECONDS = 30.0
-#: validAfter is back-dated by this much to tolerate clock skew (same as the TS scheme).
+#: The deadline PayingClient.from_env uses without CASCET_TIMEOUT_MS, as
+#: `cascet connect` does: a paid call includes the on-chain settlement, and a
+#: call given up after its payment was sent may still settle, unanswered.
+DEFAULT_ENV_TIMEOUT_SECONDS = 200.0
+#: By default validAfter is back-dated by this much to tolerate clock skew, as
+#: @make-software/casper-x402 1.0.0 did. @x402/casper 2.29, the TypeScript
+#: client since the 2.29 migration, signs validAfter 0: pass valid_after=0 to
+#: build_payment_payload for byte parity with it.
 VALID_AFTER_SKEW_SECONDS = 600
 #: Upper bound on how long a signed authorization stays valid, whatever
 #: `maxTimeoutSeconds` a server asks for (a hostile 402 could ask for years).
 #: The TS client's `maxAuthorizationSeconds` default.
 MAX_VALIDITY_SECONDS = 900
+#: Longest EIP-712 domain name (`extra.name`) an `accepts` entry may carry,
+#: counted in UTF-16 code units as the TS client counts it (String.length), so
+#: both clients refuse the same entries: the bound CasCet's self-hosted
+#: facilitator puts on a token name it pins. Real tokens use a few characters.
+MAX_TOKEN_NAME_LENGTH = 100
+#: Longest EIP-712 domain version (`extra.version`), counted the same way: the
+#: facilitator's bound for a pinned version. Tokens use "1".
+MAX_TOKEN_VERSION_LENGTH = 20
+
+# ---- token authorization styles (same names and values as @cascet/core) ----
+#: How a token's `transfer_with_authorization` takes the amount. Both styles
+#: verify the same EIP-712 message, so this client signs them the same way:
+#: "legacy-amount" tokens (CasCet's own x402 token) take `amount`,
+#: "cep3009-value" tokens (the official Wrapped CSPR, other CEP-3009 tokens)
+#: take `value`. Only the facilitator that settles the payment cares.
+AUTHORIZATION_STYLES: Tuple[str, ...] = ("legacy-amount", "cep3009-value")
+#: Key of the style in an `accepts` entry's `extra`. The gateway sets it; a
+#: client echoes it in `accepted`, may prefer a style and refuses values it
+#: does not know. Facilitators must not rely on it: the token's ABI decides.
+AUTHORIZATION_STYLE_EXTRA_KEY = "authorizationStyle"
+#: Known tokens whose `transfer_with_authorization` takes `amount`: bare
+#: package hash -> CAIP-2 network. Both are CasCet's x402 token ("CasCet X402
+#: Token"), as in @cascet/core's LEGACY_AMOUNT_TOKENS.
+LEGACY_AMOUNT_TOKENS: Mapping[str, str] = MappingProxyType({
+    "cb65a928f8e1b7ce172bddd075c10dd0de8bcfd9cf808c799fd409766a1735c3": NETWORK_CASPER_TESTNET,
+    "8dd4f1aafde3895bee3b8155f0ebb14b1c82c4effe895dfb06ea50f9bc35be41": NETWORK_CASPER_MAINNET,
+})
+#: Known tokens whose `transfer_with_authorization` takes `value` (CEP-3009):
+#: CAIP-2 network -> bare package hashes, the official Wrapped CSPR on each
+#: network, as in @cascet/core's KNOWN_CEP3009_ASSETS.
+KNOWN_CEP3009_ASSETS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
+    NETWORK_CASPER_MAINNET: ("8df5d26790e18cf0404502c62ce5dc9025800ad6975c97466e20506c39c505b6",),
+    NETWORK_CASPER_TESTNET: ("3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e",),
+})
+#: Why a "01" payTo (a contract package, or a public key passed off as one) is
+#: never paid, worded as in @cascet/client's CONTRACT_PAYEE_REASON.
+CONTRACT_PAYEE_REASON = (
+    "contract-package payees are not paid: @make-software/casper-x402 1.0.0 facilitators credit the payment "
+    "to an account nobody controls, and CasCet's self-hosted facilitator refuses them"
+)
+#: Host of the hosted CSPR.cloud x402 facilitator. It takes the raw CSPR.cloud
+#: access key in the Authorization header (never "Bearer <key>") and settles
+#: only "cep3009-value" tokens.
+HOSTED_FACILITATOR_HOST = "x402-facilitator.cspr.cloud"
 
 _U64_MAX = 2**64 - 1
 _U256_LIMIT = 2**256
@@ -382,9 +458,115 @@ def normalize_asset(value: str) -> str:
     return low
 
 
-def _nonempty_text(value: Any) -> bool:
+def default_authorization_style(package_hash: str) -> str:
+    """The style assumed for a token that names none, as @cascet/core's defaultAuthorizationStyle.
+
+    A known CasCet x402 token (LEGACY_AMOUNT_TOKENS) is "legacy-amount"; every
+    other token "cep3009-value", the CEP-3009 standard. `package_hash` takes
+    the forms normalize_asset accepts; anything else raises ValueError.
+    """
+    return "legacy-amount" if normalize_asset(package_hash) in LEGACY_AMOUNT_TOKENS else "cep3009-value"
+
+
+def known_authorization_style(package_hash: Any, network: Any) -> Optional[str]:
+    """The style this client knows for a token on `network`, or None.
+
+    CasCet's x402 tokens (LEGACY_AMOUNT_TOKENS) are "legacy-amount" and the
+    official Wrapped CSPR (KNOWN_CEP3009_ASSETS) is "cep3009-value", each on
+    its own network only. Anything unparsable is None.
+    """
+    if not isinstance(package_hash, str) or not isinstance(network, str):
+        return None
+    try:
+        asset = normalize_asset(package_hash)
+    except ValueError:
+        return None
+    if LEGACY_AMOUNT_TOKENS.get(asset) == network:
+        return "legacy-amount"
+    if asset in KNOWN_CEP3009_ASSETS.get(network, ()):
+        return "cep3009-value"
+    return None
+
+
+def _effective_style(requirements: Mapping[str, Any]) -> str:
+    """
+    The style an `accepts` entry ranks under: the style this client knows for
+    CasCet's x402 tokens and Wrapped CSPR, whatever the gateway labels them (so
+    a gateway cannot steer `prefer_styles` by mislabeling them), else the
+    advertised style, else default_authorization_style(asset).
+    """
+    return (
+        known_authorization_style(requirements.get("asset"), requirements.get("network"))
+        or authorization_style(requirements)
+        or default_authorization_style(requirements["asset"])
+    )
+
+
+def _show(value: Any) -> str:
+    """repr() of a value from a server, shortened for error messages."""
+    text = repr(value)
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
+def authorization_style(requirements: Mapping[str, Any]) -> Optional[str]:
+    """
+    The authorization style one `accepts` entry advertises in
+    `extra.authorizationStyle`, or None when it names none (a gateway from
+    before the field existed).
+
+    Raises ProtocolError (a ValueError) for any other value: a style this
+    client does not know means terms it cannot judge, so it is never paid.
+    """
+    extra = requirements.get("extra") if isinstance(requirements, Mapping) else None
+    if not isinstance(extra, Mapping) or AUTHORIZATION_STYLE_EXTRA_KEY not in extra:
+        return None
+    style = extra[AUTHORIZATION_STYLE_EXTRA_KEY]
+    if not isinstance(style, str) or style not in AUTHORIZATION_STYLES:
+        raise ProtocolError(
+            f"extra.{AUTHORIZATION_STYLE_EXTRA_KEY} {_show(style)} is not an authorization style this client knows "
+            f"({', '.join(AUTHORIZATION_STYLES)})"
+        )
+    return style
+
+
+def is_hosted_facilitator_url(url: str) -> bool:
+    """Whether `url` points at the hosted CSPR.cloud facilitator (HOSTED_FACILITATOR_HOST). False for anything unparsable.
+
+    That facilitator takes the raw access key in the Authorization header, never "Bearer <key>".
+    """
+    if not isinstance(url, str):
+        return False
+    try:
+        host = urlsplit(url.strip()).hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host.endswith("."):
+        host = host[:-1]
+    return host == HOSTED_FACILITATOR_HOST
+
+
+def _domain_field_problem(extra: Mapping[str, Any], field: str, max_length: int) -> Optional[str]:
+    """Why `extra[field]` cannot be signed over as part of the token's EIP-712 domain, or None.
+
+    The TS client's checks, in the same order and words.
+    """
+    label = f"extra.{field}"
+    if field not in extra:
+        return f"{label} is missing"
+    value = extra[field]
+    if not isinstance(value, str):
+        return f"{label} must be a string; got {value!r}"
+    if value == "":
+        return f"{label} is empty"
     # A lone surrogate (valid in JSON, "\ud800") has no UTF-8 form, so it cannot be hashed into the domain.
-    return isinstance(value, str) and value != "" and not _SURROGATE_RE.search(value)
+    if _SURROGATE_RE.search(value):
+        return f"{label} contains lone UTF-16 surrogates, which have no UTF-8 form to sign over"
+    length = len(value.encode("utf-16-le")) // 2  # UTF-16 code units, as JavaScript's String.length
+    if length > max_length:
+        return f"{label} is {length} characters long, above this client's {max_length}-character limit"
+    return None
 
 
 def _max_timeout_seconds(value: Any) -> int:
@@ -398,8 +580,11 @@ def _max_timeout_seconds(value: Any) -> int:
 def validate_requirements(requirements: Mapping[str, Any]) -> None:
     """Check that one `accepts` entry is a well-formed Casper `exact` requirement.
 
-    Raises ProtocolError naming the bad field. These are the checks the TS
-    scheme and the facilitator apply, done before anything is signed.
+    Raises ProtocolError (a ValueError) naming the bad field. These are the
+    checks the TS scheme and the facilitator apply, done before anything is
+    signed, plus the TS client's: an `extra.authorizationStyle` it does not
+    know is refused, and so is an `extra.name` or `extra.version` longer than
+    MAX_TOKEN_NAME_LENGTH or MAX_TOKEN_VERSION_LENGTH.
     """
     if not isinstance(requirements, Mapping):
         raise ProtocolError("payment requirements must be a JSON object")
@@ -422,11 +607,14 @@ def validate_requirements(requirements: Mapping[str, Any]) -> None:
         raise ProtocolError(f"asset must be the 64-hex CEP-18 contract package hash{hint}, got {asset!r}")
     parse_amount(requirements.get("amount"))
     extra = requirements.get("extra")
-    if not isinstance(extra, Mapping) or not _nonempty_text(extra.get("name")) or not _nonempty_text(extra.get("version")):
-        raise ProtocolError(
-            "extra.name and extra.version (the token's EIP-712 domain) must be non-empty strings "
-            "(without lone UTF-16 surrogates)"
-        )
+    if not isinstance(extra, Mapping):
+        extra = {}
+    problem = _domain_field_problem(extra, "name", MAX_TOKEN_NAME_LENGTH) or _domain_field_problem(
+        extra, "version", MAX_TOKEN_VERSION_LENGTH
+    )
+    if problem is not None:
+        raise ProtocolError(f"malformed EIP-712 domain: {problem}")
+    authorization_style(requirements)
     if "maxTimeoutSeconds" in requirements:
         _max_timeout_seconds(requirements["maxTimeoutSeconds"])
 
@@ -435,6 +623,149 @@ def _check_u64(value: Any, what: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= _U64_MAX:
         raise ValueError(f"{what} must be an integer unix time between 0 and 2^64 - 1, got {value!r}")
     return value
+
+
+# ---- choosing what to pay ----
+def _normalize_allowed_pay_to(value: Any) -> str:
+    """An allowlist payee as normalize_pay_to returns it; a contract package is a config error (CONTRACT_PAYEE_REASON)."""
+    pay_to = normalize_pay_to(value)
+    if not pay_to.startswith("00"):
+        raise ValueError(
+            f"{value!r} is a contract-package payee: {CONTRACT_PAYEE_REASON}. Allowlist an account hash instead."
+        )
+    return pay_to
+
+
+def _allowlist(values: Optional[Union[str, Iterable[str]]], normalize: Callable[[Any], str]) -> Optional[frozenset]:
+    """A normalized allowlist; None means "no allowlist" and an empty list allows nothing."""
+    if values is None:
+        return None
+    return frozenset(normalize(value) for value in _as_list(values))
+
+
+def _networks_tuple(networks: Optional[Union[str, Iterable[str]]]) -> Tuple[str, ...]:
+    if networks is None:
+        networks = DEFAULT_NETWORKS
+    nets = [_normalize_network(network) for network in _as_list(networks)]
+    if not nets:
+        raise ValueError("networks must name at least one network")
+    return tuple(dict.fromkeys(nets))
+
+
+def _prefer_styles_tuple(prefer_styles: Optional[Union[str, Iterable[str]]]) -> Tuple[str, ...]:
+    if prefer_styles is None:
+        return ()
+    styles = []
+    for style in _as_list(prefer_styles):
+        candidate = style.strip() if isinstance(style, str) else style
+        if not isinstance(candidate, str) or candidate not in AUTHORIZATION_STYLES:
+            raise ValueError(
+                f"unknown authorization style {style!r} in prefer_styles (known: {', '.join(AUTHORIZATION_STYLES)})"
+            )
+        styles.append(candidate)
+    return tuple(dict.fromkeys(styles))
+
+
+def _policy_reject_reason(
+    requirements: Any,
+    networks: Tuple[str, ...],
+    allowed_pay_to: Optional[frozenset],
+    allowed_assets: Optional[frozenset],
+) -> Optional[str]:
+    """Why one `accepts` entry may not be paid under these networks and allowlists, or None."""
+    try:
+        validate_requirements(requirements)
+    except ProtocolError as exc:
+        return str(exc)
+    network = requirements["network"]
+    if network not in networks:
+        return f"network {network} is not allowed (allowed: {', '.join(networks)})"
+    pay_to = requirements["payTo"].lower()
+    # Checked before the allowlist and never overridable by it, like the TS client.
+    if not pay_to.startswith("00"):
+        return (
+            f"payTo {requirements['payTo']} carries the 01 tag (a contract package, or a public key used where "
+            f"an account hash belongs): {CONTRACT_PAYEE_REASON}"
+        )
+    if allowed_pay_to is not None and pay_to not in allowed_pay_to:
+        return f"payTo {requirements['payTo']} is not allowlisted"
+    asset = requirements["asset"].lower()
+    if allowed_assets is not None and asset not in allowed_assets:
+        return f"asset {requirements['asset']} is not allowlisted"
+    return None
+
+
+def _by_style_preference(candidates: List[Any], prefer_styles: Tuple[str, ...]) -> List[Any]:
+    """
+    `candidates` (valid `accepts` entries) ordered by `prefer_styles`; entries
+    of the same rank keep the server's order. Each entry ranks under
+    _effective_style: a known token's own style, else the advertised one, else
+    default_authorization_style(asset).
+    """
+    if not prefer_styles:
+        return list(candidates)
+
+    def rank(requirements: Any) -> int:
+        style = _effective_style(requirements)
+        return prefer_styles.index(style) if style in prefer_styles else len(prefer_styles)
+
+    return sorted(candidates, key=rank)  # stable
+
+
+def select_requirement(
+    accepts: Any,
+    allowed_assets: Optional[Union[str, Iterable[str]]],
+    allowed_pay_to: Optional[Union[str, Iterable[str]]],
+    networks: Optional[Union[str, Iterable[str]]] = DEFAULT_NETWORKS,
+    prefer_styles: Optional[Union[str, Iterable[str]]] = None,
+) -> Any:
+    """
+    Pick the entry of a 402's `accepts` list to pay, without budgets.
+
+    An entry qualifies when it is a well-formed Casper `exact` requirement
+    (validate_requirements: scheme "exact", amount, extra.name/version, and a
+    known `extra.authorizationStyle` if it names one), is on one of `networks`
+    (default: testnet only), pays an account ("00" + account hash: a "01"
+    contract-package payee is always refused, see CONTRACT_PAYEE_REASON), and
+    its payTo and asset are in `allowed_pay_to` and `allowed_assets`.
+
+    * `allowed_assets`, `allowed_pay_to`: lists in the forms normalize_asset
+      and normalize_pay_to accept. Pass None explicitly for no allowlist (any
+      asset, or any account payee): a hostile or man-in-the-middled 402 then
+      picks the token or the payee. A contract-package entry (hash-<64 hex>)
+      in `allowed_pay_to` raises ValueError.
+    * `prefer_styles`: authorization styles in order of preference, for
+      example ["cep3009-value"]. Qualifying entries are sorted by it, entries
+      of the same rank keep the server's order, and the first one is returned.
+      CasCet's x402 tokens and Wrapped CSPR rank under the style this client
+      knows for them (known_authorization_style), whatever the gateway
+      advertises; an entry without `extra.authorizationStyle` ranks as its
+      asset's default_authorization_style. A preference never makes an entry
+      qualify.
+
+    Returns the chosen entry itself (pass it unchanged to build_payment_payload,
+    which echoes it as `accepted`). Raises PaymentAborted, listing why each
+    entry was refused, when none qualifies, and ValueError for invalid
+    arguments. Budgets and the validity cap are PayingClient's job;
+    build_payment_payload still caps the window at max_validity_seconds.
+    """
+    nets = _networks_tuple(networks)
+    payees = _allowlist(allowed_pay_to, _normalize_allowed_pay_to)
+    assets = _allowlist(allowed_assets, normalize_asset)
+    styles = _prefer_styles_tuple(prefer_styles)
+    if not isinstance(accepts, (list, tuple)) or not accepts:
+        raise PaymentAborted("the 402 offers no payment requirements")
+    candidates = []
+    reasons = []
+    for index, requirements in enumerate(accepts):
+        reason = _policy_reject_reason(requirements, nets, payees, assets)
+        if reason is None:
+            candidates.append(requirements)
+        else:
+            reasons.append(f"accepts[{index}]: {reason}")
+    if not candidates:
+        raise PaymentAborted("refusing to pay: " + "; ".join(reasons))
+    return _by_style_preference(candidates, styles)[0]
 
 
 # ---- payment payload ----
@@ -456,16 +787,25 @@ def build_payment_payload(
     The result is what the TypeScript client sends: `x402Version`, the signed
     `payload`, the 402's `resource` (and `extensions`) when given, and
     `accepted`, a copy of `requirements` exactly as advertised (including
-    `maxTimeoutSeconds` and `extra`). A CasCet gateway only accepts a payment
-    whose `accepted` equals one of its `accepts` entries, and the facilitator
-    reads `accepted.scheme` / `accepted.network`.
+    `maxTimeoutSeconds` and all of `extra`, such as `extra.authorizationStyle`).
+    A CasCet gateway only accepts a payment whose `accepted` equals one of its
+    `accepts` entries, and the facilitator reads `accepted.scheme` /
+    `accepted.network`. Both authorization styles are signed the same way;
+    an `extra.authorizationStyle` this client does not know raises
+    ProtocolError (a ValueError).
 
-    Pass `requirements` unchanged from the 402. Without `valid_after` /
-    `valid_before` the window is the TS client's: from `now - 600` to `now +
-    maxTimeoutSeconds`, capped at `max_validity_seconds` (default
-    MAX_VALIDITY_SECONDS, 900).
+    Pass `requirements` unchanged from the 402. Without `valid_before` the
+    authorization expires at `now + maxTimeoutSeconds`, capped at
+    `max_validity_seconds` (default MAX_VALIDITY_SECONDS, 900). Without
+    `valid_after` it is valid from `now - 600`, back-dated for clock skew as
+    @make-software/casper-x402's client did. `valid_after` may be 0, which is
+    what @x402/casper 2.29's client (the TypeScript client since the 2.29
+    migration) signs: pass `valid_after=0` for the same payload byte for byte.
+    The CasCet gateway and facilitator, and @x402/casper's facilitator, accept
+    both.
 
-    This applies no spending policy: use PayingClient for allowlists and budgets.
+    This applies no spending policy: use select_requirement or PayingClient
+    for allowlists, and PayingClient for budgets.
     """
     if isinstance(max_validity_seconds, bool) or not isinstance(max_validity_seconds, int) or max_validity_seconds <= 0:
         raise ValueError(f"max_validity_seconds must be a positive whole number of seconds, got {max_validity_seconds!r}")
@@ -691,6 +1031,26 @@ def _is_loopback_host(host: Optional[str]) -> bool:
         return False
 
 
+def _direct_proxies(url: str) -> Optional[Dict[str, None]]:
+    """
+    requests' `proxies` for a plain http:// URL to this machine: none at all,
+    or None (requests' default) for any other URL. Plain http:// is safe only
+    while the request stays on this machine, and a proxy from the environment
+    (HTTP_PROXY, ALL_PROXY) would carry it, payment included, to another
+    machine in cleartext. A new dict each time: requests adds the
+    environment's other entries to the one it gets.
+    """
+    try:
+        parts = urlsplit(url)
+        loopback_http = parts.scheme.lower() == "http" and _is_loopback_host(parts.hostname)
+    except ValueError:  # requests reports a malformed URL itself
+        return None
+    if not loopback_http:
+        return None
+    # The host's own keys as well: requests prefers them, also from a session's `proxies`.
+    return {"http": None, "https": None, "all": None, f"http://{parts.hostname}": None, f"all://{parts.hostname}": None}
+
+
 #: A deadline in seconds for a whole PayingClient call, or None for no deadline.
 Timeout = Optional[float]
 
@@ -870,9 +1230,15 @@ class PayingClient:
       any other network is refused.
     * `allowed_pay_to` / `allowed_assets`: only pay these sellers in these
       tokens. Leaving either out logs a warning, because then a hostile or
-      man-in-the-middled 402 picks the payee or the token. Without a payTo
-      allowlist a '01'-tagged payTo (a contract package, or a public key pasted
-      where an account hash belongs) is refused.
+      man-in-the-middled 402 picks the payee or the token. A '01'-tagged payTo
+      (a contract package, or a public key pasted where an account hash
+      belongs) is always refused, and a contract-package entry (hash-<64 hex>)
+      in `allowed_pay_to` raises ValueError (see CONTRACT_PAYEE_REASON).
+    * `prefer_styles`: authorization styles in order of preference (for
+      example ["cep3009-value"]) when a 402 offers several acceptable entries;
+      see select_requirement. Without it the first acceptable entry is paid.
+      An `accepts` entry whose `extra.authorizationStyle` is not one of
+      AUTHORIZATION_STYLES is never paid.
     * `max_per_call_raw` / `max_session_raw`: budgets in raw token units
       (greater than zero); the session budget is tracked per asset. Spend is
       counted when an authorization is signed (a signed authorization can be
@@ -888,16 +1254,22 @@ class PayingClient:
       hold the call past the deadline. None disables it. A call that times
       out after the paid retry was sent may still settle.
     * `allow_insecure_http`: pay over plain http:// to a non-loopback host only
-      when this is True.
+      when this is True. Plain http:// to this machine is always reached
+      directly, never through a proxy from the environment (HTTP_PROXY,
+      ALL_PROXY) or the session, unless a call passes `proxies` itself.
     * `parent_id`: sent as x-cascet-parent-id so a cascade's receipts link up.
     * `on_payment`: called with {amount_raw, pay_to, asset, network} after each
-      authorization is signed and encoded, before it is sent. An exception it
-      raises is reported as a RuntimeWarning and does not stop the payment.
+      authorization is signed and encoded, before it is sent, plus
+      authorization_style: the style this client knows for the token
+      (known_authorization_style), else the one the 402 advertised, if any.
+      An exception it raises
+      is reported as a RuntimeWarning and does not stop the payment.
     * `session`: a requests.Session (or compatible object honoring
       `allow_redirects=False` and `stream=True`); one is created by default.
 
-    `request()` sends the request; on a 402 it reads PAYMENT-REQUIRED, picks the
-    first acceptable `accepts` entry, signs it and retries once with
+    `request()` sends the request; on a 402 it reads PAYMENT-REQUIRED, picks an
+    acceptable `accepts` entry (the first, or the first of the most preferred
+    style), signs it and retries once with
     PAYMENT-SIGNATURE. A second 402 is returned as is, never paid again. It
     never follows redirects: a 3xx response comes back to the caller unpaid,
     so PAYMENT-SIGNATURE, the parent id and the request body never reach
@@ -912,6 +1284,7 @@ class PayingClient:
         networks: Optional[Sequence[str]] = DEFAULT_NETWORKS,
         allowed_pay_to: Optional[Sequence[str]] = None,
         allowed_assets: Optional[Sequence[str]] = None,
+        prefer_styles: Optional[Sequence[str]] = None,
         max_per_call_raw: Union[int, str, None] = None,
         max_session_raw: Union[int, str, None] = None,
         max_authorization_seconds: int = MAX_VALIDITY_SECONDS,
@@ -923,13 +1296,7 @@ class PayingClient:
     ) -> None:
         if not isinstance(key, CasperKey):
             raise TypeError("key must be a CasperKey")
-        if networks is None:
-            networks = DEFAULT_NETWORKS
-        if isinstance(networks, str):
-            networks = [networks]
-        nets = [_normalize_network(network) for network in networks]
-        if not nets:
-            raise ValueError("networks must name at least one network")
+        nets = _networks_tuple(networks)
         if (
             isinstance(max_authorization_seconds, bool)
             or not isinstance(max_authorization_seconds, int)
@@ -941,14 +1308,11 @@ class PayingClient:
         if parent_id is not None and (not isinstance(parent_id, str) or not re.fullmatch(r"[\x21-\x7e]{1,128}", parent_id)):
             raise ValueError("parent_id must be 1-128 printable ASCII characters without spaces")
         self._key = key
-        self._networks: Tuple[str, ...] = tuple(dict.fromkeys(nets))
+        self._networks: Tuple[str, ...] = nets
         self._max_authorization_seconds = max_authorization_seconds
-        self._allowed_pay_to: Optional[frozenset] = None
-        if allowed_pay_to is not None:
-            self._allowed_pay_to = frozenset(normalize_pay_to(p) for p in _as_list(allowed_pay_to))
-        self._allowed_assets: Optional[frozenset] = None
-        if allowed_assets is not None:
-            self._allowed_assets = frozenset(normalize_asset(a) for a in _as_list(allowed_assets))
+        self._allowed_pay_to: Optional[frozenset] = _allowlist(allowed_pay_to, _normalize_allowed_pay_to)
+        self._allowed_assets: Optional[frozenset] = _allowlist(allowed_assets, normalize_asset)
+        self._prefer_styles: Tuple[str, ...] = _prefer_styles_tuple(prefer_styles)
         self._max_per_call = _parse_budget(max_per_call_raw, "max_per_call_raw")
         self._max_session = _parse_budget(max_session_raw, "max_session_raw")
         self._timeout = _check_timeout(timeout)
@@ -989,10 +1353,15 @@ class PayingClient:
           is an error.
         * CASCET_NETWORK: comma list, default casper:casper-test.
         * CASCET_ALLOWED_PAYTO, CASCET_ALLOWED_ASSETS: comma lists, required
-          unless CASCET_ALLOW_ANY_SELLER is 1, true or yes.
+          unless CASCET_ALLOW_ANY_SELLER is 1, true or yes. Payees are account
+          hashes; a contract package (hash-<64 hex>) is an error.
+        * CASCET_PREFER_STYLES: optional comma list of authorization styles in
+          order of preference (legacy-amount, cep3009-value).
         * CASCET_MAX_PER_CALL, CASCET_MAX_SESSION: raw token units (> 0),
           required unless CASCET_ALLOW_UNLIMITED_BUDGET is 1, true or yes.
-        * CASCET_TIMEOUT_MS: deadline per call in milliseconds (default 30000).
+        * CASCET_TIMEOUT_MS: deadline per call in milliseconds (default
+          200000, as for `cascet connect`: see DEFAULT_ENV_TIMEOUT_SECONDS;
+          the constructor's own default is 30 s).
 
         Every value is validated here, and an error names its variable.
         Keyword arguments go to PayingClient and take precedence over the
@@ -1030,9 +1399,10 @@ class PayingClient:
                 "(set CASCET_ALLOW_ANY_SELLER=1 to pay any seller in any token)"
             )
         for pay_to in allowed_pay_to:
-            attribute("CASCET_ALLOWED_PAYTO", normalize_pay_to, pay_to)
+            attribute("CASCET_ALLOWED_PAYTO", _normalize_allowed_pay_to, pay_to)
         for asset in allowed_assets:
             attribute("CASCET_ALLOWED_ASSETS", normalize_asset, asset)
+        prefer_styles = attribute("CASCET_PREFER_STYLES", _prefer_styles_tuple, _split_env(env.get("CASCET_PREFER_STYLES")))
 
         max_per_call = _env_value(env, "CASCET_MAX_PER_CALL")
         max_session = _env_value(env, "CASCET_MAX_SESSION")
@@ -1050,14 +1420,17 @@ class PayingClient:
         if timeout_ms is not None:
             if not re.fullmatch(r"[0-9]{1,10}", timeout_ms) or not 0 < int(timeout_ms) <= 2_147_483_647:
                 raise ValueError(
-                    f'CASCET_TIMEOUT_MS must be a whole number of milliseconds (e.g. 30000); got "{timeout_ms}"'
+                    f'CASCET_TIMEOUT_MS must be a whole number of milliseconds (e.g. 200000); got "{timeout_ms}"'
                 )
             kwargs.setdefault("timeout", int(timeout_ms) / 1000)
+        else:
+            kwargs.setdefault("timeout", DEFAULT_ENV_TIMEOUT_SECONDS)
 
         options: Dict[str, Any] = {
             "networks": networks or list(DEFAULT_NETWORKS),
             "allowed_pay_to": allowed_pay_to or None,
             "allowed_assets": allowed_assets or None,
+            "prefer_styles": list(prefer_styles) or None,
             "max_per_call_raw": max_per_call,
             "max_session_raw": max_session,
         }
@@ -1069,26 +1442,17 @@ class PayingClient:
     def networks(self) -> Tuple[str, ...]:
         return self._networks
 
+    @property
+    def prefer_styles(self) -> Tuple[str, ...]:
+        return self._prefer_styles
+
     def _reject_reason(self, requirements: Any) -> Optional[str]:
-        try:
-            validate_requirements(requirements)
-        except ProtocolError as exc:
-            return str(exc)
-        network = requirements["network"]
-        if network not in self._networks:
-            return f"network {network} is not allowed (allowed: {', '.join(self._networks)})"
-        pay_to = requirements["payTo"].lower()
-        if self._allowed_pay_to is not None:
-            if pay_to not in self._allowed_pay_to:
-                return f"payTo {requirements['payTo']} is not allowlisted"
-        elif pay_to.startswith("01"):
-            return (
-                f"payTo {requirements['payTo']} carries the 01 tag (a contract package, or a public key used where "
-                "an account hash belongs); add it to allowed_pay_to as hash-<64 hex> to pay it"
-            )
+        # select_requirement's rules (format, known style, network, an account payee, allowlists) ...
+        reason = _policy_reject_reason(requirements, self._networks, self._allowed_pay_to, self._allowed_assets)
+        if reason is not None:
+            return reason
+        # ... then the validity cap and the budgets.
         asset = requirements["asset"].lower()
-        if self._allowed_assets is not None and asset not in self._allowed_assets:
-            return f"asset {requirements['asset']} is not allowlisted"
         if "maxTimeoutSeconds" not in requirements:
             return "maxTimeoutSeconds is missing (it bounds how long the signed authorization stays valid)"
         seconds = _max_timeout_seconds(requirements["maxTimeoutSeconds"])  # well-formed: validated above
@@ -1110,17 +1474,25 @@ class PayingClient:
         return None
 
     def select_requirements(self, payment_required: Mapping[str, Any]) -> dict:
-        """The first `accepts` entry this client may pay, or PaymentAborted listing why none qualifies."""
+        """
+        The `accepts` entry this client pays: the first acceptable one, or the
+        first acceptable one of the most preferred style (`prefer_styles`).
+        Raises PaymentAborted listing why each entry was refused when none qualifies.
+        """
         accepts = payment_required.get("accepts") if isinstance(payment_required, Mapping) else None
         if not isinstance(accepts, list) or not accepts:
             raise PaymentAborted("the 402 offers no payment requirements")
+        candidates = []
         reasons = []
         for index, requirements in enumerate(accepts):
             reason = self._reject_reason(requirements)
             if reason is None:
-                return requirements
-            reasons.append(f"accepts[{index}]: {reason}")
-        raise PaymentAborted("refusing to pay: " + "; ".join(reasons))
+                candidates.append(requirements)
+            else:
+                reasons.append(f"accepts[{index}]: {reason}")
+        if not candidates:
+            raise PaymentAborted("refusing to pay: " + "; ".join(reasons))
+        return _by_style_preference(candidates, self._prefer_styles)[0]
 
     def create_payment_payload(self, payment_required: Mapping[str, Any], *, now: Optional[int] = None) -> dict:
         """Pick an acceptable requirement, reserve its budget and sign it. Raises PaymentAborted."""
@@ -1130,6 +1502,10 @@ class PayingClient:
         """Reserve the budget, sign, and encode the PAYMENT-SIGNATURE header: (payload, header)."""
         with self._lock:
             requirements = self.select_requirements(payment_required)
+            # Reported as the TS client does: a known token's own style, else the advertised one (or none).
+            style = known_authorization_style(requirements.get("asset"), requirements.get("network")) or (
+                authorization_style(requirements)  # known: select_requirements refuses any other value
+            )
             asset = requirements["asset"].lower()
             amount = int(requirements["amount"])
             self._spent[asset] = self._spent.get(asset, 0) + amount
@@ -1158,6 +1534,8 @@ class PayingClient:
                 "asset": requirements["asset"],
                 "network": requirements["network"],
             }
+            if style is not None:
+                info["authorization_style"] = style
             try:
                 self._on_payment(info)
             except Exception as exc:  # a reporting hook must not stop a payment that is already signed
@@ -1217,6 +1595,10 @@ class PayingClient:
         headers = dict(kwargs.pop("headers", None) or {})
         if self._parent_id and not _has_header(headers, HEADER_CASCET_PARENT_ID):
             headers[HEADER_CASCET_PARENT_ID] = self._parent_id
+        if "proxies" not in kwargs:
+            direct = _direct_proxies(url)  # plain http:// to this machine never goes through a proxy
+            if direct is not None:
+                kwargs["proxies"] = direct
 
         response = self._send(http, method, url, headers, kwargs, deadline, timeout)
         if response.status_code != 402 or _has_header(headers, HEADER_PAYMENT_SIGNATURE):
