@@ -58,6 +58,19 @@ describe("gateway config defaults", () => {
   });
 });
 
+describe("publicUrl", () => {
+  it("is unset by default and stored as a canonical origin", () => {
+    assert.equal(cascetConfigSchema.parse(base).publicUrl, undefined);
+    assert.equal(cascetConfigSchema.parse({ ...base, publicUrl: "HTTPS://MCP.Example:443/" }).publicUrl, "https://mcp.example");
+  });
+
+  it("refuses anything but a plain http(s) origin", () => {
+    for (const url of ["https://mcp.example/mcp", "mcp.example", "ftp://mcp.example", "*", "https://u:p@mcp.example"]) {
+      assert.equal(parse({ publicUrl: url }).success, false, url);
+    }
+  });
+});
+
 describe("cors.allowedOrigins", () => {
   it("never accepts the wildcard, the null origin or URLs with a path", () => {
     for (const origin of ["*", "null", "https://app.example/path", "ftp://app.example", "app.example", "https://u:p@app.example"]) {

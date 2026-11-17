@@ -428,7 +428,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
   /** A fresh 402 challenge for a priced tool, optionally carrying an error reason. */
   async function challenge(req: Request, snapshot: ToolTable, name: string, error?: string) {
     const processed = await snapshot.http.processHTTPRequest({
-      adapter: withoutPaymentHeader(expressAdapter(req)),
+      adapter: withoutPaymentHeader(expressAdapter(req, cfg.publicUrl)),
       path: snapshot.routeFor(name),
       method: "POST",
     });
@@ -890,7 +890,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
     // x402 hands this context to its hooks: that is how the preflight finds the call's hold.
     const context: HTTPRequestContext = withPaymentHold(
       {
-        adapter: expressAdapter(req),
+        adapter: expressAdapter(req, cfg.publicUrl),
         path: snapshot.routeFor(name),
         method: "POST",
         paymentHeader: req.get(HEADER_PAYMENT_SIGNATURE) ?? undefined,
@@ -1177,7 +1177,7 @@ export async function startGateway(cfg: CascetConfig, options: GatewayOptions = 
 
   // x402 Bazaar-compatible discovery so agents can find these paid tools.
   const discoveryHandler = (req: Request, res: Response): void => {
-    const baseUrl = `${req.protocol}://${req.get("host") ?? `localhost:${cfg.port}`}`;
+    const baseUrl = cfg.publicUrl ?? `${req.protocol}://${req.get("host") ?? `localhost:${cfg.port}`}`;
     res.json(buildDiscovery(cfg, rail, table, baseUrl, new Date().toISOString()));
   };
   app.get("/.well-known/x402.json", discoveryHandler);

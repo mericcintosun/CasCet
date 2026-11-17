@@ -54,7 +54,9 @@ remote URL can belong to only one server name.
 
 5. Put an HTTPS reverse proxy or tunnel in front of it, for example
    `caddy reverse-proxy --from mcp.example.com --to 127.0.0.1:4402`.
-   Do not expose the facilitator.
+   Set `"publicUrl": "https://mcp.example.com"` in the gateway config, so
+   discovery and 402 challenges name the HTTPS URL and not the proxy's
+   `http://` hop. Do not expose the facilitator.
 6. Check that `https://mcp.example.com/.well-known/x402.json` lists the three
    priced tools, then replace `https://REPLACE-WITH-PUBLIC-GATEWAY/mcp` in
    `server.json` with your URL, for example `https://mcp.example.com/mcp`.

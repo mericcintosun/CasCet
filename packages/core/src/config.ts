@@ -201,6 +201,18 @@ const originSchema = z.string().transform((value, ctx) => {
   return origin;
 });
 
+const publicUrlSchema = z.string().transform((value, ctx) => {
+  const origin = normalizeOrigin(value);
+  if (!origin) {
+    ctx.addIssue({
+      code: "custom",
+      message: `"${value}" is not a public URL: use scheme://host[:port], with no path`,
+    });
+    return z.NEVER;
+  }
+  return origin;
+});
+
 /** Browser access to the gateway. Requests carrying an Origin that is not listed get HTTP 403. */
 export const corsSchema = z
   .object({
@@ -324,6 +336,13 @@ const rawConfigSchema = z.object({
    * specific address) only for a deployment that must be reachable from other hosts.
    */
   host: z.string().min(1).default("127.0.0.1"),
+  /**
+   * The gateway's public origin ("https://mcp.example.com") when it runs behind a
+   * reverse proxy or tunnel. Discovery documents and 402 challenges then name this
+   * origin. Without it they use the request's own scheme and Host, which behind a
+   * TLS proxy is http://.
+   */
+  publicUrl: publicUrlSchema.optional(),
   cors: corsSchema,
   timeouts: timeoutsSchema,
   settlement: settlementSchema,

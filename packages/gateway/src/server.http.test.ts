@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, mock } from "node:test";
 import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { decodePaymentRequiredHeader } from "@x402/core/http";
 import type { AnchorChain } from "./anchor.js";
 import { LATEST_PROTOCOL_VERSION } from "./protocol.js";
 import { startGateway } from "./server.js";
@@ -541,6 +542,20 @@ describe("HTTP transport details", () => {
       assert.deepEqual(pricing.tools.map(t => t.name).sort(), ["free_tool", "paid_tool"]);
       const discovery = (await (await fetch(`${h.base}/.well-known/x402.json`)).json()) as { items: Array<{ metadata: { tool: string } }> };
       assert.deepEqual(discovery.items.map(i => i.metadata.tool), ["paid_tool"]);
+    });
+  });
+
+  it("names publicUrl, not the request's scheme and Host, in discovery and 402 challenges", async () => {
+    await withHarness({ config: { publicUrl: "https://mcp.example.com/" } }, async h => {
+      const discovery = (await (await fetch(`${h.base}/.well-known/x402.json`)).json()) as {
+        items: Array<{ resource: string; metadata: { mcpEndpoint: string } }>;
+      };
+      assert.equal(discovery.items[0]?.resource, "https://mcp.example.com/tools/paid_tool");
+      assert.equal(discovery.items[0]?.metadata.mcpEndpoint, "https://mcp.example.com/mcp");
+      const unpaid = await h.rpc("tools/call", { name: "paid_tool", arguments: {} });
+      assert.equal(unpaid.status, 402);
+      const required = decodePaymentRequiredHeader(unpaid.headers.get("payment-required") ?? "");
+      assert.equal(required.resource?.url, "https://mcp.example.com/mcp");
     });
   });
 });

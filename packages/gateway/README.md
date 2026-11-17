@@ -21,6 +21,7 @@ Or from the command line: `npx @cascet/cli wrap cascet.config.json`.
 | `payTo` | | The payee's **account hash**: `00` + 64 hex or `account-hash-<64 hex>`. Get it from a public key with `npx @cascet/cli account-hash <public-key>`. A contract-package payee (`01…`) is refused at startup: casper-x402 1.0.0 settles every payment to an account-hash key, so it could never settle. |
 | `host` | `127.0.0.1` | Interface to listen on. Use `0.0.0.0` only for a deployment that must be reachable from other hosts. |
 | `port` | `4402` | `0` picks a free port. |
+| `publicUrl` | none | Public origin (`https://mcp.example.com`) when the gateway runs behind a reverse proxy or tunnel. Discovery and 402 challenges name it instead of the request's own scheme and Host, which behind a TLS proxy is `http://`. |
 | `cors.allowedOrigins` | `[]` | Exact origins (`https://app.example`) allowed to call the gateway from a browser. `*` and `null` are rejected. |
 | `pricing.tools.<name>` | | `{ price: "$0.01", description?, settleBeforeExecute?: false, assets?: ["<asset id>", …] }` |
 | `pricing.default` | none | Price for every upstream tool that is neither in `tools` nor in `freeTools` (also takes `assets`). |
