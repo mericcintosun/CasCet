@@ -257,10 +257,9 @@ npx "@cascet/cli@^0.1.1" init                                 # writes cascet.co
 npx "@cascet/cli@^0.1.1" account-hash <your-public-key-hex>   # prints your payTo: "00" + account hash
 ```
 
-The version range keeps `npx` off the unsupported 0.1.0 (see
-[`SECURITY.md`](SECURITY.md)): until 0.1.1 is on npm, these commands stop with
-`ETARGET` instead of running 0.1.0. In a clone of this repository, run the
-checkout's CLI instead: `node packages/cli/dist/cli.js <command>` after
+The version range keeps `npx` off the unsupported, deprecated 0.1.0 (see
+[`SECURITY.md`](SECURITY.md)). In a clone of this repository, the checkout's CLI
+runs the same commands: `node packages/cli/dist/cli.js <command>` after
 `pnpm build`.
 
 Then edit `cascet.config.json`:

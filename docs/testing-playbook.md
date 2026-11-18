@@ -331,9 +331,9 @@ npx "@cascet/cli@^0.1.1" account-hash <your-public-key-hex>   # your payTo ("00"
 npx "@cascet/cli@^0.1.1" wrap                                 # your MCP server is now paid
 ```
 
-The quoted range never resolves to the unsupported 0.1.0: until 0.1.1 is on
-npm, `npx` stops with `ETARGET`. In a clone, `node packages/cli/dist/cli.js`
-runs the same commands from your checkout.
+The quoted range never resolves to the unsupported, deprecated 0.1.0. In a
+clone, `node packages/cli/dist/cli.js` runs the same commands from your
+checkout.
 
 Point an agent at it (all of these limits are required by `connect`):
 
