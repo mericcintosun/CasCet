@@ -142,7 +142,7 @@ function Hero() {
           </dl>
           <p className="mt-6 flex items-center gap-2 text-xs text-muted-foreground">
             <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden />
-            Internal security review; external audit planned.
+            Internal security review; not externally audited.
           </p>
         </div>
       </div>
@@ -455,7 +455,7 @@ function Faq() {
     },
     {
       q: "Has CasCet been audited?",
-      a: "Not yet. CasCet went through an internal security review before mainnet; an external audit is planned. Until it has happened, treat the mainnet deployment as early software: keep the balances you route through it small, and set seller allowlists and spending caps on every buyer.",
+      a: "No. CasCet went through internal security reviews, but no external audit is scheduled. The x402 payment path keeps no funds in CasCet contracts: each payment goes straight from the buyer to the seller. The contracts that hold tokens (RevenueSplit, CascadeController, PaymentChannel) stay demo deployments until they are audited. Treat the mainnet deployment as early software: keep the balances you route through it small, and set seller allowlists and spending caps on every buyer.",
     },
     {
       q: "What does the autonomous agent do?",
@@ -507,7 +507,7 @@ function Roadmap() {
       points: [
         "Full contract set live on Casper mainnet; real x402 settled from both the TypeScript and Python clients.",
         "The CascadeController primitive proven on mainnet: budget cap, attribution up the tree, over-budget revert, and refund.",
-        "Internal pre-mainnet security review; its findings were fixed and the contracts redeployed. External audit planned.",
+        "Internal pre-mainnet security review; its findings were fixed and the contracts redeployed.",
         "On-chain-backed dashboard + explorer (rebuilt from the testnet ReceiptRegistry), a /build config wizard, and a Casper Wallet withdraw page for RevenueSplit payees (testnet).",
       ],
     },
@@ -517,7 +517,7 @@ function Roadmap() {
       title: "Monetization & control plane",
       points: [
         "@cascet/* 0.1.1: the fixes from the 2026-10-20 internal review; cascet connect requires allowlists and caps.",
-        "An external security audit of the contracts and the payment path.",
+        "An external audit before the contracts that hold funds (cascades, channels, revenue splits) carry real value.",
         "A protocol take-rate on settled volume: the business model.",
         "Hosted CasCet control plane: register a server, get a paid endpoint + dashboard in one step.",
         "Per-second / streaming price schemes and a public metrics API.",

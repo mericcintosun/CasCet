@@ -8,7 +8,7 @@ Casper Agentic Buildathon 2026 · Casper Innovation Track · **finalist**
 
 **Now live on Casper mainnet.** [First real x402 payment settled on mainnet](https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1).
 
-**Security status:** not externally audited. Internal multi-agent review on 2026-10-20; external audit planned. See [`SECURITY.md`](SECURITY.md).
+**Security status:** not externally audited, and no external audit is scheduled. Internal multi-agent review on 2026-10-20. The contracts that hold funds (`RevenueSplit`, `CascadeController`, `PaymentChannel`) are not in the payment path and stay demo deployments until they are audited. See [`SECURITY.md`](SECURITY.md).
 
 [Architecture](#architecture) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [Contracts](#on-chain-layer) · [Roadmap](#roadmap--long-term-plan)
 
@@ -576,7 +576,7 @@ This is a real project, not a hackathon throwaway — there's a live [roadmap se
 
 - **Shipped (Qualification · Jul 2026):** 5 Odra contracts; real x402 settlement (no mock); the `CascadeController` primitive (budget tree + recursive attribution); an autonomous LLM buyer; a live dashboard, an interactive cascade playground, and a proposed [x402-MCP spec](docs/x402-mcp-spec.md).
 - **Shipped (Final round · Jul 2026) — live on Casper mainnet:** the full contract set redeployed to **Casper mainnet** after an internal pre-mainnet review; real x402 settled from both the **TypeScript and Python** clients; the **`CascadeController` primitive proven on mainnet** (budget cap → attribution up the tree → over-budget revert → refund); an on-chain-backed dashboard + explorer (rebuilt from the testnet ReceiptRegistry); a `/build` config wizard; a `/withdraw` page for `RevenueSplit` `release` on testnet (its wallet signing was fixed in the hardening after the 2026-10-20 review); and the CLI + libraries **published on npm** (`@cascet/*` 0.1.0).
-- **Now — hardening:** fixing the findings of the 2026-10-20 internal review, `@cascet/*` 0.1.1, and an external security audit before more value flows through the system.
+- **Now — hardening:** fixing the findings of the 2026-10-20 internal review (`@cascet/*` 0.1.1 is on npm) and a public testnet gateway. Mainnet opens to outside sellers in January 2027 on the x402 payment path only (official Wrapped CSPR, buyer to seller); the contracts that hold funds wait for an external audit.
 - **Q4 2026 — monetization:** **a protocol take-rate on settled volume** (the business model); a hosted CasCet control plane (register a server, get a paid endpoint + dashboard in one step); per-second / streaming price schemes for high-frequency agent traffic; a public metrics API.
 - **2027 — the agent-economy layer:** an agent-facing pricing-discovery API and a Bazaar marketplace of paid MCP tools; on-chain reputation for tools and agents; cross-chain settlement — CasCet as default rails for machine-to-machine commerce.
 

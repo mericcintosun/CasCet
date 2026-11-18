@@ -7,6 +7,11 @@ teams.
 
 Contact: Meriç Cintosun (solo builder), on Telegram.
 
+**Status (2026-11-18): no audit is scheduled.** This document stays as the
+specification for a future audit. Until one happens, mainnet opens on the x402
+payment path only, and `RevenueSplit`, `CascadeController` and `PaymentChannel`
+stay out of production.
+
 ## 1. What CasCet is, in one paragraph
 
 CasCet is a paywall for MCP (Model Context Protocol) servers on Casper. A tool

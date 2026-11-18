@@ -7,9 +7,12 @@ review stands, what the code enforces, how the mainnet keys are set up today
 
 ## 1. Security review status
 
-**Internal multi-agent review on 2026-10-20; no external audit yet.** Nothing in
-this repository has been audited by a third party. Do not describe CasCet as
-"audited" until an external report exists.
+**Internal multi-agent review on 2026-10-20; no external audit yet, and none is
+scheduled.** Nothing in this repository has been audited by a third party. Do
+not describe CasCet as "audited" until an external report exists. Until then,
+mainnet runs the x402 payment path only, and the contracts that hold tokens
+(`RevenueSplit`, `CascadeController`, `PaymentChannel`) carry no real value
+(see [`SECURITY.md`](../SECURITY.md)).
 
 An earlier internal pre-mainnet pass (2026-07-22) covered the Odra contracts, the
 off-chain x402 payment path, key hygiene, and the dashboard. Its fixes landed in

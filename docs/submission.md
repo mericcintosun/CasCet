@@ -35,7 +35,7 @@ AI agents reach the world through MCP servers, but almost all of them are free �
 
 - Six contract packages and real x402 settlements from the TypeScript and Python clients: [`docs/onchain.md`](onchain.md).
 - First real x402 settle: <https://cspr.live/transaction/2c66141c324216f4966f2d565c64c55cb37047cfc86b9863717d08d1b60a3bd1>
-- Security status: not externally audited; internal multi-agent review on 2026-10-20; external audit planned ([`SECURITY.md`](../SECURITY.md)).
+- Security status: not externally audited; internal multi-agent review on 2026-10-20; no external audit scheduled ([`SECURITY.md`](../SECURITY.md)).
 
 ## Testnet artifacts (all live)
 
@@ -55,7 +55,7 @@ Verified on-chain:
 ## Long-term launch plans (judging criterion)
 
 - **Shipped:** CLI + libraries on npm (`npx @cascet/cli`); a config-generator control-plane wizard; an on-chain-backed explorer; the contracts and real x402 settlement on Casper mainnet.
-- **Now:** hardening after the 2026-10-20 internal review (`@cascet/*` 0.1.1), then an external security audit.
+- **Now:** hardening after the 2026-10-20 internal review (`@cascet/*` 0.1.1). The contracts that hold funds wait for an external audit before they carry real value.
 - **Next:** a hosted control plane (register a server → paid endpoint + dashboard in one step); take the paid-MCP + cascade spec to the x402 / MCP ecosystem.
 - **Later:** a protocol take-rate on settled volume; streaming / per-second price schemes; an agent-facing price-discovery API and a Bazaar marketplace.
 - **Socials (live):** X [`@cascet_xyz`](https://x.com/cascet_xyz) · GitHub ([issues](https://github.com/mericcintosun/CasCet/issues) for questions and support). Copy-paste launch content in [`docs/launch-kit.md`](launch-kit.md).

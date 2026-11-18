@@ -44,7 +44,7 @@ After close the controller holds zero tokens and the analyst's balance is exactl
 
 ## Security status
 
-CasCet has not been externally audited. An internal multi-agent review took place on 2026-10-20, its fixes are in progress, and an external audit is planned. Details and the reporting policy: [`SECURITY.md`](https://github.com/mericcintosun/CasCet/blob/main/SECURITY.md).
+CasCet has not been externally audited. An internal multi-agent review took place on 2026-10-20, its fixes are in progress, and no external audit is scheduled. The contracts that hold funds stay out of the payment path until they are audited. Details and the reporting policy: [`SECURITY.md`](https://github.com/mericcintosun/CasCet/blob/main/SECURITY.md).
 
 ---
 

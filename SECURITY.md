@@ -6,11 +6,17 @@ request or discussion.
 
 ## Review status
 
-CasCet has **not** had an external security audit. An internal multi-agent
-review of the whole repository took place on 2026-10-20, and its findings are
-being fixed; an external audit is planned. Until a report from that audit is
-published, nothing in this repository or on the website should be read as
-"audited".
+CasCet has **not** had an external security audit, and none is scheduled. An
+internal multi-agent review of the whole repository took place on 2026-10-20,
+and its findings are being fixed. Until an external report is published,
+nothing in this repository or on the website should be read as "audited".
+
+The x402 payment path keeps no funds in CasCet contracts: each payment is one
+`transfer_with_authorization` on the payment token, straight from the buyer to
+the seller's account. The three CasCet contracts that hold tokens
+(`RevenueSplit`, `CascadeController` and `PaymentChannel`) are not part of that
+path. Until they are audited they stay demo deployments: do not put real value
+in them.
 
 ## Scope
 

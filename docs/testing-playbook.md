@@ -4,7 +4,7 @@ Step-by-step instructions to verify CasCet works. No marketing. Each step lists
 the command, what it needs, and what you should observe.
 
 CasCet is live on Casper mainnet with real funds and has not been externally
-audited yet (internal multi-agent review on 2026-10-20; external audit planned;
+audited (internal multi-agent review on 2026-10-20; no external audit scheduled;
 see [`SECURITY.md`](../SECURITY.md)). Everything below runs on testnet or
 without a chain, except where it says mainnet.
 
